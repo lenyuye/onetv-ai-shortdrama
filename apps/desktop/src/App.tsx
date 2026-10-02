@@ -3,6 +3,7 @@
  */
 import { useEffect } from "react";
 import { useApp, type ViewKey } from "./store";
+import * as api from "./api";
 import HomeView from "./views/HomeView";
 import ProjectsView from "./views/ProjectsView";
 import SettingsView from "./views/SettingsView";
@@ -13,6 +14,7 @@ import ScriptView from "./views/ScriptView";
 import StoryboardView from "./views/StoryboardView";
 import JobsView from "./views/JobsView";
 import SkillsView from "./views/SkillsView";
+import LoginView from "./views/LoginView";
 import { Toaster } from "./components/Toaster";
 
 const NAV: { key: ViewKey; icon: string; label: string; section: string }[] = [
@@ -32,14 +34,41 @@ const NAV: { key: ViewKey; icon: string; label: string; section: string }[] = [
 const PLACEHOLDER_VIEWS: Record<string, string> = {};
 
 export default function App() {
-  const { view, setView, settings, loadSettings, ffmpeg, loadFfmpeg, project, loadProject } =
+  const { view, setView, settings, loadSettings, ffmpeg, loadFfmpeg, project, loadProject, authed, setAuthed } =
     useApp();
 
   useEffect(() => {
     loadSettings();
     loadFfmpeg();
     loadProject();
+    api.authStatus().then((st) => setAuthed(!!st.loggedIn)).catch(() => setAuthed(false));
   }, []);
+
+  // 主题/皮肤应用（v2.1 外观设置）
+  useEffect(() => {
+    if (!settings) return;
+    document.documentElement.dataset.theme = settings.theme === "light" ? "light" : "dark";
+    const layer = document.querySelector<HTMLDivElement>(".skin-layer");
+    if (layer) {
+      if (settings.skin) {
+        layer.style.backgroundImage = `url(onetv-app://localhost/${encodeURIComponent(settings.skin)})`;
+        layer.style.backgroundSize = "cover";
+        layer.style.backgroundPosition = "center";
+        layer.style.opacity = String(settings.skinOpacity ?? 0.18);
+      } else {
+        layer.style.backgroundImage = "none";
+      }
+    }
+  }, [settings?.theme, settings?.skin, settings?.skinOpacity]);
+
+  if (!authed) {
+    return (
+      <>
+        <div className="skin-layer" />
+        <LoginView onSuccess={() => setAuthed(true)} />
+      </>
+    );
+  }
 
   const offline = settings?.offlineMode ?? false;
 
@@ -87,6 +116,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <div className="skin-layer" />
       {/* 顶栏 */}
       <header className="topbar">
         <div className="logo">
@@ -138,7 +168,7 @@ export default function App() {
         <span className="sep">|</span>
         <span>{offline ? "网络：Local-only（已禁止公网出站）" : "网络：仅允许已配置的 Provider"}</span>
         <span style={{ flex: 1 }} />
-        <span>OneTV v0.1.0 · Local-first · No telemetry</span>
+        <span>OneTV v2.1.0 · Local-first · No telemetry</span>
       </footer>
 
       <Toaster />

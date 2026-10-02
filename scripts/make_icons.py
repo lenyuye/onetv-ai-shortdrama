@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT.parent / "图标" / "圆角矩形图标版本.jpg"
+SRC = ROOT.parent / "图标" / "2.1.jpg"
 OUT_ICONS = ROOT / "apps" / "desktop" / "src-tauri" / "icons"
 OUT_PUBLIC = ROOT / "apps" / "desktop" / "public"
 
@@ -48,13 +48,12 @@ def main() -> None:
     canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
     canvas.paste(out, ((side - out.width) // 2, (side - out.height) // 2))
 
-    # 归一化到 1024，并做圆角保护（覆盖源图残留白边）
+    # 归一化到 1024；v2.1 图标为圆形构图，使用圆形 alpha 遮罩
     size = 1024
     icon = canvas.resize((size, size), Image.LANCZOS)
-    radius = int(size * 0.225)
     mask = Image.new("L", (size, size), 0)
     d = ImageDraw.Draw(mask)
-    d.rounded_rectangle([0, 0, size - 1, size - 1], radius=radius, fill=255)
+    d.ellipse([0, 0, size - 1, size - 1], fill=255)
     icon.putalpha(mask)
 
     OUT_ICONS.mkdir(parents=True, exist_ok=True)

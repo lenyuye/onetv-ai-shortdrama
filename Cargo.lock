@@ -2570,12 +2570,13 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "onetv-core"
-version = "0.1.0"
+version = "2.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
  "dirs 6.0.0",
  "futures",
+ "hex",
  "onetv-media",
  "onetv-project",
  "onetv-security",
@@ -2584,6 +2585,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -2595,7 +2597,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-desktop"
-version = "0.1.0"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "onetv-core",
@@ -2616,7 +2618,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-media"
-version = "0.1.0"
+version = "2.1.0"
 dependencies = [
  "parking_lot",
  "serde",
@@ -2629,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-project"
-version = "0.1.0"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -2648,7 +2650,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-security"
-version = "0.1.0"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",

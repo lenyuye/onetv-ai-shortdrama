@@ -32,6 +32,8 @@ pub struct AppState {
     pub audit: Arc<AuditLog>,
     pub project: RwLock<OpenedProject>,
     pub skills: onetv_core::skills::SkillHub,
+    pub auth: onetv_core::auth::AuthStore,
+    pub logged_in: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
@@ -90,6 +92,14 @@ fn settings_update(state: TState, patch: serde_json::Value) -> Result<AppSetting
 }
 
 fn apply_patch(s: &mut AppSettings, patch: &serde_json::Value) {
+    if let Some(v) = patch.get("theme").and_then(|v| v.as_str()) {
+        if v == "dark" || v == "light" {
+            s.theme = v.into();
+        }
+    }
+    if let Some(v) = patch.get("skinOpacity").and_then(|v| v.as_f64()) {
+        s.skin_opacity = v.clamp(0.0, 1.0);
+    }
     if let Some(v) = patch.get("offlineMode").and_then(|v| v.as_bool()) {
         s.offline_mode = v;
     }
@@ -166,42 +176,36 @@ fn workspace_recent_add(state: TState, path: String, name: String) {
 
 /* ---------------- 文件选择 ---------------- */
 
+// ⚠️ 对话框必须在非主线程上以 blocking 模式打开：同步命令运行在主线程，
+// 会阻塞事件循环导致面板冻结（v2.0 的 bug）。所有对话框命令一律 async。
+use tauri_plugin_dialog::DialogExt;
+
+fn pick_path(app: &tauri::AppHandle, title: String, folder: bool) -> Option<PathBuf> {
+    let mut dialog = app.dialog().file().set_title(title);
+    let picked = if folder {
+        dialog.blocking_pick_folder()
+    } else {
+        dialog.blocking_pick_file()
+    };
+    picked.and_then(|p| p.as_path().map(|p| p.to_path_buf()))
+}
+
 fn save_path(app: &tauri::AppHandle, title: String, default_name: String) -> Option<PathBuf> {
-    use tauri_plugin_dialog::DialogExt;
-    let (tx, rx) = std::sync::mpsc::channel::<Option<PathBuf>>();
     app.dialog()
         .file()
         .set_title(title)
         .set_file_name(default_name)
-        .save_file(move |f| {
-            let _ = tx.send(f.and_then(|p| p.as_path().map(|p| p.to_path_buf())));
-        });
-    rx.recv().ok().flatten()
-}
-
-fn pick_path(app: &tauri::AppHandle, title: String, folder: bool) -> Option<PathBuf> {
-    use tauri_plugin_dialog::DialogExt;
-    let (tx, rx) = std::sync::mpsc::channel::<Option<PathBuf>>();
-    let dialog = app.dialog().file().set_title(title);
-    if folder {
-        dialog.pick_folder(move |f| {
-            let _ = tx.send(f.and_then(|p| p.as_path().map(|p| p.to_path_buf())));
-        });
-    } else {
-        dialog.pick_file(move |f| {
-            let _ = tx.send(f.and_then(|p| p.as_path().map(|p| p.to_path_buf())));
-        });
-    }
-    rx.recv().ok().flatten()
+        .blocking_save_file()
+        .and_then(|p| p.as_path().map(|p| p.to_path_buf()))
 }
 
 #[tauri::command]
-fn pick_directory(app: tauri::AppHandle, title: String) -> Option<String> {
+async fn pick_directory(app: tauri::AppHandle, title: String) -> Option<String> {
     pick_path(&app, title, true).map(|p| p.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
-fn pick_file(app: tauri::AppHandle, title: String) -> Option<String> {
+async fn pick_file(app: tauri::AppHandle, title: String) -> Option<String> {
     pick_path(&app, title, false).map(|p| p.to_string_lossy().into_owned())
 }
 
@@ -368,6 +372,36 @@ fn model_binding(id: &str, caps: &[Capability]) -> onetv_core::providers::ModelB
     }
 }
 
+/// onetv-app:// —— 仅服务应用数据目录 themes/ 内的皮肤文件（防路径穿越）。
+fn serve_app_file(uri: &tauri::http::Uri) -> tauri::http::Response<Cow<'static, [u8]>> {
+    let not_found = || {
+        tauri::http::Response::builder()
+            .status(404)
+            .body(Cow::Borrowed(&b"not found"[..]))
+            .unwrap()
+    };
+    let raw = uri.to_string();
+    let Some(rest) = raw.strip_prefix("onetv-app://") else { return not_found() };
+    let after_host = rest.split_once('/').map(|(_, r)| r).unwrap_or("");
+    let name = percent_decode(after_host.split('?').next().unwrap_or(""));
+    // 只允许 themes/<单个文件名>，禁子目录与穿越
+    if name.is_empty() || name.contains('/') || name.contains("..") {
+        return not_found();
+    }
+    let themes = onetv_core::app_data_dir().join("themes");
+    let path = themes.join(&name);
+    let Ok(canon) = std::fs::canonicalize(&path) else { return not_found() };
+    if !canon.starts_with(&themes) {
+        return not_found();
+    }
+    let Ok(bytes) = std::fs::read(&canon) else { return not_found() };
+    tauri::http::Response::builder()
+        .header("Content-Type", mime_of(&canon))
+        .header("Cache-Control", "no-store")
+        .body(Cow::Owned(bytes))
+        .unwrap()
+}
+
 /* ---------------- Agent ---------------- */
 
 #[derive(Serialize)]
@@ -505,6 +539,7 @@ fn provider_public(p: &onetv_core::providers::ProviderProfile, has_key: bool) ->
             ProviderDriverKind::Ollama => "ollama",
             ProviderDriverKind::Mock => "mock",
             ProviderDriverKind::Comfyui => "comfyui",
+            ProviderDriverKind::StableDiffusion => "stable-diffusion",
             ProviderDriverKind::Plugin => "plugin",
         },
         "baseUrl": p.base_url,
@@ -586,6 +621,11 @@ async fn provider_test(
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         }
+        ProviderDriverKind::StableDiffusion => {
+            onetv_core::providers::sd::health(agent.env.gateway(), &profile)
+                .await
+                .map_err(|e| e.to_string())
+        }
         ProviderDriverKind::CustomHttp | ProviderDriverKind::Comfyui | ProviderDriverKind::Plugin => {
             agent.env.gateway().check(&profile.base_url).map_err(|e| e.to_string())
         }
@@ -611,6 +651,9 @@ async fn provider_models(
         }
         ProviderDriverKind::OpenaiCompatible => {
             onetv_core::providers::openai::list_models(agent.env.gateway(), &profile).await
+        }
+        ProviderDriverKind::StableDiffusion => {
+            onetv_core::providers::sd::list_models(agent.env.gateway(), &profile).await
         }
         _ => Err(onetv_core::providers::gateway::GatewayError::PolicyDenied(
             "该驱动不支持自动读取模型，请手工填写".into(),
@@ -676,6 +719,104 @@ async fn playground_test(
     }
 }
 
+/* ---------------- 外观/主题皮肤 ---------------- */
+
+#[tauri::command]
+async fn theme_set_skin(
+    state: tauri::State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, CommandError> {
+    let Some(path) = pick_path(&app, "选择皮肤图片（jpg/png）".into(), false) else {
+        return Err(err("已取消"));
+    };
+    let themes_dir = onetv_core::app_data_dir().join("themes");
+    std::fs::create_dir_all(&themes_dir).map_err(err)?;
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .filter(|e| e == "jpg" || e == "jpeg" || e == "png" || e == "webp")
+        .unwrap_or_else(|| "jpg".into());
+    let name = format!("skin.{}", ext);
+    std::fs::copy(&path, themes_dir.join(&name)).map_err(err)?;
+    state.settings.update(|s| s.skin = Some(name.clone()));
+    Ok(serde_json::json!({ "ok": true, "skin": name }))
+}
+
+#[tauri::command]
+fn theme_clear_skin(state: TState) -> AppSettings {
+    state.settings.update(|s| s.skin = None)
+}
+
+/* ---------------- 本地账户（登录门） ---------------- */
+
+#[tauri::command]
+fn auth_status(state: TState) -> serde_json::Value {
+    let info = state.auth.info();
+    serde_json::json!({
+        "loggedIn": state.logged_in.load(std::sync::atomic::Ordering::Relaxed),
+        "username": info.as_ref().map(|i| i.username.clone()),
+        "email": info.as_ref().and_then(|i| i.email.clone()),
+        "hasDefaultPassword": info.as_ref().map(|i| i.has_default_password).unwrap_or(false),
+    })
+}
+
+#[tauri::command]
+fn auth_login(state: TState, username: String, password: String) -> Result<serde_json::Value, CommandError> {
+    let ok = state.auth.verify_login(&username, &password).map_err(err)?;
+    if ok {
+        state
+            .logged_in
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        state.audit.record("auth.login", &username, None);
+    }
+    Ok(serde_json::json!({ "ok": ok }))
+}
+
+#[tauri::command]
+fn auth_logout(state: TState) {
+    state
+        .logged_in
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn auth_change_credentials(
+    state: TState,
+    current_password: String,
+    new_username: Option<String>,
+    new_password: Option<String>,
+    email: Option<String>,
+) -> Result<serde_json::Value, CommandError> {
+    let info = state
+        .auth
+        .change_credentials(
+            &current_password,
+            new_username.as_deref(),
+            new_password.as_deref(),
+            email.as_deref(),
+        )
+        .map_err(err)?;
+    state.audit.record("auth.change_credentials", &info.username, None);
+    Ok(serde_json::json!({
+        "username": info.username,
+        "email": info.email,
+    }))
+}
+
+#[tauri::command]
+fn auth_reset_with_email(
+    state: TState,
+    email: String,
+    new_password: String,
+) -> Result<serde_json::Value, CommandError> {
+    state
+        .auth
+        .reset_with_email(&email, &new_password)
+        .map_err(err)?;
+    state.audit.record("auth.reset_with_email", "", None);
+    Ok(serde_json::json!({ "ok": true }))
+}
+
 /* ---------------- Skills ---------------- */
 
 #[tauri::command]
@@ -696,7 +837,7 @@ fn skill_list(state: TState) -> Vec<serde_json::Value> {
 }
 
 #[tauri::command]
-fn skill_install(state: TState, app: tauri::AppHandle) -> Result<serde_json::Value, CommandError> {
+async fn skill_install(state: tauri::State<'_, Arc<AppState>>, app: tauri::AppHandle) -> Result<serde_json::Value, CommandError> {
     let Some(dir) = pick_path(&app, "选择包含 skill.json 的 Skill 文件夹".into(), true) else {
         return Err(err("已取消"));
     };
@@ -743,8 +884,8 @@ fn video_understand(
 /* ---------------- 工程包导入导出 ---------------- */
 
 #[tauri::command]
-fn project_export_pkg(
-    state: TState,
+async fn project_export_pkg(
+    state: tauri::State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, CommandError> {
     let (root, manifest) = open_ctx(&state)?;
@@ -758,8 +899,8 @@ fn project_export_pkg(
 }
 
 #[tauri::command]
-fn project_import_pkg(
-    state: TState,
+async fn project_import_pkg(
+    state: tauri::State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, CommandError> {
     let Some(zip_path) = pick_path(&app, "选择 .ytv.zip 工程包".into(), false) else {
@@ -1016,6 +1157,8 @@ pub fn run() {
 
     let policy = Arc::new(RwLock::new(policy));
     let skills = onetv_core::skills::SkillHub::new(&data_dir.join("skills"));
+    let auth = onetv_core::auth::AuthStore::new(&data_dir);
+    auth.ensure_initialized().ok();
     // 内置 Skills 预置安装（开发环境仓库 skills/；打包后可经资源目录）
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let builtin = PathBuf::from(&manifest_dir).join("../../../skills");
@@ -1030,6 +1173,8 @@ pub fn run() {
         audit,
         project: RwLock::new(OpenedProject::default()),
         skills,
+        auth,
+        logged_in: std::sync::atomic::AtomicBool::new(false),
     });
 
     tauri::Builder::default()
@@ -1039,6 +1184,9 @@ pub fn run() {
         .register_uri_scheme_protocol("onetv-asset", |ctx, request| {
             let st = ctx.app_handle().state::<Arc<AppState>>();
             serve_asset(&st, request.uri())
+        })
+        .register_uri_scheme_protocol("onetv-app", |ctx, request| {
+            serve_app_file(request.uri())
         })
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -1136,6 +1284,13 @@ pub fn run() {
             video_understand,
             project_export_pkg,
             project_import_pkg,
+            theme_set_skin,
+            theme_clear_skin,
+            auth_status,
+            auth_login,
+            auth_logout,
+            auth_change_credentials,
+            auth_reset_with_email,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OneTV");

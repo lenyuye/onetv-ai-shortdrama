@@ -509,6 +509,10 @@ export interface AppSettings {
   maxConcurrentJobs: number;
   autoSaveIntervalSec: number;
   defaultProjectFolder?: string;
+  /** v2.1 自定义皮肤图片（应用数据 themes/ 内文件名） */
+  skin?: string;
+  /** v2.1 皮肤不透明度 0-1 */
+  skinOpacity?: number;
 }
 
 /* ------------------------------------------------------------------ */

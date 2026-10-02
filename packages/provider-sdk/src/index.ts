@@ -58,6 +58,15 @@ export const PROVIDER_DRIVERS: ProviderDriverInfo[] = [
     capabilities: ["image_generation", "video_generation", "tts", "chat"],
   },
   {
+    driver: "stable-diffusion" as ProviderDriver,
+    label: "Stable Diffusion（本地）",
+    description: "AUTOMATIC1111 / Forge WebUI，本机生图辅助资产；不出公网，Local-only 可用",
+    defaultBaseUrl: "http://127.0.0.1:7860",
+    defaultTimeoutMs: 600000,
+    supportsModelListing: true,
+    capabilities: ["image_generation", "image_edit"] as Capability[],
+  },
+  {
     driver: "comfyui",
     label: "ComfyUI（本地）",
     description: "本地 ComfyUI 工作流，用于生图/生视频（P1）",
@@ -106,4 +115,4 @@ export function maskBaseUrl(url: string): string {
   }
 }
 
-export type { ProviderProfile, Capability };
+export type { ProviderProfile, Capability, ProviderDriver };

@@ -31,6 +31,16 @@ pub struct AppSettings {
     /// 网络策略：用户明确允许的主机（来自 Provider Base URL）
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
+    /// 自定义皮肤图片（存于应用数据目录 themes/ 下的文件名，onetv-app:// 提供）
+    #[serde(default)]
+    pub skin: Option<String>,
+    /// 皮肤不透明度 0.0 ~ 1.0
+    #[serde(default = "default_skin_opacity")]
+    pub skin_opacity: f64,
+}
+
+fn default_skin_opacity() -> f64 {
+    0.18
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +65,8 @@ impl Default for AppSettings {
             default_project_folder: None,
             recent_projects: Vec::new(),
             allowed_hosts: Vec::new(),
+            skin: None,
+            skin_opacity: default_skin_opacity(),
         }
     }
 }

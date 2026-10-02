@@ -489,3 +489,141 @@ textarea { resize: vertical; min-height: 64px; }
   justify-content: flex-end;
   gap: 10px;
 }
+
+/* ============================================================
+   v2.1：浅色主题 / 自定义皮肤 / 登录界面
+   ============================================================ */
+
+/* ---------- 皮肤层（自定义图片皮肤，铺在最底层） ---------- */
+.skin-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: center;
+  opacity: 0.18;
+  transition: opacity 0.2s;
+}
+.app-shell > *:not(.skin-layer),
+.login-card {
+  position: relative;
+  z-index: 1;
+}
+
+/* ---------- 浅色主题 ---------- */
+html[data-theme="light"] {
+  --bg: #f2f4fa;
+  --bg-deep: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f6f7fc;
+  --panel-3: #eceef8;
+  --border: #dfe3f0;
+  --border-strong: #c8cfe4;
+  --text: #1c2340;
+  --text-dim: #3d4668;
+  --muted: #7a83a8;
+  --shadow: 0 8px 32px rgba(30, 40, 90, 0.12);
+}
+html[data-theme="light"] body {
+  background: var(--bg);
+  color: var(--text);
+}
+html[data-theme="light"] .topbar {
+  background: linear-gradient(180deg, #ffffff 0%, #f4f6fd 100%);
+}
+html[data-theme="light"] .leftnav,
+html[data-theme="light"] .bottombar,
+html[data-theme="light"] .rightbar {
+  background: #ffffff;
+}
+html[data-theme="light"] .nav-item.active {
+  background: linear-gradient(90deg, rgba(255, 61, 154, 0.08), transparent 70%), #f6f7fc;
+  color: #c2257d;
+}
+html[data-theme="light"] .nav-item:hover {
+  background: #f2f4fb;
+  color: var(--text);
+}
+html[data-theme="light"] .nav-item { color: #45507a; }
+html[data-theme="light"] .card { background: #ffffff; }
+html[data-theme="light"] input[type="text"],
+html[data-theme="light"] input[type="password"],
+html[data-theme="light"] input[type="number"],
+html[data-theme="light"] textarea,
+html[data-theme="light"] select {
+  background: #f7f8fd;
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+html[data-theme="light"] .table td { color: var(--text-dim); }
+html[data-theme="light"] .table th { color: var(--muted); }
+html[data-theme="light"] .tag { background: #f0f2fb; border-color: var(--border-strong); color: #45507a; }
+html[data-theme="light"] .toast { background: #ffffff; }
+html[data-theme="light"] .modal { background: #ffffff; }
+html[data-theme="light"] .pill { background: #f4f6fd; }
+
+/* ---------- 登录界面 ---------- */
+.login-wrap {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(1200px 600px at 20% 10%, rgba(255, 61, 154, 0.12), transparent 60%),
+    radial-gradient(1000px 500px at 85% 85%, rgba(77, 124, 254, 0.14), transparent 60%),
+    var(--bg);
+}
+html[data-theme="light"] .login-wrap {
+  background:
+    radial-gradient(1200px 600px at 20% 10%, rgba(255, 61, 154, 0.07), transparent 60%),
+    radial-gradient(1000px 500px at 85% 85%, rgba(77, 124, 254, 0.08), transparent 60%),
+    var(--bg);
+}
+.login-card {
+  width: 400px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 34px 34px 22px;
+}
+.login-logo { text-align: center; margin-bottom: 22px; }
+.login-logo img {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  box-shadow: var(--glow-pink);
+}
+.login-logo h1 { font-size: 22px; margin-top: 10px; letter-spacing: 1px; }
+.login-logo p { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.login-err {
+  background: rgba(255, 84, 112, 0.1);
+  border: 1px solid rgba(255, 84, 112, 0.35);
+  color: var(--red);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  font-size: 12px;
+  margin: 4px 0 8px;
+}
+.login-btn { width: 100%; justify-content: center; padding: 10px; font-size: 14px; margin-top: 6px; }
+.login-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.login-foot a { color: var(--blue); cursor: pointer; white-space: nowrap; }
+.login-privacy {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  text-align: center;
+  font-size: 10.5px;
+  color: var(--muted);
+}

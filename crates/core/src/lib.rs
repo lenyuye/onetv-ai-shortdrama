@@ -1,6 +1,7 @@
 //! OneTV 核心：应用设置、数据目录、最近工作区、Provider 体系、Agent 引擎、Job 队列。
 
 pub mod agent;
+pub mod auth;
 pub mod jobs;
 pub mod pkg;
 pub mod skills;

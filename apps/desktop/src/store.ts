@@ -28,6 +28,9 @@ interface AppState {
   view: ViewKey;
   setView: (v: ViewKey) => void;
 
+  authed: boolean;
+  setAuthed: (v: boolean) => void;
+
   settings: AppSettings | null;
   loadSettings: () => Promise<void>;
   patchSettings: (patch: Partial<AppSettings>) => Promise<void>;
@@ -52,6 +55,9 @@ let toastSeq = 1;
 export const useApp = create<AppState>((set, get) => ({
   view: "home",
   setView: (v) => set({ view: v }),
+
+  authed: false,
+  setAuthed: (v) => set({ authed: v }),
 
   settings: null,
   loadSettings: async () => {

@@ -7,6 +7,7 @@ pub mod gateway;
 pub mod mock;
 pub mod ollama;
 pub mod openai;
+pub mod sd;
 pub mod router;
 
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,8 @@ pub enum ProviderDriverKind {
     Ollama,
     Mock,
     Comfyui,
+    /// Stable Diffusion WebUI（AUTOMATIC1111/Forge，本地生图）
+    StableDiffusion,
     Plugin,
 }
 

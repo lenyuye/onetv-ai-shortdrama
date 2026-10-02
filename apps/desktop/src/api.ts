@@ -4,11 +4,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
-  AppSettings,
   EpisodeInfo,
   ProjectManifest,
   ProviderProfile,
 } from "@onetv/shared-types";
+
+import type { AppSettings } from "@onetv/shared-types";
+export type { AppSettings } from "@onetv/shared-types";
 
 /* ---------------- 设置 ---------------- */
 
@@ -86,3 +88,30 @@ export const providerModels = (id: string) =>
 export function onAppEvent<T>(name: string, cb: (payload: T) => void): Promise<UnlistenFn> {
   return listen<T>(name, (e) => cb(e.payload));
 }
+
+/* ---------------- 本地账户（v2.1） ---------------- */
+
+export interface AuthStatus {
+  loggedIn: boolean;
+  username: string | null;
+  email: string | null;
+  hasDefaultPassword: boolean;
+}
+export const authStatus = () => invoke<AuthStatus>("auth_status");
+export const authLogin = (username: string, password: string) =>
+  invoke<{ ok: boolean }>("auth_login", { username, password });
+export const authLogout = () => invoke<void>("auth_logout");
+export const authChangeCredentials = (input: {
+  currentPassword: string;
+  newUsername?: string;
+  newPassword?: string;
+  email?: string;
+}) => invoke<{ username: string; email: string | null }>("auth_change_credentials", input);
+export const authResetWithEmail = (email: string, newPassword: string) =>
+  invoke<{ ok: boolean }>("auth_reset_with_email", { email, newPassword });
+
+/* ---------------- 外观/皮肤（v2.1） ---------------- */
+
+export const themeSetSkin = () =>
+  invoke<{ ok: boolean; skin: string }>("theme_set_skin");
+export const themeClearSkin = () => invoke<AppSettings>("theme_clear_skin");
