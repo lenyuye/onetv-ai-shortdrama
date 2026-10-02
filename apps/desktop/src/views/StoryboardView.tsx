@@ -472,7 +472,13 @@ export default function StoryboardView() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <span>
-                {aiContext === "split" ? "🎬 从剧本拆分镜头" : "✨ 批量生成分镜图"}
+                {aiContext === "split"
+                  ? "🎬 从剧本拆分镜头"
+                  : aiContext === "compose"
+                    ? "🎞️ 合成成片"
+                    : aiContext === "export"
+                      ? "📤 导出竖版"
+                      : "✨ 批量生成分镜图"}
                 {epTitle ? ` · ${epTitle}` : ""}
               </span>
               <button className="btn sm ghost" onClick={closeAi}>×</button>

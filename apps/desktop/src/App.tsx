@@ -15,6 +15,7 @@ import StoryboardView from "./views/StoryboardView";
 import JobsView from "./views/JobsView";
 import SkillsView from "./views/SkillsView";
 import LoginView from "./views/LoginView";
+import AgentChatView from "./views/AgentChatView";
 import { Toaster } from "./components/Toaster";
 
 const NAV: { key: ViewKey; icon: string; label: string; section: string }[] = [
@@ -51,10 +52,13 @@ export default function App() {
     const layer = document.querySelector<HTMLDivElement>(".skin-layer");
     if (layer) {
       if (settings.skin) {
-        layer.style.backgroundImage = `url(onetv-app://localhost/${encodeURIComponent(settings.skin)})`;
+        const img = `url(onetv-app://localhost/${encodeURIComponent(settings.skin)})`;
+        // 浓度 = 主题色遮罩不透明度：0% 完全露出皮肤，100% 几乎纯主题色（文字始终锐利）
+        const veil = Math.min(0.92, Math.max(0, 1 - (settings.skinOpacity ?? 0.18) * 2));
+        const rgb = settings.theme === "light" ? "242, 244, 250" : "10, 13, 24";
+        layer.style.backgroundImage = `linear-gradient(rgba(${rgb}, ${veil.toFixed(2)}), rgba(${rgb}, ${veil.toFixed(2)})), ${img}`;
         layer.style.backgroundSize = "cover";
         layer.style.backgroundPosition = "center";
-        layer.style.opacity = String(settings.skinOpacity ?? 0.18);
       } else {
         layer.style.backgroundImage = "none";
       }
@@ -103,6 +107,9 @@ export default function App() {
       break;
     case "skills":
       main = <SkillsView />;
+      break;
+    case "agent":
+      main = <AgentChatView />;
       break;
     default:
       main = (
@@ -168,7 +175,7 @@ export default function App() {
         <span className="sep">|</span>
         <span>{offline ? "网络：Local-only（已禁止公网出站）" : "网络：仅允许已配置的 Provider"}</span>
         <span style={{ flex: 1 }} />
-        <span>OneTV v2.1.0 · Local-first · No telemetry</span>
+        <span>OneTV v2.2.0 · Local-first · No telemetry</span>
       </footer>
 
       <Toaster />

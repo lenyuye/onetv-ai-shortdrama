@@ -106,9 +106,35 @@ export const authChangeCredentials = (input: {
   newUsername?: string;
   newPassword?: string;
   email?: string;
+  emailCode?: string;
 }) => invoke<{ username: string; email: string | null }>("auth_change_credentials", input);
-export const authResetWithEmail = (email: string, newPassword: string) =>
-  invoke<{ ok: boolean }>("auth_reset_with_email", { email, newPassword });
+export const authResetWithEmail = (email: string, newPassword: string, emailCode?: string) =>
+  invoke<{ ok: boolean }>("auth_reset_with_email", { email, newPassword, emailCode });
+
+export const authSendCode = (purpose: "change" | "reset", email: string, currentPassword?: string) =>
+  invoke<{ sent: boolean; message?: string; reason?: string }>("auth_send_code", {
+    purpose,
+    email,
+    currentPassword,
+  });
+
+export interface MailConfigInfo {
+  configured: boolean;
+  host?: string;
+  port?: number;
+  useTls?: boolean;
+  preset?: [string, number, boolean] | null;
+}
+export const mailConfigGet = (email: string) => invoke<MailConfigInfo>("mail_config_get", { email });
+export const mailConfigSave = (input: {
+  email: string;
+  smtpHost: string;
+  smtpPort: number;
+  useTls: boolean;
+  authCode: string;
+}) => invoke<{ ok: boolean }>("mail_config_save", input);
+export const mailTestSend = (email: string) =>
+  invoke<{ ok: boolean; message: string }>("mail_test_send", { email });
 
 /* ---------------- 外观/皮肤（v2.1） ---------------- */
 

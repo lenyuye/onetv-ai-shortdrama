@@ -68,8 +68,11 @@ impl ModelRouter {
             return Err(RouteError::NoProvider(capability.as_str().into()));
         }
 
-        // 优先本地 → 再按创建时间稳定排序
-        candidates.sort_by_key(|p| (!is_local_base(&p.base_url), p.created_at.clone()));
+        // 优先本地 → 再按创建时间稳定排序（空 created_at 视为最新，避免抢占既有默认）
+        candidates.sort_by_key(|p| {
+            let created = if p.created_at.is_empty() { "9999".to_string() } else { p.created_at.clone() };
+            (!is_local_base(&p.base_url), created)
+        });
 
         let primary = candidates[0];
         let model = preferred_model

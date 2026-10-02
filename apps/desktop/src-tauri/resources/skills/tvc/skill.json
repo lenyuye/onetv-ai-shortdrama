@@ -1,0 +1,13 @@
+{
+  "id": "tvc",
+  "name": "TVC / 产品展示片导演",
+  "version": "1.0.0",
+  "description": "产品资料 → 卖点脚本 → 镜头表 → 生成 → 合成 15/30/60s 展示片",
+  "author": "OneTV",
+  "license": "Apache-2.0",
+  "permissions": { "network": ["provider"], "filesystem": ["project"] },
+  "inputs": ["product_brief", "duration_sec"],
+  "outputs": ["script", "storyboard", "timeline"],
+  "entry": "workflows/main.json",
+  "trustLevel": 2
+}

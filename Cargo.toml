@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/onetv-labs/onetv"
@@ -42,6 +42,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rusqlite = { version = "0.32", features = ["bundled"] }
 keyring = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "rustls-tls", "tokio1", "tokio1-rustls"] }
 
 tauri = { version = "2", features = [] }
 tauri-build = { version = "2", features = [] }

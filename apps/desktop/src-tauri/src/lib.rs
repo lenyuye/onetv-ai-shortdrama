@@ -63,6 +63,10 @@ pub struct AgentState {
 
 static AGENT: std::sync::OnceLock<Arc<AgentState>> = std::sync::OnceLock::new();
 
+fn verify_store_named() -> onetv_core::mail::VerificationStore {
+    onetv_core::mail::VerificationStore::new(&onetv_core::app_data_dir().join("verify"))
+}
+
 #[derive(Serialize)]
 struct CommandError {
     message: String,
@@ -553,6 +557,7 @@ fn provider_public(p: &onetv_core::providers::ProviderProfile, has_key: bool) ->
         "enabled": p.enabled,
         "hasKey": has_key,
         "httpTemplate": p.http_template,
+        "createdAt": p.created_at,
     })
 }
 
@@ -626,6 +631,11 @@ async fn provider_test(
                 .await
                 .map_err(|e| e.to_string())
         }
+        ProviderDriverKind::Comfyui => {
+            onetv_core::providers::comfyui::health(agent.env.gateway(), &profile)
+                .await
+                .map_err(|e| e.to_string())
+        }
         ProviderDriverKind::CustomHttp | ProviderDriverKind::Comfyui | ProviderDriverKind::Plugin => {
             agent.env.gateway().check(&profile.base_url).map_err(|e| e.to_string())
         }
@@ -654,6 +664,9 @@ async fn provider_models(
         }
         ProviderDriverKind::StableDiffusion => {
             onetv_core::providers::sd::list_models(agent.env.gateway(), &profile).await
+        }
+        ProviderDriverKind::Comfyui => {
+            onetv_core::providers::comfyui::list_models(agent.env.gateway(), &profile).await
         }
         _ => Err(onetv_core::providers::gateway::GatewayError::PolicyDenied(
             "该驱动不支持自动读取模型，请手工填写".into(),
@@ -747,6 +760,152 @@ fn theme_clear_skin(state: TState) -> AppSettings {
     state.settings.update(|s| s.skin = None)
 }
 
+/* ---------------- 邮件发送配置 + 验证码（v2.2） ---------------- */
+
+fn mail_store() -> Vec<onetv_core::mail::MailConfig> {
+    let path = onetv_core::app_data_dir().join("mail.json");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_mail_store(configs: &[onetv_core::mail::MailConfig]) -> Result<(), CommandError> {
+    let path = onetv_core::app_data_dir().join("mail.json");
+    std::fs::write(&path, serde_json::to_string_pretty(configs).map_err(err)?).map_err(err)
+}
+
+fn mail_config_of(email: &str) -> Option<(onetv_core::mail::MailConfig, String)> {
+    let configs = mail_store();
+    let cfg = configs.iter().find(|c| c.email == email)?.clone();
+    let secret = onetv_security::SecretStore::get(&format!("mail/{email}")).ok().flatten()?;
+    Some((cfg, secret))
+}
+
+#[tauri::command]
+async fn mail_config_save(
+    state: tauri::State<'_, Arc<AppState>>,
+    email: String,
+    smtp_host: String,
+    smtp_port: u16,
+    use_tls: bool,
+    auth_code: String,
+) -> Result<serde_json::Value, CommandError> {
+    let email = onetv_core::mail::validate_email(&email).map_err(err)?;
+    let cfg = onetv_core::mail::MailConfig {
+        email: email.clone(),
+        smtp_host: smtp_host.trim().into(),
+        smtp_port,
+        use_tls,
+    };
+    let mut configs = mail_store();
+    configs.retain(|c| c.email != email);
+    configs.push(cfg.clone());
+    save_mail_store(&configs)?;
+    onetv_security::SecretStore::set(&format!("mail/{email}"), &auth_code).map_err(err)?;
+    state.audit.record("mail.config_save", &email, None);
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
+fn mail_config_get(email: String) -> serde_json::Value {
+    let email = email.trim().to_lowercase();
+    match mail_config_of(&email) {
+        Some((cfg, _)) => serde_json::json!({
+            "configured": true, "host": cfg.smtp_host, "port": cfg.smtp_port, "useTls": cfg.use_tls,
+            "preset": onetv_core::mail::preset_for(&email),
+        }),
+        None => serde_json::json!({
+            "configured": false,
+            "preset": onetv_core::mail::preset_for(&email),
+        }),
+    }
+}
+
+#[tauri::command]
+async fn mail_test_send(state: tauri::State<'_, Arc<AppState>>, email: String) -> Result<serde_json::Value, CommandError> {
+    let email = onetv_core::mail::validate_email(&email).map_err(err)?;
+    let Some((cfg, secret)) = mail_config_of(&email) else {
+        return Err(err("尚未配置该邮箱的 SMTP 发送设置"));
+    };
+    let email_for_send = email.clone();
+    let send = tokio::task::spawn_blocking(move || {
+        onetv_core::mail::send_code_mail(&cfg, &secret, &email_for_send, "000000")
+    })
+    .await
+    .map_err(|e| err(e.to_string()))?;
+    match send {
+        Ok(()) => {
+            state.audit.record("mail.test_send", &email, None);
+            Ok(serde_json::json!({ "ok": true, "message": "测试邮件已发送，请查收（含演示验证码 000000）" }))
+        }
+        Err(e) => Ok(serde_json::json!({ "ok": false, "message": e.to_string() })),
+    }
+}
+
+/// 发送验证码。purpose: "change"（设置中修改账户）| "reset"（登录页忘记密码）
+#[tauri::command]
+async fn auth_send_code(
+    state: tauri::State<'_, Arc<AppState>>,
+    purpose: String,
+    email: String,
+    current_password: Option<String>,
+) -> Result<serde_json::Value, CommandError> {
+    let email = onetv_core::mail::validate_email(&email).map_err(err)?;
+    let info = state.auth.info().ok_or_else(|| err("账户未初始化"))?;
+    if !matches!(purpose.as_str(), "change" | "reset") {
+        return Err(err("非法用途"));
+    }
+    if purpose == "change" {
+        // 设置中发码：需当前密码正确，且邮箱与绑定一致（或即将绑定）
+        let Some(pw) = &current_password else {
+            return Err(err("请先输入当前密码"));
+        };
+        let ok = state.auth.verify_login(&info.username, pw).map_err(err)?;
+        if !ok {
+            return Err(err("当前密码不正确"));
+        }
+    }
+    let bound_ok = info.email.as_deref() == Some(email.as_str());
+    if purpose == "reset" && !bound_ok {
+        return Err(err("该邮箱与绑定邮箱不一致"));
+    }
+    if purpose == "change" && info.email.is_some() && !bound_ok {
+        return Err(err("该邮箱与绑定邮箱不一致"));
+    }
+    if info.has_default_password && purpose == "reset" {
+        return Err(err("你还未设置账号和密码，请按默认方式登录（admin / 12345）"));
+    }
+
+    let Some((cfg, secret)) = mail_config_of(&email) else {
+        // 未配置 SMTP：明确告知（前端允许降级为仅地址校验，见各提交命令）
+        return Ok(serde_json::json!({
+            "sent": false,
+            "reason": "尚未配置该邮箱的 SMTP 发送设置。请在「邮件发送设置」中填写服务商与授权码；未配置时修改/重置将退回为仅验证邮箱地址。",
+        }));
+    };
+    let code = onetv_core::mail::generate_code();
+    verify_store_named()
+        .issue(&email, &purpose, &code)
+        .map_err(err)?;
+    let email_for_send = email.clone();
+    let send = tokio::task::spawn_blocking(move || {
+        onetv_core::mail::send_code_mail(&cfg, &secret, &email_for_send, &code)
+    })
+    .await
+    .map_err(|e| err(e.to_string()))?;
+    match send {
+        Ok(()) => {
+            state.audit.record("auth.code_sent", &email, Some(serde_json::json!({"purpose": purpose})));
+            Ok(serde_json::json!({ "sent": true, "message": format!("验证码已发送至 {email}，5 分钟内有效") }))
+        }
+        Err(e) => {
+            verify_store_named().revoke(&email, &purpose);
+            Ok(serde_json::json!({ "sent": false, "reason": format!("发送失败：{e}。请检查 SMTP 设置（服务商授权码而非登录密码）") }))
+        }
+    }
+}
+
 /* ---------------- 本地账户（登录门） ---------------- */
 
 #[tauri::command]
@@ -786,7 +945,20 @@ fn auth_change_credentials(
     new_username: Option<String>,
     new_password: Option<String>,
     email: Option<String>,
+    email_code: Option<String>,
 ) -> Result<serde_json::Value, CommandError> {
+    // 已配置 SMTP 的邮箱：必须先通过验证码（v2.2 要求）
+    if let Some(e) = email.as_deref().map(|s| s.to_string()).or_else(|| state.auth.info().and_then(|i| i.email)) {
+        let e = e.to_lowercase();
+        if mail_config_of(&e).is_some() {
+            let Some(code) = &email_code else {
+                return Err(err("该邮箱已启用验证码验证：请先点击「发送验证码」并填入邮件中的 6 位验证码"));
+            };
+            verify_store_named()
+                .verify(&e, "change", code)
+                .map_err(err)?;
+        }
+    }
     let info = state
         .auth
         .change_credentials(
@@ -808,7 +980,17 @@ fn auth_reset_with_email(
     state: TState,
     email: String,
     new_password: String,
+    email_code: Option<String>,
 ) -> Result<serde_json::Value, CommandError> {
+    let e = email.trim().to_lowercase();
+    if mail_config_of(&e).is_some() {
+        let Some(code) = &email_code else {
+            return Err(err("该邮箱已启用验证码验证：请先点击「发送验证码」并填入邮件中的 6 位验证码"));
+        };
+        verify_store_named()
+            .verify(&e, "reset", code)
+            .map_err(err)?;
+    }
     state
         .auth
         .reset_with_email(&email, &new_password)
@@ -1010,7 +1192,11 @@ fn mirror_canvas_to_db(
 /* ---------------- 资产 ---------------- */
 
 #[tauri::command]
-fn asset_import(state: TState, app: tauri::AppHandle, kind: String) -> Result<onetv_project::ops::AssetRecord, CommandError> {
+async fn asset_import(
+    state: tauri::State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+    kind: String,
+) -> Result<onetv_project::ops::AssetRecord, CommandError> {
     let (root, _) = open_ctx(&state)?;
     let Some(path) = pick_path(&app, "选择要导入的素材文件".into(), false) else {
         return Err(err("已取消"));
@@ -1159,11 +1345,26 @@ pub fn run() {
     let skills = onetv_core::skills::SkillHub::new(&data_dir.join("skills"));
     let auth = onetv_core::auth::AuthStore::new(&data_dir);
     auth.ensure_initialized().ok();
-    // 内置 Skills 预置安装（开发环境仓库 skills/；打包后可经资源目录）
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let builtin = PathBuf::from(&manifest_dir).join("../../../skills");
-        if builtin.is_dir() {
-            onetv_core::skills::seed_builtin(&skills, &builtin);
+    // 内置 Skills 预置安装：多路径探测（dev target/debug → 仓库 skills/；打包 .app → Resources/skills）
+    {
+        let mut builtin: Option<PathBuf> = None;
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                for cand in [
+                    dir.join("../../skills"),        // target/debug|release → 仓库 skills/
+                    dir.join("../Resources/skills"), // .app/Contents/MacOS → Resources
+                    dir.join("../skills"),           // target → 仓库
+                ] {
+                    if cand.join("short-drama").join("skill.json").is_file() {
+                        builtin = Some(cand);
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(b) = builtin {
+            onetv_core::skills::seed_builtin(&skills, &b);
+            tracing::info!(dir = %b.display(), "builtin skills seeded");
         }
     }
     let state = Arc::new(AppState {
@@ -1291,6 +1492,10 @@ pub fn run() {
             auth_logout,
             auth_change_credentials,
             auth_reset_with_email,
+            mail_config_save,
+            mail_config_get,
+            mail_test_send,
+            auth_send_code,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OneTV");

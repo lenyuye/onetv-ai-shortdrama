@@ -494,7 +494,9 @@ textarea { resize: vertical; min-height: 64px; }
    v2.1：浅色主题 / 自定义皮肤 / 登录界面
    ============================================================ */
 
-/* ---------- 皮肤层（自定义图片皮肤，铺在最底层） ---------- */
+/* ---------- 皮肤层（自定义图片皮肤，铺在最底层） ----------
+   不用 opacity 覆盖层：半透明合成层会让 WKWebView 文字栅格化发糊。
+   改为「图片 + 主题色渐变叠加」：滑杆调渐变浓度（等效清晰度），文字始终锐利。 */
 .skin-layer {
   position: fixed;
   inset: 0;
@@ -503,8 +505,6 @@ textarea { resize: vertical; min-height: 64px; }
   background-repeat: no-repeat;
   background-size: cover;
   background-position: center;
-  opacity: 0.18;
-  transition: opacity 0.2s;
 }
 .app-shell > *:not(.skin-layer),
 .login-card {
@@ -583,8 +583,7 @@ html[data-theme="light"] .login-wrap {
 }
 .login-card {
   width: 400px;
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  backdrop-filter: blur(14px);
+  background: var(--panel);
   border: 1px solid var(--border-strong);
   border-radius: 16px;
   box-shadow: var(--shadow);

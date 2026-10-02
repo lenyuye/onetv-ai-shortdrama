@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OneTV",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "identifier": "com.onetv.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm build && bash src-tauri/sync-skills.sh",
     "frontendDist": "../dist"
   },
   "app": {
@@ -29,9 +29,17 @@
   "bundle": {
     "active": true,
     "category": "Productivity",
-    "targets": ["app", "dmg"],
-    "icon": ["icons/icon.icns"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "icon": [
+      "icons/icon.icns"
+    ],
     "shortDescription": "本地优先的开源短剧 Agent 桌面工作台",
-    "longDescription": "OneTV：画布节点 + Agent 编排 + 短剧资产管理 + 多模型 Provider + 本地 FFmpeg 合成。Local-first、无遥测、API Key 存于系统钥匙串。"
+    "longDescription": "OneTV：画布节点 + Agent 编排 + 短剧资产管理 + 多模型 Provider + 本地 FFmpeg 合成。Local-first、无遥测、API Key 存于系统钥匙串。",
+    "resources": [
+      "resources/skills/**/*"
+    ]
   }
 }

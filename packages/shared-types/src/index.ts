@@ -286,6 +286,7 @@ export type ProviderDriver =
   | "ollama"
   | "mock"
   | "comfyui"
+  | "stable-diffusion"
   | "plugin";
 
 export type Capability =

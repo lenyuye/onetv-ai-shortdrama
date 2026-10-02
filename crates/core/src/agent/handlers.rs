@@ -172,6 +172,22 @@ async fn generate_one_image(
             .await
             .map_err(|e| transient(e.to_string()))
         }
+        ProviderDriverKind::Comfyui => {
+            // 与 SD 驱动同一逻辑：本地直连、免鉴权、Local-only 可用
+            crate::providers::comfyui::txt2img(
+                env.gateway(),
+                &decision.provider,
+                &decision.model_id,
+                prompt,
+                "低质量, 模糊, 变形, 多余肢体, 文字水印",
+                aspect,
+                20,
+                out_dir,
+                || false,
+            )
+            .await
+            .map_err(|e| transient(e.to_string()))
+        }
         other => Err(fatal(format!("驱动 {other:?} 暂不支持生图；请使用 OpenAI 兼容 / Mock Provider"))),
     }
 }

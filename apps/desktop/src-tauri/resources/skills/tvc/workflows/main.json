@@ -1,0 +1,9 @@
+{
+  "steps": [
+    { "id": "s1", "tool": "bible.generate", "input": { "mode": "product" }, "dependsOn": [], "description": "产品卖点 → 视觉风格与场景库" },
+    { "id": "s2", "tool": "script.generate", "input": { "format": "tvc", "duration": "${input.duration_sec}" }, "dependsOn": ["s1"], "approval": "auto", "description": "生成 TVC 分镜脚本（画面/旁白/字幕/节奏）" },
+    { "id": "s3", "tool": "shot.split", "input": { "episode": "s2" }, "dependsOn": ["s2"], "description": "镜头表" },
+    { "id": "s4", "tool": "storyboard.image_batch", "input": { "shots": "s3" }, "dependsOn": ["s3"], "approval": "required", "description": "分镜图（需批准）" },
+    { "id": "s5", "tool": "timeline.render", "input": { "preset": "horizontal_1080p" }, "dependsOn": ["s4"], "description": "本地 FFmpeg 合成" }
+  ]
+}

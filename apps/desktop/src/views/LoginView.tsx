@@ -18,6 +18,10 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
   const [resetPass, setResetPass] = useState("");
   const [resetErr, setResetErr] = useState("");
   const [stillDefault, setStillDefault] = useState<boolean | null>(null);
+  const [resetCode, setResetCode] = useState("");
+  const [codeSent, setCodeSent] = useState<null | { sent: boolean; message: string }>(null);
+  const [countdown, setCountdown] = useState(0);
+  const [codeBusy, setCodeBusy] = useState(false);
 
   const openReset = async () => {
     setResetOpen(true);
@@ -51,10 +55,32 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
     }
   };
 
+  const sendCode = async () => {
+    setResetErr("");
+    setCodeBusy(true);
+    try {
+      const r = await api.authSendCode("reset", resetEmail.trim());
+      setCodeSent({ sent: r.sent, message: r.sent ? (r.message ?? "验证码已发送") : (r.reason ?? "无法发送验证码") });
+      if (r.sent) {
+        setCountdown(60);
+        const t = setInterval(() => {
+          setCountdown((c) => {
+            if (c <= 1) { clearInterval(t); return 0; }
+            return c - 1;
+          });
+        }, 1000);
+      }
+    } catch (e) {
+      setResetErr(String(e));
+    } finally {
+      setCodeBusy(false);
+    }
+  };
+
   const doReset = async () => {
     setResetErr("");
     try {
-      await api.authResetWithEmail(resetEmail.trim(), resetPass);
+      await api.authResetWithEmail(resetEmail.trim(), resetPass, resetCode.trim() || undefined);
       toast("密码已重置，请用新密码登录", "ok");
       setResetOpen(false);
       setPassword("");
@@ -70,7 +96,7 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
         <div className="login-logo">
           <img src="/logo.png" alt="OneTV" />
           <h1>OneTV</h1>
-          <p>本地优先的短剧创作工作台 · v2.1</p>
+          <p>本地优先的短剧创作工作台 · v2.2</p>
         </div>
 
         <div className="field">
@@ -133,12 +159,25 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
                 <input type="text" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="you@example.com" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} />
               </div>
               <div className="field">
+                <label>验证码（若已在本机配置邮件发送服务）</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input type="text" inputMode="numeric" placeholder="6 位验证码" value={resetCode} onChange={(e) => setResetCode(e.target.value)} />
+                  <button className="btn" disabled={countdown > 0 || codeBusy || !resetEmail.trim()} onClick={sendCode}>
+                    {countdown > 0 ? `${countdown}s` : codeBusy ? "发送中…" : "发送验证码"}
+                  </button>
+                </div>
+                {codeSent && (
+                  <div className={codeSent.sent ? "hint" : "login-err"} style={{ marginTop: 4 }}>
+                    {codeSent.sent ? `✉️ ${codeSent.message}` : `⚠️ ${codeSent.message}（未配置时：验证邮箱地址一致即可重置）`}
+                  </div>
+                )}
+              </div>
+              <div className="field">
                 <label>新密码（至少 5 位）</label>
                 <input type="password" value={resetPass} onChange={(e) => setResetPass(e.target.value)} />
               </div>
               <div className="hint">
-                本应用为本地开源软件，不联网下发验证码：验证你填写的邮箱与「账户安全」中绑定的邮箱一致即可重置。
-                若从未绑定过邮箱，将无法使用此功能。
+                验证码由本机软件直接经你配置的 SMTP 邮箱服务发出（无须任何服务器）；未配置邮件服务时，验证邮箱地址一致即可重置。
               </div>
               {resetErr && <div className="login-err">⚠️ {resetErr}</div>}
               </>

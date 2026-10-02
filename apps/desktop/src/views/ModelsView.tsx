@@ -42,7 +42,9 @@ const driverInfo = (d: ProviderDriver) => PROVIDER_DRIVERS.find((x) => x.driver 
 const driverLabel = (d: ProviderDriver) => driverInfo(d)?.label ?? d;
 
 /** auth.type 由驱动推导：本地/模拟服务无密钥，其余走 Bearer */
-const authTypeOf = (d: ProviderDriver): string => (d === "ollama" || d === "mock" ? "none" : "bearer");
+// 本地驱动（Ollama/ComfyUI/Stable Diffusion/Mock）一律免鉴权直连
+const authTypeOf = (d: ProviderDriver): string =>
+  d === "ollama" || d === "mock" || d === "comfyui" || d === "stable-diffusion" ? "none" : "bearer";
 
 function newDraft(): EditorDraft {
   return {

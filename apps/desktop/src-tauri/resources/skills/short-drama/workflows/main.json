@@ -1,0 +1,26 @@
+{
+  "steps": [
+    {
+      "id": "s1",
+      "tool": "bible.generate",
+      "input": { "from": "logline" },
+      "dependsOn": [],
+      "description": "根据一句话需求生成 Story Bible（世界观/人物/场景/道具/视觉风格）"
+    },
+    {
+      "id": "s2",
+      "tool": "outline.generate",
+      "input": { "episodes": "${input.episode_count}" },
+      "dependsOn": ["s1"],
+      "description": "生成分集大纲"
+    },
+    {
+      "id": "s3",
+      "tool": "script.generate",
+      "input": { "episode": 1, "bible": "s1", "outline": "s2" },
+      "dependsOn": ["s2"],
+      "description": "生成第 1 集结构化剧本（场景 + 台词 + 动作）",
+      "approval": "auto"
+    }
+  ]
+}

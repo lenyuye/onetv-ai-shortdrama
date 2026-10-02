@@ -25,6 +25,7 @@ rusqlite = { workspace = true }
 zip = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+lettre = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

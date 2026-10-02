@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod auth;
 pub mod jobs;
+pub mod mail;
 pub mod pkg;
 pub mod skills;
 pub mod providers;

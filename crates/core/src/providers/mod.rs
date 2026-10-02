@@ -2,6 +2,7 @@
 //!
 //! 业务层只依赖 Capability，不依赖厂商。所有网络请求必须经 [`gateway::Gateway`]。
 
+pub mod comfyui;
 pub mod custom_http;
 pub mod gateway;
 pub mod mock;

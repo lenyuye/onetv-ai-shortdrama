@@ -18,6 +18,38 @@ export default function SettingsView() {
   const [accErr, setAccErr] = useState("");
   const [accBusy, setAccBusy] = useState(false);
 
+  // v2.2 邮件发送设置 + 验证码
+  const [mailInfo, setMailInfo] = useState<api.MailConfigInfo | null>(null);
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState(465);
+  const [useTls, setUseTls] = useState(true);
+  const [smtpAuth, setSmtpAuth] = useState("");
+  const [mailMsg, setMailMsg] = useState("");
+  const [emailCode, setEmailCode] = useState("");
+  const [codeSent, setCodeSent] = useState<null | { sent: boolean; message: string }>(null);
+  const [countdown, setCountdown] = useState(0);
+  const [codeBusy, setCodeBusy] = useState(false);
+
+  // 皮肤不透明度：拖动只改本地（避免每个 tick 写盘+受控回跳），松手才提交
+  const [skinOpacityLocal, setSkinOpacityLocal] = useState<number | null>(null);
+  const skinOpacityShown = skinOpacityLocal ?? (settings?.skinOpacity ?? 0.18);
+
+  const lookupMail = (e: string) => {
+    if (!e.includes("@")) { setMailInfo(null); return; }
+    api.mailConfigGet(e.trim()).then((m) => {
+      setMailInfo(m);
+      if (m.configured && m.host) {
+        setSmtpHost(m.host);
+        setSmtpPort(m.port ?? 465);
+        setUseTls(m.useTls ?? true);
+      } else if (m.preset) {
+        setSmtpHost(m.preset[0]);
+        setSmtpPort(m.preset[1]);
+        setUseTls(m.preset[2]);
+      }
+    }).catch(() => {});
+  };
+
   const refreshAuth = () => api.authStatus().then(setAuth).catch(() => {});
   useEffect(() => {
     refreshAuth();
@@ -54,12 +86,15 @@ export default function SettingsView() {
         newUsername: newUser.trim() || undefined,
         newPassword: newPass || undefined,
         email: email.trim() || undefined,
+        emailCode: emailCode.trim() || undefined,
       });
       toast("账户信息已更新", "ok");
       setCurPass("");
       setNewUser("");
       setNewPass("");
       setEmail("");
+      setEmailCode("");
+      setCodeSent(null);
       refreshAuth();
       // 若改了用户名/密码，退出登录要求重新验证
       if (newPass) {
@@ -147,13 +182,36 @@ export default function SettingsView() {
           </div>
 
           <div className="field">
-            <label>皮肤不透明度：{Math.round((settings.skinOpacity ?? 0.18) * 100)}%</label>
+            <label>皮肤清晰度：{Math.round(skinOpacityShown * 100)}%（数值越小皮肤越明显）</label>
             <input
               type="range"
               min={0}
-              max={100}
-              value={Math.round((settings.skinOpacity ?? 0.18) * 100)}
-              onChange={(e) => saveAppearance({ skinOpacity: Number(e.target.value) / 100 })}
+              max={50}
+              value={Math.round(skinOpacityShown * 100)}
+              onChange={(e) => {
+                const v = Number(e.target.value) / 100;
+                setSkinOpacityLocal(v);
+                // 实时预览：只改前端变量，不写盘
+                const layer = document.querySelector<HTMLDivElement>(".skin-layer");
+                if (layer && settings.skin) {
+                  const img = `url(onetv-app://localhost/${encodeURIComponent(settings.skin)})`;
+                  const veil = Math.min(0.92, Math.max(0, 1 - v * 2));
+                  const rgb = settings.theme === "light" ? "242, 244, 250" : "10, 13, 24";
+                  layer.style.backgroundImage = `linear-gradient(rgba(${rgb}, ${veil.toFixed(2)}), rgba(${rgb}, ${veil.toFixed(2)})), ${img}`;
+                }
+              }}
+              onPointerUp={() => {
+                if (skinOpacityLocal !== null) {
+                  void patchSettings({ skinOpacity: skinOpacityLocal });
+                  setSkinOpacityLocal(null);
+                }
+              }}
+              onKeyUp={() => {
+                if (skinOpacityLocal !== null) {
+                  void patchSettings({ skinOpacity: skinOpacityLocal });
+                  setSkinOpacityLocal(null);
+                }
+              }}
             />
           </div>
         </div>
@@ -199,8 +257,115 @@ export default function SettingsView() {
                 <label>
                   绑定/更换邮箱{auth.email ? `（当前 ${auth.email}）` : "（必填——未绑定邮箱时修改用户名/密码必须同时填写）"}
                 </label>
-                <input type="text" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+                <input
+                  type="text"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onBlur={() => lookupMail(email)}
+                />
               </div>
+              {email.trim().includes("@") && (
+                <div className="field">
+                  <label>邮箱验证码（已配置邮件发送服务时，修改用户名/密码必须验证）</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input type="text" inputMode="numeric" placeholder="6 位验证码" value={emailCode} onChange={(e) => setEmailCode(e.target.value)} />
+                    <button
+                      className="btn"
+                      disabled={countdown > 0 || codeBusy || !email.trim() || !curPass}
+                      title={!curPass ? "请先填写当前密码" : ""}
+                      onClick={async () => {
+                        setAccErr("");
+                        setCodeBusy(true);
+                        try {
+                          const r = await api.authSendCode("change", email.trim(), curPass);
+                          setCodeSent({ sent: r.sent, message: r.sent ? (r.message ?? "已发送") : (r.reason ?? "无法发送") });
+                          if (r.sent) {
+                            setCountdown(60);
+                            const t = setInterval(() => {
+                              setCountdown((c) => {
+                                if (c <= 1) { clearInterval(t); return 0; }
+                                return c - 1;
+                              });
+                            }, 1000);
+                          }
+                        } catch (e) {
+                          setAccErr(String(e));
+                        } finally {
+                          setCodeBusy(false);
+                        }
+                      }}
+                    >
+                      {countdown > 0 ? `${countdown}s` : codeBusy ? "发送中…" : "发送验证码"}
+                    </button>
+                  </div>
+                  {codeSent && (
+                    <div className={codeSent.sent ? "hint" : "login-err"} style={{ marginTop: 4 }}>
+                      {codeSent.sent ? `✉️ ${codeSent.message}` : `⚠️ ${codeSent.message}`}
+                    </div>
+                  )}
+                </div>
+              )}
+              {email.trim().includes("@") && mailInfo && (
+                <div className="field" style={{ background: "var(--panel-2)", borderRadius: 8, padding: 12, border: "1px solid var(--border)" }}>
+                  <label>📧 邮件发送设置（验证码由本机软件经此 SMTP 直发到你的邮箱，无须任何服务器；授权码只存本机钥匙串）</label>
+                  <div className="grid-2">
+                    <div className="field">
+                      <label>SMTP 服务器{mailInfo.preset ? "（已按邮箱自动匹配预设）" : ""}</label>
+                      <input type="text" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="smtp.qq.com" />
+                    </div>
+                    <div className="field">
+                      <label>端口（465=TLS / 587=STARTTLS）</label>
+                      <input type="number" value={smtpPort} onChange={(e) => { const v = Number(e.target.value); setSmtpPort(v); setUseTls(v === 465); }} />
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label>SMTP 授权码（不是邮箱登录密码；QQ/163 邮箱在设置中开启 SMTP 后获取）</label>
+                    <input type="password" value={smtpAuth} onChange={(e) => setSmtpAuth(e.target.value)} placeholder="••••••••••••" />
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      className="btn blue"
+                      disabled={!smtpHost || !smtpAuth || !email.trim()}
+                      onClick={async () => {
+                        setMailMsg("");
+                        try {
+                          await api.mailConfigSave({ email: email.trim(), smtpHost: smtpHost.trim(), smtpPort, useTls, authCode: smtpAuth });
+                          lookupMail(email);
+                          setMailMsg("✅ 已保存");
+                        } catch (e) {
+                          setMailMsg(`⚠️ ${String(e)}`);
+                        }
+                      }}
+                    >
+                      保存发送设置
+                    </button>
+                    <button
+                      className="btn"
+                      disabled={!mailInfo?.configured}
+                      onClick={async () => {
+                        setMailMsg("");
+                        try {
+                          const r = await api.mailTestSend(email.trim());
+                          setMailMsg(r.ok ? `✅ ${r.message}` : `⚠️ ${r.message}`);
+                        } catch (e) {
+                          setMailMsg(`⚠️ ${String(e)}`);
+                        }
+                      }}
+                    >
+                      发送测试邮件
+                    </button>
+                    {useTls && <span className="tag blue">TLS</span>}
+                  </div>
+                  {mailMsg && <div className="hint" style={{ marginTop: 6 }}>{mailMsg}</div>}
+                  <div className="hint" style={{ marginTop: 6 }}>
+                    常见服务商：QQ/foxmail → smtp.qq.com:465 ｜ 163 → smtp.163.com:465 ｜ 126 → smtp.126.com:465 ｜ Gmail → smtp.gmail.com:465
+                  </div>
+                </div>
+              )}
               {accErr && <div className="login-err">⚠️ {accErr}</div>}
               <button className="btn primary" disabled={accBusy} onClick={submitAccount}>
                 {accBusy ? "保存中…" : "保存账户修改"}

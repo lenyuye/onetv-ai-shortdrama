@@ -1,0 +1,13 @@
+{
+  "id": "video-recreation",
+  "name": "视频复刻师",
+  "version": "1.0.0",
+  "description": "本地视频 → 逐镜头结构化 JSON（时间戳/景别/运镜/台词/转场/调色）→ 复刻计划",
+  "author": "OneTV",
+  "license": "Apache-2.0",
+  "permissions": { "network": ["provider"], "filesystem": ["project"] },
+  "inputs": ["video_asset_id", "with_vlm"],
+  "outputs": ["structured_shots", "recreation_plan"],
+  "entry": "workflows/main.json",
+  "trustLevel": 2
+}
