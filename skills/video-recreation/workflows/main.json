@@ -1,0 +1,25 @@
+{
+  "steps": [
+    {
+      "id": "s1",
+      "tool": "video.understand",
+      "input": { "asset": "${input.video_asset_id}" },
+      "dependsOn": [],
+      "description": "FFprobe 元数据 + 场景切分 + 关键帧 + （可选）VLM 分析 → 结构化镜头 JSON"
+    },
+    {
+      "id": "s2",
+      "tool": "recreation.plan",
+      "input": { "shots": "s1" },
+      "dependsOn": ["s1"],
+      "description": "生成复刻计划：每镜可执行 prompt + 参考资产绑定"
+    },
+    {
+      "id": "s3",
+      "tool": "canvas.import",
+      "input": { "plan": "s2" },
+      "dependsOn": ["s2"],
+      "description": "把复刻计划导入当前集画布/分镜"
+    }
+  ]
+}

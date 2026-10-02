@@ -1,0 +1,265 @@
+/* ============================================================
+   画布视图样式 —— 复用 global.css 设计令牌（深色霓虹）
+   ============================================================ */
+
+.cv-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* ---------- 顶部工具栏 ---------- */
+
+.cv-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.cv-topbar .spacer { flex: 1; }
+.cv-vsep { width: 1px; height: 18px; background: var(--border-strong); }
+.cv-episode-select { max-width: 240px; }
+
+.cv-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* ---------- 左侧节点面板 ---------- */
+
+.cv-palette {
+  width: 170px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 10px 8px;
+  overflow-y: auto;
+}
+.cv-palette-title {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+.cv-palette .hint { font-size: 11px; margin-bottom: 8px; }
+.cv-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: grab;
+  color: var(--text-dim);
+}
+.cv-palette-item:hover {
+  background: var(--panel-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.cv-palette-item:active { cursor: grabbing; }
+.cv-palette-item .icon { width: 18px; text-align: center; font-size: 13px; }
+.cv-palette-item .meta { min-width: 0; }
+.cv-palette-item .name { font-size: 12.5px; white-space: nowrap; }
+.cv-palette-item .sub { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+
+/* ---------- 画布区 ---------- */
+
+.cv-flow-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.cv-loading {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  background: var(--panel-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 99px;
+  padding: 3px 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.cv-empty-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  pointer-events: none;
+  z-index: 5;
+  text-align: center;
+  padding: 0 20px;
+}
+.cv-empty-hint .big { font-size: 42px; opacity: 0.5; }
+
+/* ---------- 自定义节点卡片 ---------- */
+
+.cv-node {
+  width: 190px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  position: relative;
+}
+.cv-node.selected {
+  border-color: var(--pink);
+  box-shadow: var(--glow-pink);
+}
+.cv-node-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px; /* 与 CanvasNodeCard 的 HEAD_H 对应 */
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: linear-gradient(90deg, var(--blue-soft), transparent 80%);
+}
+.cv-node-icon { font-size: 13px; }
+.cv-node-title {
+  flex: 1;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cv-node-type { font-size: 9.5px; color: var(--muted); font-family: var(--mono); }
+.cv-node-summary {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 7px;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cv-port-label {
+  position: absolute;
+  font-size: 9.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+  line-height: 14px;
+  pointer-events: none;
+}
+.cv-port-label.in { left: 16px; }
+.cv-port-label.out { right: 16px; }
+
+/* 端口手柄 */
+.cv-node .react-flow__handle {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--bg-deep);
+  border: 1.5px solid var(--blue);
+}
+.cv-node .react-flow__handle:hover { background: var(--blue); }
+.cv-node .react-flow__handle-connecting,
+.cv-node .react-flow__handle-valid { border-color: var(--cyan); }
+
+/* ---------- ReactFlow 深色适配 ---------- */
+
+.react-flow__node { font-family: var(--font); }
+.react-flow__edge-path { stroke: var(--border-strong); stroke-width: 1.6; }
+.react-flow__edge:hover .react-flow__edge-path { stroke: var(--blue); }
+.react-flow__edge.selected .react-flow__edge-path { stroke: var(--pink); stroke-width: 2; }
+.react-flow__connection-path {
+  stroke: var(--cyan);
+  stroke-width: 1.6;
+  stroke-dasharray: 5 3;
+}
+
+.react-flow__controls {
+  box-shadow: var(--shadow);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  width: 24px;
+  height: 24px;
+}
+.react-flow__controls-button svg { fill: var(--text-dim); }
+.react-flow__controls-button:hover { background: var(--panel-3); }
+
+.react-flow__minimap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.react-flow__attribution {
+  background: transparent;
+  color: var(--muted);
+  font-size: 9px;
+}
+.react-flow__attribution a { color: var(--muted); }
+
+/* ---------- 右侧参数检查器 ---------- */
+
+.cv-inspector {
+  width: 286px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  padding: 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.cv-inspector-title {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+.cv-inspector-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.cv-inspector-head .icon { font-size: 15px; }
+.cv-inspector-head .name { flex: 1; font-weight: 600; font-size: 13px; min-width: 0; }
+.cv-node-id {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  word-break: break-all;
+  margin-bottom: 10px;
+}
+.cv-json-textarea {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  min-height: 170px;
+}
+.cv-json-err {
+  color: var(--red);
+  font-size: 11px;
+  margin: 6px 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.cv-inspector .btn.danger { margin-top: 8px; }

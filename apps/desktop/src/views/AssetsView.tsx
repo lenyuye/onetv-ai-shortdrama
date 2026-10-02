@@ -1,0 +1,372 @@
+/**
+ * 资产库视图 —— 类型化导入 / 筛选 / 网格浏览 / 复制路径 / 删除。
+ *
+ * 资产保存在项目 .ytv/assets/ 内（Local-first，永不外发），导入时按 SHA-256 去重。
+ * 复用 global.css 设计系统（.card/.btn/.tag/.empty-state），布局细节用本组件内的
+ * scoped <style> 补充（无法修改 global.css）。
+ */
+import { useCallback, useEffect, useState } from "react";
+import * as assets from "../api-assets";
+import type { AssetImportKind, AssetRecord } from "../api-assets";
+import { video_understand } from "../api-extras";
+import { useApp } from "../store";
+
+/* ---------------- 常量 ---------------- */
+
+/** 筛选 tab —— 除 all 外的 key 与 Rust 侧 kind 存储值完全一致 */
+const KIND_TABS: { key: string; label: string }[] = [
+  { key: "all", label: "全部" },
+  { key: "images", label: "图片" },
+  { key: "videos", label: "视频" },
+  { key: "audio", label: "音频" },
+  { key: "subtitles", label: "字幕" },
+  { key: "documents", label: "文档" },
+];
+
+const IMPORT_BUTTONS: { kind: AssetImportKind; label: string; icon: string }[] = [
+  { kind: "images", label: "图片", icon: "🖼️" },
+  { kind: "videos", label: "视频", icon: "🎬" },
+  { kind: "audio", label: "音频", icon: "🎵" },
+  { kind: "subtitles", label: "字幕", icon: "📝" },
+  { kind: "documents", label: "其他", icon: "📄" },
+];
+
+/* ---------------- 工具函数 ---------------- */
+
+/** path 最后一段作为展示名（兼容 / 与 \ 分隔） */
+function basename(p: string): string {
+  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return i >= 0 ? p.slice(i + 1) : p;
+}
+
+/** 人性化大小：B / KB / MB / GB */
+function formatSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+}
+
+/** 将 kind/mime 归一为展示分组（兼容单复数 kind 与 mime 前缀） */
+function kindGroup(a: AssetRecord): "image" | "video" | "audio" | "doc" {
+  if (a.mime.startsWith("image/")) return "image";
+  if (a.mime.startsWith("video/")) return "video";
+  if (a.mime.startsWith("audio/")) return "audio";
+  switch (a.kind) {
+    case "images":
+    case "image":
+      return "image";
+    case "videos":
+    case "video":
+      return "video";
+    case "audio":
+      return "audio";
+    default:
+      return "doc";
+  }
+}
+
+/** 筛选 tab 是否命中某条资产 */
+function matchTab(a: AssetRecord, tab: string): boolean {
+  if (tab === "all") return true;
+  if (a.kind === tab) return true;
+  // 容错：单复数 kind 与 mime 归一
+  if (tab === "images" && kindGroup(a) === "image") return true;
+  if (tab === "videos" && kindGroup(a) === "video") return true;
+  if (tab === "audio" && kindGroup(a) === "audio") return true;
+  if (tab === "subtitles") {
+    if (a.kind === "subtitle") return true;
+    if (a.mime === "application/x-subrip" || a.mime === "text/vtt") return true;
+  }
+  if (tab === "documents" && a.kind === "document") return true;
+  return false;
+}
+
+/* ---------------- 资产卡片 ---------------- */
+
+function AssetCard({
+  asset,
+  onCopy,
+  onDelete,
+  onUnderstand,
+  understanding,
+}: {
+  asset: AssetRecord;
+  onCopy: (a: AssetRecord) => void;
+  onDelete: (a: AssetRecord) => void;
+  onUnderstand: (a: AssetRecord) => void;
+  understanding: boolean;
+}) {
+  const [imgFailed, setImgFailed] = useState(false);
+  const name = basename(asset.path);
+  const group = kindGroup(asset);
+  const showImg = group === "image" && !imgFailed;
+
+  return (
+    <div className="card asset-card" title={`${asset.path}\nSHA-256: ${asset.sha256}`}>
+      <div className="asset-thumb">
+        {showImg ? (
+          <img
+            src={assets.assetUrl(asset.path)}
+            alt={name}
+            loading="lazy"
+            onError={() => setImgFailed(true)}
+          />
+        ) : (
+          <span className="asset-icon">
+            {group === "video" ? "🎬" : group === "audio" ? "🎵" : "📄"}
+          </span>
+        )}
+        {group === "video" && <span className="tag asset-dur">时长 --:--</span>}
+        {/* 悬浮操作层 */}
+        <div className="asset-actions">
+          <button className="btn sm" onClick={() => onCopy(asset)}>复制路径</button>
+          {group === "video" && (
+            <button
+              className="btn sm blue"
+              disabled={understanding}
+              title="发起视频理解任务，完成后结果写入 episodes/ep01/understanding.json"
+              onClick={() => onUnderstand(asset)}
+            >
+              {understanding ? "创建中…" : "🔍 视频理解"}
+            </button>
+          )}
+          <button className="btn sm danger" onClick={() => onDelete(asset)}>删除</button>
+        </div>
+      </div>
+      <div className="asset-meta">
+        <div className="asset-name" title={name}>{name}</div>
+        <div className="asset-sub">
+          <span className="tag">{formatSize(asset.size_bytes)}</span>
+          <span className="tag mono">{asset.sha256.slice(0, 12)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- 主视图 ---------------- */
+
+export default function AssetsView() {
+  const { project, setView, toast } = useApp();
+  const [items, setItems] = useState<AssetRecord[]>([]);
+  const [tab, setTab] = useState("all");
+  const [busyKind, setBusyKind] = useState<AssetImportKind | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [understandingId, setUnderstandingId] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    return assets
+      .assetList()
+      .then(setItems)
+      .catch(() => setItems([]));
+  }, []);
+
+  useEffect(() => {
+    if (project) void refresh();
+  }, [project, refresh]);
+
+  /* 无项目：空状态 + 前往工作区（同 ProjectsView 模式） */
+  if (!project) {
+    return (
+      <div className="empty-state" style={{ height: "100%" }}>
+        <div className="big">🗂️</div>
+        <h2>尚未打开项目</h2>
+        <p>资产库属于单个项目，请先创建或打开一个项目</p>
+        <button className="btn primary" onClick={() => setView("home")}>前往工作区</button>
+      </div>
+    );
+  }
+
+  const doImport = async (kind: AssetImportKind) => {
+    setBusyKind(kind);
+    try {
+      const rec = await assets.assetImport(kind);
+      if (!rec) return; // 用户在文件选择框点了取消
+      const dedup = items.some((i) => i.id === rec.id);
+      await refresh();
+      toast(dedup ? `内容已存在，SHA-256 去重：${basename(rec.path)}` : `已导入：${basename(rec.path)}`, "ok");
+    } catch (e) {
+      toast(`导入失败：${String(e)}`, "err");
+    } finally {
+      setBusyKind(null);
+    }
+  };
+
+  const doCopy = async (a: AssetRecord) => {
+    try {
+      await navigator.clipboard.writeText(a.path);
+      toast("路径已复制到剪贴板", "ok");
+    } catch (e) {
+      toast(`复制失败：${String(e)}`, "err");
+    }
+  };
+
+  const doDelete = async (a: AssetRecord) => {
+    if (!window.confirm(`删除资产「${basename(a.path)}」？\n文件将从项目 assets/ 中移除，此操作不可恢复。`)) return;
+    setDeletingId(a.id);
+    try {
+      await assets.assetDelete(a.id);
+      await refresh();
+      toast("已删除", "ok");
+    } catch (e) {
+      toast(`删除失败：${String(e)}`, "err");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const doUnderstand = async (a: AssetRecord) => {
+    setUnderstandingId(a.id);
+    try {
+      const r = await video_understand(a.id);
+      if (r.ok) {
+        toast("视频理解任务已创建，完成后结果写入 episodes/ep01/understanding.json", "ok");
+      } else {
+        toast(`视频理解任务创建失败：${r.message ?? "未知错误"}`, "err");
+      }
+    } catch (e) {
+      toast(`视频理解任务创建失败：${String(e)}`, "err");
+    } finally {
+      setUnderstandingId(null);
+    }
+  };
+
+  const shown = items.filter((a) => matchTab(a, tab));
+  const countOf = (key: string) => items.filter((a) => matchTab(a, key)).length;
+
+  return (
+    <div className="page">
+      <style>{ASSETS_CSS}</style>
+
+      <div className="page-header">
+        <div>
+          <h1>🗂️ 资产库</h1>
+          <div className="desc">
+            {project.project.title} · 共 {items.length} 个资产 · Local-first，永不外发
+          </div>
+        </div>
+        <div className="assets-toolbar">
+          {IMPORT_BUTTONS.map((b) => (
+            <button
+              key={b.kind}
+              className="btn"
+              disabled={busyKind !== null}
+              onClick={() => void doImport(b.kind)}
+            >
+              {busyKind === b.kind ? "导入中…" : `${b.icon} 导入${b.label}`}
+            </button>
+          ))}
+          <button className="btn ghost" onClick={() => void refresh()}>⟳ 刷新</button>
+        </div>
+      </div>
+
+      {/* 类型筛选 tab */}
+      <div className="assets-tabs">
+        {KIND_TABS.map((t) => (
+          <button
+            key={t.key}
+            className={`assets-tab ${tab === t.key ? "active" : ""}`}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+            <span className="assets-tab-count">{countOf(t.key)}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* 网格 */}
+      {items.length === 0 ? (
+        <div className="empty-state" style={{ padding: "80px 20px" }}>
+          <div className="big">🗂️</div>
+          <h2>还没有资产</h2>
+          <p>导入人物定妆照 / 场景参考 / 任何素材。相同内容自动 SHA-256 去重</p>
+        </div>
+      ) : shown.length === 0 ? (
+        <div className="empty-state" style={{ padding: "60px 20px" }}>
+          <div className="big">🔍</div>
+          <p>该类型下暂无资产</p>
+        </div>
+      ) : (
+        <div className="assets-grid">
+          {shown.map((a) => (
+            <AssetCard
+              key={a.id}
+              asset={a}
+              onCopy={(x) => void doCopy(x)}
+              onDelete={(x) => void doDelete(x)}
+              onUnderstand={(x) => void doUnderstand(x)}
+              understanding={understandingId === a.id}
+            />
+          ))}
+        </div>
+      )}
+
+      {deletingId && <div className="assets-busy">正在删除…</div>}
+
+      {/* 底部提示条 */}
+      <div className="assets-foot">
+        <span>🔒</span>
+        <span>资产保存在项目 .ytv/assets/ 内，永不外发；导入时自动计算 SHA-256 去重</span>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- 视图局部样式（补充 global.css，深色一致） ---------------- */
+
+const ASSETS_CSS = `
+.assets-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.assets-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.assets-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 99px; cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--panel-2);
+  color: var(--text-dim); font-size: 12px; transition: all 0.12s ease;
+}
+.assets-tab:hover { border-color: var(--blue); color: var(--text); }
+.assets-tab.active {
+  color: #fff; border-color: rgba(255, 61, 154, 0.45); background: var(--pink-soft);
+}
+.assets-tab-count {
+  font-size: 10px; padding: 0 6px; border-radius: 99px;
+  background: var(--panel-3); border: 1px solid var(--border); color: var(--muted);
+}
+.assets-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px;
+}
+.asset-card { padding: 0; overflow: hidden; }
+.asset-card:hover { border-color: var(--blue); box-shadow: var(--glow-blue); }
+.asset-thumb {
+  position: relative; height: 120px; background: var(--bg-deep);
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.asset-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.asset-icon { font-size: 34px; opacity: 0.75; }
+.asset-dur { position: absolute; top: 6px; left: 6px; background: rgba(4, 6, 14, 0.7); }
+.asset-actions {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; gap: 6px; justify-content: center; padding: 8px;
+  background: linear-gradient(transparent, rgba(4, 6, 14, 0.88));
+  opacity: 0; transition: opacity 0.12s ease;
+}
+.asset-card:hover .asset-actions { opacity: 1; }
+.asset-meta { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.asset-name {
+  font-size: 12px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.asset-sub { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.tag.mono { font-family: var(--mono); font-size: 10px; letter-spacing: 0.3px; }
+.assets-busy { margin-top: 12px; font-size: 12px; color: var(--amber); }
+.assets-foot {
+  position: sticky; bottom: 0; z-index: 5;
+  display: flex; align-items: center; gap: 8px;
+  margin: 18px -22px -18px; padding: 9px 22px;
+  background: var(--panel); border-top: 1px solid var(--border);
+  font-size: 11.5px; color: var(--muted);
+}
+`;

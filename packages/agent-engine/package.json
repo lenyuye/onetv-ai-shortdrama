@@ -1,0 +1,13 @@
+{
+  "name": "@onetv/agent-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OneTV Agent 引擎的前端侧协议与纯函数工具",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@onetv/shared-types": "workspace:*",
+    "@onetv/provider-sdk": "workspace:*"
+  }
+}

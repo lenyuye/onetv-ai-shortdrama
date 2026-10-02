@@ -1,0 +1,191 @@
+/**
+ * 画布数据模型辅助层 —— CanvasDocument ↔ ReactFlow 节点/边互转、默认配置、图标与摘要。
+ * 纯函数集合，不依赖 React。
+ */
+import type { Edge, Node, XYPosition } from "@xyflow/react";
+import { NODE_TYPE_DEFS } from "@onetv/node-sdk";
+import {
+  SCHEMA_VERSION,
+  type CanvasDocument,
+  type CanvasNode,
+  type NodeType,
+  type NodePortDef,
+} from "@onetv/shared-types";
+
+/** node-sdk 中 params 值的宽松形状（def.params 在共享类型里是 Record<string, unknown>）。 */
+export interface NodeParamDef {
+  type?: string;
+  required?: boolean;
+  min?: number;
+  max?: number;
+  values?: string[];
+}
+
+/** ReactFlow 节点：data 里携带领域 CanvasNode。 */
+export type FlowNode = Node<{ cn: CanvasNode }, "onetv">;
+export type FlowEdge = Edge;
+
+export const NODE_ICONS: Record<NodeType, string> = {
+  text: "📄",
+  script: "📝",
+  storyboard: "🎞️",
+  image: "🖼️",
+  video: "🎥",
+  audio: "🎙️",
+  "video-clip": "✂️",
+  condition: "🔀",
+  review: "✅",
+  export: "📦",
+};
+
+export const NODE_COLORS: Record<NodeType, string> = {
+  text: "#4d7cfe",
+  script: "#ff3d9a",
+  storyboard: "#b34dff",
+  image: "#26d0e8",
+  video: "#ffb547",
+  audio: "#35d07f",
+  "video-clip": "#7a83ad",
+  condition: "#ff5470",
+  review: "#e9edfb",
+  export: "#f5d76e",
+};
+
+export function uid(prefix = "n"): string {
+  return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/** 由 NODE_TYPE_DEFS[type].params 生成节点初始 config。 */
+export function defaultConfig(type: NodeType): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const params = NODE_TYPE_DEFS[type]?.params ?? {};
+  for (const [key, raw] of Object.entries(params)) {
+    const p = raw as NodeParamDef;
+    if (p.type === "number") out[key] = typeof p.min === "number" ? p.min : 1;
+    else if (p.type === "enum") out[key] = p.values?.[0] ?? "";
+    else out[key] = "";
+  }
+  return out;
+}
+
+export function createCanvasNode(
+  type: NodeType,
+  episodeId: string,
+  position: XYPosition
+): CanvasNode {
+  const def = NODE_TYPE_DEFS[type];
+  return {
+    id: uid(),
+    episodeId,
+    type,
+    title: def?.title ?? type,
+    config: defaultConfig(type),
+    position: { x: position.x, y: position.y },
+  };
+}
+
+/** CanvasDocument → ReactFlow 图元素。 */
+export function docToFlow(doc: CanvasDocument): { nodes: FlowNode[]; edges: FlowEdge[] } {
+  return {
+    nodes: doc.nodes.map(
+      (n): FlowNode => ({
+        id: n.id,
+        type: "onetv",
+        position: { x: n.position?.x ?? 0, y: n.position?.y ?? 0 },
+        data: { cn: n },
+      })
+    ),
+    edges: doc.edges.map(
+      (e): FlowEdge => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle: e.sourcePort || null,
+        targetHandle: e.targetPort || null,
+      })
+    ),
+  };
+}
+
+/** ReactFlow 图元素 → CanvasDocument（position 以画布上的实时位置为准）。 */
+export function flowToDoc(
+  nodes: FlowNode[],
+  edges: FlowEdge[],
+  episodeId: string
+): CanvasDocument {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    episodeId,
+    updatedAt: new Date().toISOString(),
+    nodes: nodes.map((n) => {
+      const cn = (n.data as { cn?: CanvasNode }).cn;
+      const position = { x: n.position?.x ?? 0, y: n.position?.y ?? 0 };
+      if (!cn) {
+        // 数据异常兜底：保留节点外壳，避免丢 id/位置
+        return {
+          id: n.id,
+          episodeId,
+          type: "text" as NodeType,
+          title: n.id,
+          config: {},
+          position,
+        };
+      }
+      return { ...cn, position };
+    }),
+    edges: edges.map((e) => ({
+      id: e.id,
+      episodeId,
+      source: e.source,
+      target: e.target,
+      sourcePort: e.sourceHandle ?? "out",
+      targetPort: e.targetHandle ?? "in",
+    })),
+  };
+}
+
+/** 比较用 JSON（忽略 updatedAt 等易变字段）。 */
+export function docCoreJson(doc: CanvasDocument): string {
+  return JSON.stringify({ nodes: doc.nodes, edges: doc.edges });
+}
+
+/** 节点卡片参数摘要：config 前 max 个键值对。 */
+export function configSummary(config: Record<string, unknown> | undefined, max = 2): string {
+  const entries = Object.entries(config ?? {}).slice(0, max);
+  if (entries.length === 0) return "无参数";
+  return entries
+    .map(([k, v]) => {
+      let s = typeof v === "string" ? v : JSON.stringify(v);
+      if (s === undefined) s = "";
+      if (s.length > 16) s = `${s.slice(0, 16)}…`;
+      return `${k}=${s || "∅"}`;
+    })
+    .join(" · ");
+}
+
+/** 取目标节点某输入端口定义（含 accept）；port 为空时回退第一个输入。 */
+export function inputAcceptOf(type: NodeType, port: string | null): NodePortDef | null {
+  const inputs = NODE_TYPE_DEFS[type]?.inputs ?? [];
+  if (!inputs.length) return null;
+  const hit = port ? inputs.find((i) => i.port === port) : undefined;
+  return hit ?? inputs[0];
+}
+
+/** 取源节点某输出端口的 accept 列表；port 为空时取所有输出 accept 的并集。 */
+export function outputAcceptOf(type: NodeType, port: string | null): string[] {
+  const outputs = NODE_TYPE_DEFS[type]?.outputs ?? [];
+  const hit = port ? outputs.find((o) => o.port === port) : undefined;
+  if (hit) return hit.accept;
+  return Array.from(new Set(outputs.flatMap((o) => o.accept)));
+}
+
+/** 统一错误信息文本（Tauri invoke 失败多为 string）。 */
+export function errMsg(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}

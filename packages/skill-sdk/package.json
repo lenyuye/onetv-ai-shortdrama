@@ -1,0 +1,12 @@
+{
+  "name": "@onetv/skill-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OneTV Skill 包协议",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@onetv/shared-types": "workspace:*"
+  }
+}

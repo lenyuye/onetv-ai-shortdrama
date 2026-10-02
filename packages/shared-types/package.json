@@ -1,0 +1,9 @@
+{
+  "name": "@onetv/shared-types",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OneTV 核心领域类型（与 Rust serde 结构保持一致）",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts"
+}

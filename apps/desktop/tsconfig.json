@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@onetv/shared-types": ["../../packages/shared-types/src/index.ts"],
+      "@onetv/node-sdk": ["../../packages/node-sdk/src/index.ts"],
+      "@onetv/provider-sdk": ["../../packages/provider-sdk/src/index.ts"],
+      "@onetv/agent-engine": ["../../packages/agent-engine/src/index.ts"],
+      "@onetv/skill-sdk": ["../../packages/skill-sdk/src/index.ts"],
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src", "../../packages/shared-types/src", "../../packages/node-sdk/src", "../../packages/provider-sdk/src", "../../packages/agent-engine/src", "../../packages/skill-sdk/src"]
+}

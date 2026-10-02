@@ -1,0 +1,26 @@
+{
+  "steps": [
+    {
+      "id": "s1",
+      "tool": "shot.split",
+      "input": { "episode": "${input.episode_id}" },
+      "dependsOn": [],
+      "description": "把剧本拆成镜头表（景别/运镜/台词/动作/时长）"
+    },
+    {
+      "id": "s2",
+      "tool": "character.bind",
+      "input": { "shots": "s1" },
+      "dependsOn": ["s1"],
+      "description": "为每个镜头绑定角色/场景参考资产（一致性）"
+    },
+    {
+      "id": "s3",
+      "tool": "storyboard.image_batch",
+      "input": { "shots": "s2" },
+      "dependsOn": ["s2"],
+      "approval": "required",
+      "description": "批量生成分镜图（需要用户批准，涉及远程生图调用）"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@onetv/node-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OneTV 画布节点类型协议",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@onetv/shared-types": "workspace:*"
+  }
+}

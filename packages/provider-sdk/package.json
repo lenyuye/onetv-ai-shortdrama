@@ -1,0 +1,12 @@
+{
+  "name": "@onetv/provider-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OneTV Provider 能力协议类型",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@onetv/shared-types": "workspace:*"
+  }
+}

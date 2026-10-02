@@ -1,0 +1,88 @@
+/**
+ * Tauri IPC 封装层 —— 所有 invoke 调用集中在这里，UI 不直接接触 invoke。
+ */
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  AppSettings,
+  EpisodeInfo,
+  ProjectManifest,
+  ProviderProfile,
+} from "@onetv/shared-types";
+
+/* ---------------- 设置 ---------------- */
+
+export const getSettings = () => invoke<AppSettings>("settings_get");
+export const updateSettings = (patch: Partial<AppSettings>) =>
+  invoke<AppSettings>("settings_update", { patch });
+
+export interface FfmpegStatus {
+  ffmpegPath: string | null;
+  ffprobePath: string | null;
+  ffmpegVersion: string | null;
+  ok: boolean;
+  message: string;
+}
+export const ffmpegStatus = () => invoke<FfmpegStatus>("ffmpeg_status");
+
+/* ---------------- 工作区/项目 ---------------- */
+
+export interface RecentWorkspace {
+  path: string;
+  name: string;
+  lastOpenedAt: string;
+}
+export const listRecentWorkspaces = () => invoke<RecentWorkspace[]>("workspace_recent_list");
+export const addRecentWorkspace = (path: string, name: string) =>
+  invoke<void>("workspace_recent_add", { path, name });
+
+export interface CreateProjectInput {
+  workspacePath: string;
+  projectTitle: string;
+  aspectRatio?: string;
+}
+export const projectCreate = (input: CreateProjectInput) =>
+  invoke<ProjectManifest>("project_create", { input });
+export const projectOpen = (projectDir: string) =>
+  invoke<ProjectManifest>("project_open", { projectDir });
+export const projectClose = () => invoke<void>("project_close");
+export const projectInfo = () =>
+  invoke<{ manifest: ProjectManifest | null; rootPath: string | null }>("project_info");
+export const projectPickDirectory = (title: string) =>
+  invoke<string | null>("pick_directory", { title });
+
+export interface EpisodeInfoDto {
+  id: string;
+  number: number;
+  title: string;
+  status: string;
+}
+export const episodeList = () => invoke<EpisodeInfo[]>("episode_list");
+export const episodeCreate = (title?: string) => invoke<EpisodeInfo>("episode_create", { title });
+
+/* ---------------- Keychain ---------------- */
+
+export const secureKeySet = (providerId: string, key: string) =>
+  invoke<void>("secure_key_set", { providerId, key });
+export const secureKeyDelete = (providerId: string) => invoke<void>("secure_key_delete", { providerId });
+export const secureKeyExists = (providerId: string) => invoke<boolean>("secure_key_exists", { providerId });
+export const secureKeyList = () => invoke<string[]>("secure_key_list");
+
+/* ---------------- Providers ---------------- */
+
+export const providerList = () => invoke<ProviderProfile[]>("provider_list");
+export const providerSave = (profile: ProviderProfile) => invoke<ProviderProfile>("provider_save", { profile });
+export const providerDelete = (id: string) => invoke<void>("provider_delete", { id });
+export const providerTest = (id: string) =>
+  invoke<{ ok: boolean; message: string; latencyMs?: number; layers?: Record<string, string> }>(
+    "provider_test",
+    { id }
+  );
+export const providerModels = (id: string) =>
+  invoke<{ ok: boolean; models: string[]; message?: string }>("provider_models", { id });
+
+/* ---------------- 事件 ---------------- */
+
+export function onAppEvent<T>(name: string, cb: (payload: T) => void): Promise<UnlistenFn> {
+  return listen<T>(name, (e) => cb(e.payload));
+}

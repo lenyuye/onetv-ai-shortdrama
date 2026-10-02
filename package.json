@@ -1,0 +1,16 @@
+{
+  "name": "onetv",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OneTV — 本地优先的开源短剧 Agent 桌面工作台",
+  "scripts": {
+    "dev": "pnpm --filter onetv-desktop dev",
+    "build": "pnpm --filter onetv-desktop build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "tauri": "pnpm --filter onetv-desktop tauri"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

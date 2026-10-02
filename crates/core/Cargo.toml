@@ -1,0 +1,28 @@
+[package]
+name = "onetv-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+onetv-media = { workspace = true }
+onetv-project = { workspace = true }
+onetv-security = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+dirs = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+base64 = { workspace = true }
+futures = { workspace = true }
+rusqlite = { workspace = true }
+zip = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

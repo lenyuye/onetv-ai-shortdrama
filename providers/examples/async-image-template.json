@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.1",
+  "name": "示例：异步生图 API",
+  "driver": "custom-http",
+  "baseUrl": "https://api.example.com",
+  "auth": { "type": "bearer", "keyRef": "secret://provider/example-image" },
+  "capabilities": ["image_generation"],
+  "models": [{ "modelId": "image-v2", "capabilities": ["image_generation"] }],
+  "request": {
+    "method": "POST",
+    "url": "https://api.example.com/generate",
+    "headers": { "X-API-Key": "${secret.apiKey}" },
+    "body": {
+      "prompt": "${input.prompt}",
+      "model": "${model.id}",
+      "aspect_ratio": "${input.aspectRatio}"
+    }
+  },
+  "response": {
+    "jobId": "$.data.task_id",
+    "status": "$.data.status"
+  },
+  "poll": {
+    "method": "GET",
+    "url": "https://api.example.com/tasks/${jobId}",
+    "successWhen": "$.data.status == \"succeeded\"",
+    "failureWhen": "$.data.status == \"failed\"",
+    "intervalMs": 3000,
+    "timeoutMs": 1800000
+  },
+  "result": { "downloadUrl": "$.data.output.url" },
+  "notes": "模板变量只允许白名单声明：input.* / model.* / secret.apiKey / jobId。禁止执行任意脚本。"
+}

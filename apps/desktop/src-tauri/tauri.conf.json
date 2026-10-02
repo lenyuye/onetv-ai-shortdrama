@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OneTV",
+  "version": "0.1.0",
+  "identifier": "com.onetv.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "OneTV — 短剧创作工作台",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1180,
+        "minHeight": 720,
+        "center": true,
+        "resizable": true,
+        "backgroundColor": "#0A0D18"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost onetv-asset:; media-src 'self' blob: asset: http://asset.localhost onetv-asset:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "category": "Productivity",
+    "targets": ["app", "dmg"],
+    "icon": ["icons/icon.icns"],
+    "shortDescription": "本地优先的开源短剧 Agent 桌面工作台",
+    "longDescription": "OneTV：画布节点 + Agent 编排 + 短剧资产管理 + 多模型 Provider + 本地 FFmpeg 合成。Local-first、无遥测、API Key 存于系统钥匙串。"
+  }
+}
