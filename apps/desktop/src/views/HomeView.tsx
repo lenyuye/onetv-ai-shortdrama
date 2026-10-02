@@ -48,7 +48,31 @@ export default function HomeView() {
     try {
       const dir = await api.projectPickDirectory("选择 .ytv 项目文件夹");
       if (!dir) return;
-      await api.projectOpen(dir);
+      try {
+        await api.projectOpen(dir);
+      } catch (e) {
+        // 普通文件夹（不是 .ytv 工程）：提供就地新建，避免用户混淆「新建/打开」
+        const msg = String(e);
+        if (msg.includes("缺少 project.json") || msg.includes("不是 OneTV 工程")) {
+          const name = dir.split("/").filter(Boolean).pop() ?? "";
+          const ok = window.confirm(
+            `「${name || dir}」不是 OneTV 工程（缺少 project.json）。\n\n要在这个文件夹里直接新建工程「${name}」吗？\n（确认后将创建 ${dir}/${name}.ytv）`
+          );
+          if (!ok) return;
+          const manifest = await api.projectCreate({
+            workspacePath: dir,
+            projectTitle: name,
+            aspectRatio: "9:16",
+          });
+          await api.addRecentWorkspace(dir, manifest.project.title);
+          await loadProject();
+          refreshRecent();
+          toast(`项目已创建：${manifest.project.title}`, "ok");
+          setView("projects");
+          return;
+        }
+        throw e;
+      }
       await loadProject();
       await api.addRecentWorkspace(dir, "");
       toast("项目已打开", "ok");

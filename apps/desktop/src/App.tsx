@@ -45,7 +45,7 @@ export default function App() {
     api.authStatus().then((st) => setAuthed(!!st.loggedIn)).catch(() => setAuthed(false));
   }, []);
 
-  // 主题/皮肤应用（v2.1 外观设置）
+  // 主题/皮肤应用（v2.1 外观设置；依赖 authed：登录切换会重建 .skin-layer 节点，需重新应用）
   useEffect(() => {
     if (!settings) return;
     document.documentElement.dataset.theme = settings.theme === "light" ? "light" : "dark";
@@ -63,7 +63,7 @@ export default function App() {
         layer.style.backgroundImage = "none";
       }
     }
-  }, [settings?.theme, settings?.skin, settings?.skinOpacity]);
+  }, [settings?.theme, settings?.skin, settings?.skinOpacity, authed]);
 
   if (!authed) {
     return (

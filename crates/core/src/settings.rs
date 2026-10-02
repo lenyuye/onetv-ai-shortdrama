@@ -9,33 +9,38 @@ use serde::{Deserialize, Serialize};
 pub const SETTINGS_SCHEMA_VERSION: &str = "1.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppSettings {
+    #[serde(alias = "schema_version")]
     pub schema_version: String,
     pub theme: String,
     pub language: String,
     /// Local-only 完全离线模式
+    #[serde(alias = "offline_mode")]
     pub offline_mode: bool,
     /// 恒为 false；产品中不存在任何遥测代码路径
     pub telemetry: bool,
-    #[serde(default)]
+    #[serde(default, alias = "ffmpeg_path")]
     pub ffmpeg_path: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "ffprobe_path")]
     pub ffprobe_path: Option<String>,
+    #[serde(alias = "max_concurrent_jobs")]
     pub max_concurrent_jobs: u32,
+    #[serde(alias = "auto_save_interval_sec")]
     pub auto_save_interval_sec: u32,
-    #[serde(default)]
+    #[serde(default, alias = "default_project_folder")]
     pub default_project_folder: Option<String>,
     /// 最近工作区/工程（不存密钥）
-    #[serde(default)]
+    #[serde(default, alias = "recent_projects")]
     pub recent_projects: Vec<RecentEntry>,
     /// 网络策略：用户明确允许的主机（来自 Provider Base URL）
-    #[serde(default)]
+    #[serde(default, alias = "allowed_hosts")]
     pub allowed_hosts: Vec<String>,
     /// 自定义皮肤图片（存于应用数据目录 themes/ 下的文件名，onetv-app:// 提供）
     #[serde(default)]
     pub skin: Option<String>,
     /// 皮肤不透明度 0.0 ~ 1.0
-    #[serde(default = "default_skin_opacity")]
+    #[serde(default = "default_skin_opacity", alias = "skin_opacity")]
     pub skin_opacity: f64,
 }
 
@@ -44,9 +49,11 @@ fn default_skin_opacity() -> f64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecentEntry {
     pub path: String,
     pub name: String,
+    #[serde(alias = "last_opened_at")]
     pub last_opened_at: String,
 }
 
@@ -160,5 +167,36 @@ mod tests {
         let store = SettingsStore::new(dir.path());
         let s = store.update(|s| s.telemetry = true);
         assert_eq!(s.telemetry, false);
+    }
+
+    #[test]
+    fn loads_legacy_snake_case_settings() {
+        // v2.2 及之前磁盘上是 snake_case；camelCase 化后必须仍能读取（别名兼容）
+        let legacy = r#"{
+            "schema_version": "1.0",
+            "theme": "light",
+            "language": "zh-CN",
+            "offline_mode": false,
+            "telemetry": false,
+            "max_concurrent_jobs": 3,
+            "auto_save_interval_sec": 5,
+            "recent_projects": [
+                {"path": "/tmp/a.ytv", "name": "A", "last_opened_at": "2026-10-02T00:00:00+00:00"}
+            ],
+            "allowed_hosts": ["http://127.0.0.1:7860"],
+            "skin": "skin.png",
+            "skin_opacity": 0.14
+        }"#;
+        let s: AppSettings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(s.theme, "light");
+        assert_eq!(s.max_concurrent_jobs, 3);
+        assert_eq!(s.skin.as_deref(), Some("skin.png"));
+        assert!((s.skin_opacity - 0.14).abs() < 1e-9);
+        assert_eq!(s.recent_projects[0].last_opened_at.len() > 0, true);
+        // camelCase 同样可读（新写入格式）
+        let s2: AppSettings =
+            serde_json::from_str(r#"{"schemaVersion":"1.0","theme":"dark","language":"zh-CN","offlineMode":true,"telemetry":false,"maxConcurrentJobs":2,"autoSaveIntervalSec":30,"skinOpacity":0.4}"#).unwrap();
+        assert!(s2.offline_mode);
+        assert!((s2.skin_opacity - 0.4).abs() < 1e-9);
     }
 }

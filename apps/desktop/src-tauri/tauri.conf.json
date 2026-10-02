@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OneTV",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "identifier": "com.onetv.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost onetv-asset:; media-src 'self' blob: asset: http://asset.localhost onetv-asset:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost onetv-asset: onetv-app:; media-src 'self' blob: asset: http://asset.localhost onetv-asset:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:"
     }
   },
   "bundle": {

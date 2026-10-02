@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 const DEFAULT_USERNAME: &str = "admin";
 const DEFAULT_PASSWORD: &str = "12345";
 const ITERATIONS: u32 = 12_000;
+/// 登录会话保持：5 天内无使用才要求重新登录（v2.3）
+const SESSION_TTL_SECS: u64 = 5 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AccountFile {
@@ -22,6 +24,15 @@ struct AccountFile {
     email: Option<String>,
     salt: String,
     password_hash: String,
+}
+
+/// 本机会话（session.json）：仅含随机 token 与用户名，绝不含密码/哈希。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionFile {
+    token: String,
+    username: String,
+    created_at: u64,
+    last_used: u64,
 }
 
 pub struct AuthStore {
@@ -159,6 +170,8 @@ impl AuthStore {
             a.password_hash = hash_password(p, &salt);
         }
         self.save(&a)?;
+        // 凭据已变更：作废所有旧会话，需重新登录
+        self.clear_session();
         Ok(AccountInfo {
             username: a.username,
             email: a.email,
@@ -187,8 +200,65 @@ impl AuthStore {
         let salt = new_salt();
         a.salt = hex::encode(&salt);
         a.password_hash = hash_password(new_password, &salt);
-        self.save(&a)
+        self.save(&a)?;
+        // 凭据已变更：作废所有旧会话
+        self.clear_session();
+        Ok(())
     }
+
+    /* ---------------- 登录会话保持（v2.3） ---------------- */
+
+    fn session_path(&self) -> PathBuf {
+        self.path.with_file_name("session.json")
+    }
+
+    /// 登录成功后写入会话，供下次启动免登录。
+    pub fn create_session(&self, username: &str) -> Result<(), AuthError> {
+        let now = now_secs();
+        let mut token = [0u8; 32];
+        let _ = std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut token));
+        let s = SessionFile {
+            token: hex::encode(token),
+            username: username.to_string(),
+            created_at: now,
+            last_used: now,
+        };
+        let tmp = self.session_path().with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string(&s)?)?;
+        std::fs::rename(&tmp, self.session_path())?;
+        Ok(())
+    }
+
+    /// 会话是否仍然有效（5 天内有过使用）。有效则顺延 last_used；过期/损坏则清除。
+    pub fn refresh_session(&self) -> bool {
+        let p = self.session_path();
+        let Ok(raw) = std::fs::read_to_string(&p) else { return false };
+        let Ok(mut s) = serde_json::from_str::<SessionFile>(&raw) else {
+            let _ = std::fs::remove_file(&p);
+            return false;
+        };
+        let now = now_secs();
+        if now.saturating_sub(s.last_used) > SESSION_TTL_SECS {
+            let _ = std::fs::remove_file(&p);
+            return false;
+        }
+        s.last_used = now;
+        let _ = std::fs::write(&p, serde_json::to_string(&s).unwrap_or_default());
+        true
+    }
+
+    /// 主动登出 / 凭据变更时清除会话。
+    pub fn clear_session(&self) {
+        let _ = std::fs::remove_file(self.session_path());
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn new_salt() -> [u8; 16] {
@@ -324,5 +394,39 @@ mod tests {
         assert!(normalize_email("a@b").is_err());
         assert!(normalize_email("@b.cn").is_err());
         assert!(normalize_email("a b@b.cn").is_err());
+    }
+
+    #[test]
+    fn session_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AuthStore::new(dir.path());
+        store.ensure_initialized().unwrap();
+
+        // 未登录：无会话
+        assert!(!store.refresh_session());
+
+        // 登录 → 会话有效
+        store.create_session("admin").unwrap();
+        assert!(store.refresh_session());
+
+        // 篡改过期（模拟 5 天未使用）→ 失效且文件被清除
+        let p = dir.path().join("session.json");
+        let mut s: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        s["last_used"] = serde_json::json!(0u64);
+        std::fs::write(&p, serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(!store.refresh_session());
+        assert!(!p.exists());
+
+        // 登出清除
+        store.create_session("admin").unwrap();
+        store.clear_session();
+        assert!(!store.refresh_session());
+
+        // 改密后旧会话作废
+        store.create_session("admin").unwrap();
+        store
+            .change_credentials("12345", None, Some("newpass1"), Some("a@b.cn"))
+            .unwrap();
+        assert!(!store.refresh_session());
     }
 }

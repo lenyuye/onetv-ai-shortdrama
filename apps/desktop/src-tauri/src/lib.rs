@@ -910,9 +910,18 @@ async fn auth_send_code(
 
 #[tauri::command]
 fn auth_status(state: TState) -> serde_json::Value {
+    // 会话保持（v2.3）：5 天内活跃则免登录自动恢复
+    let mut logged = state.logged_in.load(std::sync::atomic::Ordering::Relaxed);
+    if !logged && state.auth.refresh_session() {
+        state
+            .logged_in
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        logged = true;
+        tracing::info!("session restored (within 5-day window)");
+    }
     let info = state.auth.info();
     serde_json::json!({
-        "loggedIn": state.logged_in.load(std::sync::atomic::Ordering::Relaxed),
+        "loggedIn": logged,
         "username": info.as_ref().map(|i| i.username.clone()),
         "email": info.as_ref().and_then(|i| i.email.clone()),
         "hasDefaultPassword": info.as_ref().map(|i| i.has_default_password).unwrap_or(false),
@@ -926,6 +935,7 @@ fn auth_login(state: TState, username: String, password: String) -> Result<serde
         state
             .logged_in
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = state.auth.create_session(&username);
         state.audit.record("auth.login", &username, None);
     }
     Ok(serde_json::json!({ "ok": ok }))
@@ -933,6 +943,7 @@ fn auth_login(state: TState, username: String, password: String) -> Result<serde
 
 #[tauri::command]
 fn auth_logout(state: TState) {
+    state.auth.clear_session();
     state
         .logged_in
         .store(false, std::sync::atomic::Ordering::Relaxed);
