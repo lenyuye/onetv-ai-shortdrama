@@ -1508,6 +1508,30 @@ pub fn run() {
             mail_test_send,
             auth_send_code,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running OneTV");
+        .on_window_event(|window, event| {
+            // macOS 惯例：点红色关闭按钮 = 隐藏窗口，应用驻留后台（不退出）
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building OneTV")
+        .run(|app_handle, event| match event {
+            // 点击 Dock 图标 / Reopen：重新显示主窗口
+            tauri::RunEvent::Reopen { .. } => {
+                if let Some(w) = app_handle.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+            }
+            // 关闭最后一个窗口触发的退出请求 → 阻止，应用保持运行
+            tauri::RunEvent::ExitRequested { api, code, .. } => {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+            _ => {}
+        });
 }
