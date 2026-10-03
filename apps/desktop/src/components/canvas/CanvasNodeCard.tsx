@@ -6,7 +6,7 @@ import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { NODE_TYPE_DEFS } from "@onetv/node-sdk";
 import type { CanvasNode } from "@onetv/shared-types";
-import { NODE_ICONS, configSummary } from "./canvas-model";
+import { NODE_ICONS, configSummary, portCn } from "./canvas-model";
 
 /** 与 canvas.css 中 .cv-node-head 高度保持一致。 */
 const HEAD_H = 40;
@@ -39,7 +39,7 @@ export default function CanvasNodeCard(props: NodeProps) {
       <div className="cv-node-head">
         <span className="cv-node-icon">{NODE_ICONS[cn.type] ?? "⬜"}</span>
         <span className="cv-node-title">{def?.title ?? cn.title}</span>
-        <span className="cv-node-type">{cn.type}</span>
+        <span className="cv-node-type" title={cn.type}>{def?.title ?? "节点"}</span>
       </div>
 
       {inputs.map((p, i) => (
@@ -50,7 +50,7 @@ export default function CanvasNodeCard(props: NodeProps) {
           id={p.port}
           className="cv-handle"
           style={{ top: HEAD_H + i * ROW_H + ROW_H / 2 }}
-          title={`输入端口 ${p.port}`}
+          title={`输入连接点${portCn(p.port) !== p.port ? `（${portCn(p.port)}）` : ""}`}
         />
       ))}
       {outputs.map((p, i) => (
@@ -61,20 +61,9 @@ export default function CanvasNodeCard(props: NodeProps) {
           id={p.port}
           className="cv-handle"
           style={{ top: HEAD_H + i * ROW_H + ROW_H / 2 }}
-          title={`输出端口 ${p.port}`}
+          title={`输出连接点${portCn(p.port) !== p.port ? `（${portCn(p.port)}）` : ""}`}
         />
       ))}
-      {inputs.map((p, i) => (
-        <span key={`in-${p.port}`} className="cv-port-label in" style={{ top: HEAD_H + i * ROW_H + 4 }}>
-          {p.port}
-        </span>
-      ))}
-      {outputs.map((p, i) => (
-        <span key={`out-${p.port}`} className="cv-port-label out" style={{ top: HEAD_H + i * ROW_H + 4 }}>
-          {p.port}
-        </span>
-      ))}
-
       <div className="cv-node-summary" title={JSON.stringify(cn.config ?? {})}>
         {configSummary(cn.config)}
       </div>

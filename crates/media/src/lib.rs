@@ -13,7 +13,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum MediaError {
-    #[error("未找到 FFmpeg：请安装（brew install ffmpeg）或在设置中指定路径")]
+    #[error("未找到 FFmpeg：已在 PATH、/usr/local/bin、/opt/homebrew/bin 中未找到 ffmpeg，可在设置中手动指定路径")]
     NotFound,
     #[error("FFmpeg 执行失败: {0}")]
     Spawn(String),
@@ -25,7 +25,7 @@ pub enum MediaError {
 
 pub type MediaResult<T> = Result<T, MediaError>;
 
-/// FFmpeg 可执行文件定位器（设置覆盖 > PATH > 常见安装位置）。
+/// FFmpeg 可执行文件定位器（设置覆盖 > PATH > /usr/local/bin > /opt/homebrew/bin > /usr/bin）。
 #[derive(Clone)]
 pub struct MediaLocator {
     override_ffmpeg: Arc<RwLock<Option<PathBuf>>>,
@@ -106,29 +106,34 @@ impl Default for MediaLocator {
     }
 }
 
+/// 定位可执行文件：裸名/PATH 环境 → /usr/local/bin → /opt/homebrew/bin → /usr/bin。
+/// GUI 应用不继承 shell 的 PATH，且仅 stat 文件可能漏掉符号链接失效/无执行权限的情况，
+/// 因此候选路径用真实执行（`<bin> -version`）验证，能运行才算找到。
 fn find_binary(name: &str) -> Option<PathBuf> {
-    let candidates = [
-        name.to_string(),
-        format!("/usr/local/bin/{name}"),
-        format!("/opt/homebrew/bin/{name}"),
-        format!("/usr/bin/{name}"),
-    ];
-    for c in candidates {
-        let p = PathBuf::from(&c);
-        if p.is_file() {
+    let mut candidates: Vec<PathBuf> = vec![PathBuf::from(name)];
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            candidates.push(PathBuf::from(dir).join(name));
+        }
+    }
+    for base in ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"] {
+        candidates.push(PathBuf::from(base).join(name));
+    }
+    for p in candidates {
+        if runs_ok(&p) {
             return Some(p);
         }
     }
-    // PATH 搜索
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in path_var.split(':') {
-            let p = PathBuf::from(dir).join(name);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
     None
+}
+
+/// 真实执行 `<bin> -version` 确认可用（ffmpeg/ffprobe 均支持 -version）。
+fn runs_ok(bin: &Path) -> bool {
+    std::process::Command::new(bin)
+        .arg("-version")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
 }
 
 fn probe_version(ffmpeg: &Path) -> Option<String> {

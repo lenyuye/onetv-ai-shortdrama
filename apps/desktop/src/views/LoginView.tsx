@@ -2,12 +2,19 @@
  * 登录界面（v2.1）—— 本地账户门。
  * 默认 admin / 12345；忘记密码凭绑定邮箱重置（本地验证邮箱地址，无验证码下发）。
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as api from "../api";
 import { useApp } from "../store";
 
+/** Tauri 命令 Err 时前端拿到 {message} 对象，统一提取可读文案 */
+const errMsg = (e: unknown): string => {
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
+  try { return JSON.stringify(e); } catch { return String(e); }
+};
+
 export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
-  const { toast } = useApp();
+  const { toast, appVersion } = useApp();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -22,6 +29,14 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
   const [codeSent, setCodeSent] = useState<null | { sent: boolean; message: string }>(null);
   const [countdown, setCountdown] = useState(0);
   const [codeBusy, setCodeBusy] = useState(false);
+  // 底部默认账号提示：null=检测中（保持显示原文），true=仍是默认密码，false=用户已自定义
+  const [footDefault, setFootDefault] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    api.authStatus()
+      .then((st) => setFootDefault(st.hasDefaultPassword))
+      .catch(() => setFootDefault(null));
+  }, []);
 
   const openReset = async () => {
     setResetOpen(true);
@@ -49,7 +64,7 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
         setErr("用户名或密码不正确");
       }
     } catch (e) {
-      setErr(String(e));
+      setErr(errMsg(e));
     } finally {
       setBusy(false);
     }
@@ -71,7 +86,7 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
         }, 1000);
       }
     } catch (e) {
-      setResetErr(String(e));
+      setResetErr(errMsg(e));
     } finally {
       setCodeBusy(false);
     }
@@ -79,13 +94,18 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
 
   const doReset = async () => {
     setResetErr("");
+    const email = resetEmail.trim();
+    if (!email || !email.includes("@") || resetPass.length < 5) {
+      setResetErr("请输入绑定邮箱和新密码（至少 5 位）");
+      return;
+    }
     try {
-      await api.authResetWithEmail(resetEmail.trim(), resetPass, resetCode.trim() || undefined);
+      await api.authResetWithEmail(email, resetPass, resetCode.trim() || undefined);
       toast("密码已重置，请用新密码登录", "ok");
       setResetOpen(false);
       setPassword("");
     } catch (e) {
-      setResetErr(String(e));
+      setResetErr(errMsg(e));
     }
   };
 
@@ -96,7 +116,7 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
         <div className="login-logo">
           <img src="/logo.png" alt="OneTV" />
           <h1>OneTV</h1>
-          <p>本地优先的短剧创作工作台 · v2.2</p>
+          <p>本地优先的短剧创作工作台 · v{appVersion ?? "…"}</p>
         </div>
 
         <div className="field">
@@ -117,7 +137,7 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
           <label>密码</label>
           <input
             type="password"
-            placeholder="••••••"
+            placeholder="请输入密码"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && login()}
@@ -128,7 +148,13 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
           {busy ? "登录中…" : "登 录"}
         </button>
         <div className="login-foot">
-          <span>首次使用：账号 <b>admin</b> / 密码 <b>12345</b>，登录后请在「设置 → 账户安全」修改并绑定邮箱</span>
+          <span>
+            {footDefault === null
+              ? "首次使用：账号 admin / 密码 12345，登录后请在「设置 → 账户安全」修改并绑定邮箱"
+              : footDefault
+                ? "首次使用：账号 admin / 密码 12345，登录后请在「设置 → 账户安全」修改并绑定邮箱"
+                : "账号为你本人设置（忘记密码可凭绑定邮箱重置）"}
+          </span>
           <a
             onClick={(e) => {
               e.preventDefault();

@@ -4,7 +4,7 @@
  * 后端命令契约（Rust 侧已提供，见 src-tauri/src/lib.rs）：
  * - doc_get(episode_id, kind: "script"|"storyboard"|"timeline") -> serde_json::Value
  * - doc_save(episode_id, kind, doc) -> ()
- * - agent_chat(text) -> { plan, auto_executed, job_ids }   （snake_case 线上格式）
+ * - agent_chat(text, provider_id?, model_id?) -> { plan, auto_executed, job_ids }   （snake_case 线上格式）
  * - agent_approve(plan_id) -> Vec<String>
  * - asset_list() -> Vec<AssetRecord>（复用 api-assets.ts）
  *
@@ -72,9 +72,25 @@ export interface AgentChatResult {
   jobIds: string[];
 }
 
-/** 规划并返回执行计划；低风险 Chat 意图会被后端直接执行（autoExecuted=true）。 */
-export async function agentChat(text: string): Promise<AgentChatResult> {
-  const raw = asObj(await invoke<unknown>("agent_chat", { text })) ?? {};
+/** 所选对话模型（null/undefined = 自动：模型页「生成模型设置」的默认模型或自动路由） */
+export interface AgentChatModel {
+  providerId: string;
+  modelId: string;
+}
+
+/** 规划并返回执行计划；低风险 Chat 意图会被后端直接执行（autoExecuted=true）。
+ *  model 非空时把 providerId/modelId 传给后端（计划步骤优先使用该模型），不传则走默认。 */
+export async function agentChat(
+  text: string,
+  model?: AgentChatModel | null
+): Promise<AgentChatResult> {
+  const raw =
+    asObj(
+      await invoke<unknown>("agent_chat", {
+        text,
+        ...(model ? { providerId: model.providerId, modelId: model.modelId } : {}),
+      })
+    ) ?? {};
   return {
     plan: normalizePlan(asObj(raw.plan) ?? {}),
     autoExecuted: raw.autoExecuted === true || raw.auto_executed === true,

@@ -1,9 +1,10 @@
 /**
  * OneTV 应用外壳 —— 顶栏 / 左侧导航 / 主区 / 底部任务栏（规格 §2.1）。
  */
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useApp, type ViewKey } from "./store";
 import * as api from "./api";
+import { jobList, type JobDto } from "./api-providers";
 import HomeView from "./views/HomeView";
 import ProjectsView from "./views/ProjectsView";
 import SettingsView from "./views/SettingsView";
@@ -14,6 +15,7 @@ import ScriptView from "./views/ScriptView";
 import StoryboardView from "./views/StoryboardView";
 import JobsView from "./views/JobsView";
 import SkillsView from "./views/SkillsView";
+import HermesView from "./views/HermesView";
 import LoginView from "./views/LoginView";
 import AgentChatView from "./views/AgentChatView";
 import { Toaster } from "./components/Toaster";
@@ -28,6 +30,7 @@ const NAV: { key: ViewKey; icon: string; label: string; section: string }[] = [
   { key: "assets", icon: "🗂️", label: "资产", section: "管理" },
   { key: "models", icon: "🧠", label: "模型", section: "管理" },
   { key: "skills", icon: "🧩", label: "Skills", section: "管理" },
+  { key: "hermes", icon: "🛰️", label: "Hermes 连接", section: "管理" },
   { key: "jobs", icon: "⏳", label: "任务", section: "管理" },
   { key: "settings", icon: "⚙️", label: "设置", section: "系统" },
 ];
@@ -35,20 +38,69 @@ const NAV: { key: ViewKey; icon: string; label: string; section: string }[] = [
 const PLACEHOLDER_VIEWS: Record<string, string> = {};
 
 export default function App() {
-  const { view, setView, settings, loadSettings, ffmpeg, loadFfmpeg, project, loadProject, authed, setAuthed } =
+  const { view, setView, settings, loadSettings, ffmpeg, loadFfmpeg, project, loadProject, authed, setAuthed, appVersion, loadAppVersion } =
     useApp();
+  // 顶栏/底栏实时任务计数（此前硬编码"任务 0"，批准执行后徽标不动）
+  const [jobs, setJobs] = useState<JobDto[]>([]);
+
+  const refreshJobs = () => {
+    jobList(200)
+      .then((list) => setJobs(list))
+      .catch(() => {});
+  };
 
   useEffect(() => {
     loadSettings();
     loadFfmpeg();
     loadProject();
+    loadAppVersion();
     api.authStatus().then((st) => setAuthed(!!st.loggedIn)).catch(() => setAuthed(false));
+    refreshJobs();
+
+    // 任务事件驱动 + 兜底轮询，保证徽标实时反映队列
+    const events = ["job.created", "job.progress", "job.succeeded", "job.failed"];
+    const unlistens: Promise<unknown>[] = events.map((e) => api.onAppEvent(e, refreshJobs));
+    const timer = window.setInterval(refreshJobs, 5000);
+
+    // 原生菜单入口（macOS 菜单栏 → 对应页面）
+    unlistens.push(
+      api.onAppEvent("menu:settings", () => useApp.getState().setView("settings")),
+      api.onAppEvent("menu:new-project", () => useApp.getState().setView("home")),
+      api.onAppEvent("menu:open-project", () => useApp.getState().setView("home")),
+      api.onAppEvent("menu:export-pkg", () => useApp.getState().setView("projects")),
+    );
+    return () => {
+      unlistens.forEach((u) => u.then((f) => (f as () => void)()).catch(() => {}));
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const activeJobs = jobs.filter((j) => !["SUCCEEDED", "FAILED", "CANCELED"].includes(j.state));
+  const runningCount = jobs.filter((j) => j.state === "RUNNING").length;
+  const avgProgress = activeJobs.length
+    ? Math.round((activeJobs.reduce((s, j) => s + (j.progress ?? 0), 0) / activeJobs.length) * 100)
+    : 0;
+
+  // 全局右键菜单兜底拦截：阻止 WKWebView 弹出英文默认菜单（含 Reload）。
+  // 输入类元素放行，保留系统的中文编辑菜单（拷贝/粘贴…）；
+  // 各视图自定义右键菜单在自己的 onContextMenu 里 preventDefault，不受此层影响。
+  useEffect(() => {
+    const onCtx = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      // 输入类元素保留系统编辑菜单（系统菜单为中文：拷贝/粘贴…）
+      if (t && t.closest('input, textarea, [contenteditable="true"]')) return;
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", onCtx);
+    return () => document.removeEventListener("contextmenu", onCtx);
   }, []);
 
   // 主题/皮肤应用（v2.1 外观设置；依赖 authed：登录切换会重建 .skin-layer 节点，需重新应用）
   useEffect(() => {
     if (!settings) return;
     document.documentElement.dataset.theme = settings.theme === "light" ? "light" : "dark";
+    // 有自定义皮肤时主界面表面转半透明，让皮肤透出（global.css「皮肤透出」段）
+    document.body.classList.toggle("has-skin", !!settings.skin);
     const layer = document.querySelector<HTMLDivElement>(".skin-layer");
     if (layer) {
       if (settings.skin) {
@@ -108,6 +160,9 @@ export default function App() {
     case "skills":
       main = <SkillsView />;
       break;
+    case "hermes":
+      main = <HermesView />;
+      break;
     case "agent":
       main = <AgentChatView />;
       break;
@@ -137,7 +192,7 @@ export default function App() {
         <span className={`pill ${ffmpeg?.ok ? "ok" : "warn"}`} title={ffmpeg?.message}>
           {ffmpeg?.ok ? `FFmpeg ${ffmpeg.ffmpegVersion ?? ""}` : "FFmpeg 未就绪"}
         </span>
-        <span className="pill" title="任务队列">任务 0</span>
+        <span className={`pill ${activeJobs.length ? "ok" : ""}`} title="进行中的任务数">任务 {activeJobs.length}</span>
         <button className="btn sm ghost" onClick={() => setView("settings")}>设置</button>
       </header>
 
@@ -167,15 +222,15 @@ export default function App() {
 
       {/* 底部任务栏 */}
       <footer className="bottombar">
-        <span>并发 0/{settings?.maxConcurrentJobs ?? 2}</span>
+        <span>并发 {runningCount}/{settings?.maxConcurrentJobs ?? 2}</span>
         <span className="sep">|</span>
-        <span>队列 0</span>
+        <span>队列 {activeJobs.length}</span>
         <span className="sep">|</span>
-        <div className="progress-mini"><div style={{ width: "0%" }} /></div>
+        <div className="progress-mini"><div style={{ width: `${avgProgress}%` }} /></div>
         <span className="sep">|</span>
         <span>{offline ? "网络：Local-only（已禁止公网出站）" : "网络：仅允许已配置的 Provider"}</span>
         <span style={{ flex: 1 }} />
-        <span>OneTV v2.2.0 · Local-first · No telemetry</span>
+        <span>OneTV v{appVersion ?? "…"} · Local-first · No telemetry</span>
       </footer>
 
       <Toaster />

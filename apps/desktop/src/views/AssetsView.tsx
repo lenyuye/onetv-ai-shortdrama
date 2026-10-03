@@ -9,18 +9,19 @@ import { useCallback, useEffect, useState } from "react";
 import * as assets from "../api-assets";
 import type { AssetImportKind, AssetRecord } from "../api-assets";
 import { video_understand } from "../api-extras";
+import { errMsg } from "../api";
 import { useApp } from "../store";
 
 /* ---------------- 常量 ---------------- */
 
-/** 筛选 tab —— 除 all 外的 key 与 Rust 侧 kind 存储值完全一致 */
+/** 筛选 tab —— 除 all 外的 key 与 Rust 侧 kind 存储值对齐（documents 含 document/references 等） */
 const KIND_TABS: { key: string; label: string }[] = [
   { key: "all", label: "全部" },
   { key: "images", label: "图片" },
   { key: "videos", label: "视频" },
   { key: "audio", label: "音频" },
   { key: "subtitles", label: "字幕" },
-  { key: "documents", label: "文档" },
+  { key: "documents", label: "文档/参考" },
 ];
 
 const IMPORT_BUTTONS: { kind: AssetImportKind; label: string; icon: string }[] = [
@@ -69,20 +70,23 @@ function kindGroup(a: AssetRecord): "image" | "video" | "audio" | "doc" {
   }
 }
 
-/** 筛选 tab 是否命中某条资产 */
-function matchTab(a: AssetRecord, tab: string): boolean {
-  if (tab === "all") return true;
-  if (a.kind === tab) return true;
+/** 每条资产归入唯一分类 tab（保证各分类计数之和 === 总数） */
+function tabOf(a: AssetRecord): string {
+  // 字幕优先：kind 为 subtitle(s) 或 srt/vtt mime
+  if (a.kind === "subtitles" || a.kind === "subtitle") return "subtitles";
+  if (a.mime === "application/x-subrip" || a.mime === "text/vtt") return "subtitles";
   // 容错：单复数 kind 与 mime 归一
-  if (tab === "images" && kindGroup(a) === "image") return true;
-  if (tab === "videos" && kindGroup(a) === "video") return true;
-  if (tab === "audio" && kindGroup(a) === "audio") return true;
-  if (tab === "subtitles") {
-    if (a.kind === "subtitle") return true;
-    if (a.mime === "application/x-subrip" || a.mime === "text/vtt") return true;
-  }
-  if (tab === "documents" && a.kind === "document") return true;
-  return false;
+  const g = kindGroup(a);
+  if (g === "image") return "images";
+  if (g === "video") return "videos";
+  if (g === "audio") return "audio";
+  // 其余（document / references 等文本类）全部归入「文档/参考」兜底
+  return "documents";
+}
+
+/** 筛选 tab 是否命中某条资产（每条资产仅命中一个分类 tab，all 除外） */
+function matchTab(a: AssetRecord, tab: string): boolean {
+  return tab === "all" || tabOf(a) === tab;
 }
 
 /* ---------------- 资产卡片 ---------------- */
@@ -190,7 +194,9 @@ export default function AssetsView() {
       await refresh();
       toast(dedup ? `内容已存在，SHA-256 去重：${basename(rec.path)}` : `已导入：${basename(rec.path)}`, "ok");
     } catch (e) {
-      toast(`导入失败：${String(e)}`, "err");
+      const msg = errMsg(e);
+      if (msg.includes("已取消")) return; // 用户在文件选择框取消，静默
+      toast(`导入失败：${msg}`, "err");
     } finally {
       setBusyKind(null);
     }
@@ -201,7 +207,8 @@ export default function AssetsView() {
       await navigator.clipboard.writeText(a.path);
       toast("路径已复制到剪贴板", "ok");
     } catch (e) {
-      toast(`复制失败：${String(e)}`, "err");
+      const msg = errMsg(e);
+      if (!msg.includes("已取消")) toast(`复制失败：${msg}`, "err");
     }
   };
 
@@ -213,7 +220,8 @@ export default function AssetsView() {
       await refresh();
       toast("已删除", "ok");
     } catch (e) {
-      toast(`删除失败：${String(e)}`, "err");
+      const msg = errMsg(e);
+      if (!msg.includes("已取消")) toast(`删除失败：${msg}`, "err");
     } finally {
       setDeletingId(null);
     }
@@ -229,7 +237,8 @@ export default function AssetsView() {
         toast(`视频理解任务创建失败：${r.message ?? "未知错误"}`, "err");
       }
     } catch (e) {
-      toast(`视频理解任务创建失败：${String(e)}`, "err");
+      const msg = errMsg(e);
+      if (!msg.includes("已取消")) toast(`视频理解任务创建失败：${msg}`, "err");
     } finally {
       setUnderstandingId(null);
     }

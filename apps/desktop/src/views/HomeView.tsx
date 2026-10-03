@@ -24,8 +24,12 @@ export default function HomeView() {
     }
     setBusy(true);
     try {
-      const dir = await api.projectPickDirectory("选择工作区文件夹（项目将创建在这里）");
-      if (!dir) return;
+      // 设置了默认项目文件夹则直接使用，否则每次弹窗选择
+      let dir: string | null = settings?.defaultProjectFolder ?? null;
+      if (!dir) {
+        dir = await api.projectPickDirectory("选择工作区文件夹（项目将创建在这里）");
+        if (!dir) return;
+      }
       const manifest = await api.projectCreate({
         workspacePath: dir,
         projectTitle: title.trim(),
@@ -37,7 +41,8 @@ export default function HomeView() {
       toast(`项目已创建：${manifest.project.title}`, "ok");
       setView("projects");
     } catch (e) {
-      toast(`创建失败：${String(e)}`, "err");
+      const msg = api.errMsg(e);
+      if (!msg.includes("已取消")) toast(`创建失败：${msg}`, "err");
     } finally {
       setBusy(false);
     }
@@ -52,7 +57,7 @@ export default function HomeView() {
         await api.projectOpen(dir);
       } catch (e) {
         // 普通文件夹（不是 .ytv 工程）：提供就地新建，避免用户混淆「新建/打开」
-        const msg = String(e);
+        const msg = api.errMsg(e);
         if (msg.includes("缺少 project.json") || msg.includes("不是 OneTV 工程")) {
           const name = dir.split("/").filter(Boolean).pop() ?? "";
           const ok = window.confirm(
@@ -78,9 +83,39 @@ export default function HomeView() {
       toast("项目已打开", "ok");
       setView("projects");
     } catch (e) {
-      toast(`打开失败：${String(e)}`, "err");
+      const msg = api.errMsg(e);
+      if (!msg.includes("已取消")) toast(`打开失败：${msg}`, "err");
     } finally {
       setBusy(false);
+    }
+  };
+
+  // 仅从「最近打开」列表移除记录，不碰磁盘工程文件
+  const removeRecent = async (r: api.RecentWorkspace) => {
+    const name = r.name || r.path.split("/").filter(Boolean).pop() || r.path;
+    if (!window.confirm(`仅移除打开记录，不删除工程文件？\n\n「${name}」将不再出现在最近列表，但磁盘上的工程文件夹保持不变。`)) return;
+    try {
+      await api.workspaceRecentRemove(r.path);
+      refreshRecent();
+      toast("已移除打开记录", "ok");
+    } catch (e) {
+      toast(`移除记录失败：${api.errMsg(e)}`, "err");
+    }
+  };
+
+  // 高危：连磁盘工程文件夹一起删除，不可恢复
+  const deleteProject = async (r: api.RecentWorkspace) => {
+    const name = r.name || r.path.split("/").filter(Boolean).pop() || r.path;
+    if (!window.confirm(`将把磁盘上的工程文件夹一并删除，全部剧本/分镜/素材不可恢复！\n\n确定删除「${name}」吗？\n\n路径：${r.path}`)) return;
+    try {
+      await api.projectDelete(r.path);
+      // 若删的是当前打开项目，loadProject 后 UI 回到「未打开项目」态
+      await useApp.getState().loadProject();
+      refreshRecent();
+      toast(`已删除工程「${name}」`, "ok");
+    } catch (e) {
+      const msg = api.errMsg(e);
+      if (!msg.includes("已取消")) toast(`删除工程失败：${msg}`, "err");
     }
   };
 
@@ -149,11 +184,12 @@ export default function HomeView() {
           <div className="field">
             <label>保存位置</label>
             <span className="sub">
-              点击「创建」后选择文件夹。默认建议放在
-              {settings?.defaultProjectFolder ? ` ${settings.defaultProjectFolder}` : " 文稿/OneTV 下"}
+              {settings?.defaultProjectFolder
+                ? `默认保存到 ${settings.defaultProjectFolder}（可在「设置 → 存储位置」修改）`
+                : "未设置默认位置：点击「创建」后选择文件夹，或在「设置 → 存储位置」预设"}
             </span>
           </div>
-          <button className="btn primary" disabled={busy} onClick={createProject}>
+          <button className="btn primary" disabled={busy || !title.trim()} title={!title.trim() ? "请先填写短剧名称" : ""} onClick={createProject}>
             创建项目
           </button>
           <button className="btn" style={{ marginLeft: 10 }} disabled={busy} onClick={openProject}>
@@ -177,6 +213,8 @@ export default function HomeView() {
                     <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>{r.path}</td>
                     <td>
                       <button className="btn sm" disabled={busy} onClick={() => openRecent(r.path)}>打开</button>
+                      <button className="btn sm" disabled={busy} title="仅从最近列表移除，不删除工程文件" onClick={() => void removeRecent(r)}>移除记录</button>
+                      <button className="btn sm danger" disabled={busy} title="删除磁盘上的工程文件夹，不可恢复" onClick={() => void deleteProject(r)}>删除工程</button>
                     </td>
                   </tr>
                 ))}

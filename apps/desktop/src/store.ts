@@ -15,6 +15,7 @@ export type ViewKey =
   | "assets"
   | "models"
   | "skills"
+  | "hermes"
   | "jobs"
   | "settings";
 
@@ -37,6 +38,9 @@ interface AppState {
 
   ffmpeg: api.FfmpegStatus | null;
   loadFfmpeg: () => Promise<void>;
+
+  appVersion: string | null;
+  loadAppVersion: () => Promise<void>;
 
   project: ProjectManifest | null;
   projectRoot: string | null;
@@ -78,6 +82,16 @@ export const useApp = create<AppState>((set, get) => ({
     try {
       const f = await api.ffmpegStatus();
       set({ ffmpeg: f });
+    } catch {
+      /* ignore */
+    }
+  },
+
+  appVersion: null,
+  loadAppVersion: async () => {
+    try {
+      const info = await api.appInfo();
+      set({ appVersion: info.version });
     } catch {
       /* ignore */
     }

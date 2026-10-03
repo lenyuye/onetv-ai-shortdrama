@@ -56,6 +56,10 @@ export default function StoryboardView() {
   const [approveBusy, setApproveBusy] = useState(false);
   const [aiErr, setAiErr] = useState("");
 
+  // 本页镜头剪贴板 + 镜头卡片右键菜单
+  const [shotClipboard, setShotClipboard] = useState<Shot | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; shotId: string } | null>(null);
+
   /* ---------- 分集列表 ---------- */
   useEffect(() => {
     if (!project) return;
@@ -92,7 +96,8 @@ export default function StoryboardView() {
         .catch((e) => {
           if (cancelled) return;
           setDoc(story.emptyStoryboardDocument(ep));
-          toast(`加载分镜失败：${story.errMsg(e)}`, "err");
+          const msg = api.errMsg(e);
+          if (!msg.includes("已取消")) toast(`加载分镜失败：${msg}`, "err");
         })
         .finally(() => {
           if (!cancelled) setLoading(false);
@@ -129,6 +134,25 @@ export default function StoryboardView() {
 
   const shots = doc?.shots ?? [];
 
+  /* ---------- 右键菜单：点击外部 / Escape 关闭 ---------- */
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && typeof t.closest === "function" && t.closest("[data-ctxmenu]")) return;
+      setCtxMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCtxMenu(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [ctxMenu]);
+
   /* ---------- 保存 ---------- */
 
   const saveDoc = useCallback(
@@ -140,13 +164,142 @@ export default function StoryboardView() {
         setDoc({ ...next, updatedAt: new Date().toISOString() });
         toast(okText, "ok");
       } catch (e) {
-        toast(`保存分镜表失败：${story.errMsg(e)}`, "err");
+        const msg = api.errMsg(e);
+        if (!msg.includes("已取消")) toast(`保存分镜表失败：${msg}`, "err");
       } finally {
         setSaving(false);
       }
     },
     [episodeId, toast]
   );
+
+  /* ---------- 镜头实体操作（均走 saveDoc 持久化） ---------- */
+
+  /** 现有编号规则顺延：S001 起，取现有最大序号 + 1 */
+  const newShotId = (list: Shot[]) => {
+    let max = 0;
+    for (const s of list) {
+      const m = /^S(\d+)$/i.exec(s.shotId);
+      if (m) max = Math.max(max, Number(m[1]));
+    }
+    return `S${String(max + 1).padStart(3, "0")}`;
+  };
+
+  /** 深拷贝镜头（camera / characters / referenceAssets / generation 单独处理） */
+  const deepCloneShot = (src: Shot): Shot => ({
+    ...src,
+    camera: { ...src.camera },
+    characters: [...src.characters],
+    referenceAssets: [...src.referenceAssets],
+    generation: { ...src.generation },
+  });
+
+  /** 空镜头模板（与 normalizeStoryboard 缺省镜头一致） */
+  const emptyShot = (list: Shot[]): Shot => ({
+    shotId: newShotId(list),
+    scene: "",
+    durationSec: 3,
+    shotSize: "中景",
+    camera: { movement: "", angle: "" },
+    characters: [],
+    action: "",
+    prompt: "",
+    referenceAssets: [],
+    generation: { type: "text_to_video", duration: 3, aspectRatio: "9:16" },
+    status: "draft",
+  });
+
+  /** ➕ 追加一个空镜头（工具栏 / 右键菜单） */
+  const addShotNow = async () => {
+    if (!doc) return;
+    const shot = emptyShot(doc.shots);
+    await saveDoc({ ...doc, shots: [...doc.shots, shot] }, `已新建镜头 ${shot.shotId}`);
+  };
+
+  /** 📄 复制镜头到本页剪贴板 */
+  const copyShot = (shot: Shot) => {
+    setShotClipboard(deepCloneShot(shot));
+    toast(`已复制镜头 ${shot.shotId} 到剪贴板`, "ok");
+  };
+
+  /** 📋 粘贴剪贴板镜头到末尾（新 id、清空分镜图、状态回草稿） */
+  const pasteShot = async () => {
+    if (!doc) return;
+    if (!shotClipboard) {
+      toast("剪贴板为空，请先复制一个镜头", "warn");
+      return;
+    }
+    const shot: Shot = {
+      ...deepCloneShot(shotClipboard),
+      shotId: newShotId(doc.shots),
+      outputAssetId: undefined,
+      status: "draft",
+    };
+    await saveDoc({ ...doc, shots: [...doc.shots, shot] }, `已粘贴镜头 ${shot.shotId}`);
+  };
+
+  /** ⧉ 生成副本：原镜头之后克隆（新 shotId、outputAssetId 清空、status 回 draft） */
+  const duplicateShot = async (shot: Shot) => {
+    if (!doc) return;
+    const clone: Shot = {
+      ...deepCloneShot(shot),
+      shotId: newShotId(doc.shots),
+      outputAssetId: undefined,
+      status: "draft",
+    };
+    const idx = doc.shots.findIndex((s) => s.shotId === shot.shotId);
+    const list = [...doc.shots];
+    list.splice(idx + 1, 0, clone);
+    await saveDoc({ ...doc, shots: list }, `已生成镜头副本 ${clone.shotId}`);
+  };
+
+  /** 🗑 删除镜头（仅剩一个时拒绝） */
+  const deleteShotNow = async (shotId: string) => {
+    if (!doc) return;
+    if (doc.shots.length <= 1) {
+      toast("至少保留一个镜头", "warn");
+      return;
+    }
+    await saveDoc(
+      { ...doc, shots: doc.shots.filter((s) => s.shotId !== shotId) },
+      `已删除镜头 ${shotId}`
+    );
+  };
+
+  /** ⬆️ 上传分镜图：shotId 为空时作用于第一个未出图镜头 */
+  const uploadShotImage = async (shotId: string | null) => {
+    let targetId = shotId;
+    if (!targetId) {
+      if (shots.length === 0) {
+        toast("分镜表为空，请先新建或拆分镜头", "warn");
+        return;
+      }
+      const first = shots.find((s) => !s.outputAssetId);
+      if (!first) {
+        toast("所有镜头均已出图，无需再上传", "warn");
+        return;
+      }
+      targetId = first.shotId;
+    }
+    try {
+      const att = await api.agentAttach();
+      if (att.kind !== "images") {
+        toast("请选择图片文件（已存入资产库）", "warn");
+        return;
+      }
+      if (!doc) return;
+      const next: StoryboardDocument = {
+        ...doc,
+        shots: doc.shots.map((s) =>
+          s.shotId === targetId ? { ...s, outputAssetId: att.assetId, status: "ready" } : s
+        ),
+      };
+      await saveDoc(next, `已为镜头 ${targetId} 上传分镜图`);
+    } catch (e) {
+      const msg = api.errMsg(e);
+      if (!msg.includes("已取消")) toast(`上传分镜图失败：${msg}`, "err");
+    }
+  };
 
   /* ---------- 选中 ---------- */
 
@@ -249,7 +402,7 @@ export default function StoryboardView() {
       setPlan(res.plan);
       setAutoExecuted(res.autoExecuted);
     } catch (e) {
-      setAiErr(story.errMsg(e));
+      setAiErr(api.errMsg(e));
     } finally {
       setChatBusy(false);
     }
@@ -269,15 +422,16 @@ export default function StoryboardView() {
         if (ep === episodeId) void refresh(ep);
       }, 1500);
     } catch (e) {
-      toast(`批准失败：${story.errMsg(e)}`, "err");
+      const msg = api.errMsg(e);
+      if (!msg.includes("已取消")) toast(`批准失败：${msg}`, "err");
     } finally {
       setApproveBusy(false);
     }
   };
 
-  /** 分镜图 URL：status=ready 且 outputAssetId 能映射到资产路径 */
+  /** 分镜图 URL：有 outputAssetId 且能映射到资产路径即展示（与批准状态无关） */
   const shotImage = (shot: Shot): string | null => {
-    if (shot.status !== "ready" || !shot.outputAssetId) return null;
+    if (!shot.outputAssetId) return null;
     if (brokenImgs.has(`${shot.shotId}:${shot.outputAssetId}`)) return null;
     const path = assetPathMap.get(shot.outputAssetId);
     return path ? story.assetUrl(path) : null;
@@ -294,9 +448,21 @@ export default function StoryboardView() {
     });
   };
 
-  const readyCount = useMemo(() => shots.filter((s) => s.status === "ready").length, [shots]);
+  /** 已出图 = 有 outputAssetId（已拿到分镜图）的镜头数，与批准状态无关 */
+  const readyCount = useMemo(() => shots.filter((s) => !!s.outputAssetId).length, [shots]);
   const approvedCount = useMemo(() => shots.filter((s) => s.status === "approved").length, [shots]);
   const editShot = shots.find((s) => s.shotId === editShotId) ?? null;
+  const ctxShot = ctxMenu ? (shots.find((s) => s.shotId === ctxMenu.shotId) ?? null) : null;
+
+  /** 第一步确认弹窗正文 —— 四个入口语义不同，各有专属文案 */
+  const aiIntro =
+    aiContext === "split"
+      ? "Agent 将读取当前集剧本，按场景与台词拆分为镜头表（本地工具，不出站）。"
+      : aiContext === "compose"
+        ? "将把已出图镜头用 FFmpeg 在本地合成为竖版成片（不出网），需要项目里已有分镜图。"
+        : aiContext === "export"
+          ? "将把最近合成的成片转码为选定画幅并导出（本地转码，不出网）。"
+          : `将为 ${shots.length} 个镜头逐个生成分镜图并写回分镜表（status → ready）。`;
 
   /* ---------- 守卫空状态 ---------- */
 
@@ -361,6 +527,16 @@ export default function StoryboardView() {
           <button className="btn primary" onClick={() => openAi("batch")}>✨ 批量生成分镜图</button>
           <button className="btn blue" onClick={() => openAi("compose")}>🎞️ 合成成片</button>
           <button className="btn" onClick={() => openAi("export")}>📤 导出竖版</button>
+          <button className="btn" disabled={saving} onClick={() => void addShotNow()}>➕ 新建镜头</button>
+          <button
+            className="btn"
+            disabled={!shotClipboard || saving}
+            title={shotClipboard ? "粘贴剪贴板镜头到末尾" : "剪贴板为空，请先复制镜头"}
+            onClick={() => void pasteShot()}
+          >
+            📋 粘贴
+          </button>
+          <button className="btn" disabled={saving} onClick={() => void uploadShotImage(null)}>⬆️ 上传分镜图</button>
           <button className="btn ghost" disabled={loading} onClick={() => refresh(episodeId)}>⟳ 刷新</button>
         </div>
       </div>
@@ -416,7 +592,11 @@ export default function StoryboardView() {
                   key={shot.shotId}
                   className={`card sb-shot ${selectedIds.has(shot.shotId) ? "selected" : ""}`}
                   onClick={() => openDetail(shot)}
-                  title="点击编辑 prompt / 景别 / 时长 / 台词"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setCtxMenu({ x: e.clientX, y: e.clientY, shotId: shot.shotId });
+                  }}
+                  title="点击编辑 prompt / 景别 / 时长 / 台词 · 右键更多操作"
                 >
                   <div className="sb-shot-head">
                     <input
@@ -430,6 +610,13 @@ export default function StoryboardView() {
                     <span className="tag blue">{shot.shotSize}</span>
                     <span style={{ flex: 1 }} />
                     <span className={`tag ${status.cls}`}>{status.label}</span>
+                  </div>
+
+                  <div className="sb-shot-actions" onClick={(e) => e.stopPropagation()}>
+                    <button className="btn sm" onClick={() => openDetail(shot)}>✏️ 编辑</button>
+                    <button className="btn sm" onClick={() => copyShot(shot)}>📄 复制</button>
+                    <button className="btn sm" disabled={saving} onClick={() => void duplicateShot(shot)}>⧉ 生成副本</button>
+                    <button className="btn sm danger" disabled={saving} onClick={() => void deleteShotNow(shot.shotId)}>🗑 删除</button>
                   </div>
 
                   {img && (
@@ -466,6 +653,46 @@ export default function StoryboardView() {
         </>
       )}
 
+      {/* ---------- 镜头右键菜单 ---------- */}
+      {ctxMenu && (
+        <div
+          className="sb-ctxmenu"
+          data-ctxmenu
+          style={{
+            left: Math.max(4, Math.min(ctxMenu.x, window.innerWidth - 190)),
+            top: Math.max(4, Math.min(ctxMenu.y, window.innerHeight - 200)),
+          }}
+        >
+          <button onClick={() => { setCtxMenu(null); void addShotNow(); }}>➕ 新建镜头</button>
+          <button
+            disabled={!ctxShot}
+            onClick={() => { const s = ctxShot; setCtxMenu(null); if (s) copyShot(s); }}
+          >
+            📄 复制
+          </button>
+          <button
+            disabled={!shotClipboard}
+            title={shotClipboard ? "粘贴剪贴板镜头到末尾" : "剪贴板为空，请先复制镜头"}
+            onClick={() => { setCtxMenu(null); void pasteShot(); }}
+          >
+            📋 粘贴
+          </button>
+          <button
+            className="danger"
+            disabled={!ctxShot}
+            onClick={() => { const id = ctxMenu.shotId; setCtxMenu(null); void deleteShotNow(id); }}
+          >
+            🗑 删除
+          </button>
+          <button
+            disabled={!ctxShot}
+            onClick={() => { const id = ctxMenu.shotId; setCtxMenu(null); void uploadShotImage(id); }}
+          >
+            ⬆️ 上传分镜图
+          </button>
+        </div>
+      )}
+
       {/* ---------- Agent 计划弹窗（拆分 / 批量生成共用） ---------- */}
       {aiOpen && (
         <div className="modal-overlay" onClick={closeAi}>
@@ -487,17 +714,7 @@ export default function StoryboardView() {
               {!plan ? (
                 <>
                   <div className="field">
-                    {aiContext === "split" ? (
-                      <>
-                        <div className="sb-plan-desc">
-                          Agent 将读取当前集剧本，按场景与台词拆分为镜头表（本地工具，不出站）。
-                        </div>
-                      </>
-                    ) : (
-                      <div className="sb-plan-desc">
-                        将为 {shots.length} 个镜头逐个生成分镜图并写回分镜表（status → ready）。
-                      </div>
-                    )}
+                    <div className="sb-plan-desc">{aiIntro}</div>
                   </div>
                   {aiErr && <div className="sb-err">⚠️ {aiErr}</div>}
                 </>
@@ -633,6 +850,23 @@ const STORYBOARD_CSS = `
 .sb-shot:hover { border-color: var(--blue); box-shadow: var(--glow-blue); }
 .sb-shot.selected { border-color: rgba(255, 61, 154, 0.55); background: linear-gradient(180deg, var(--pink-soft), transparent 60%), var(--panel-2); }
 .sb-shot-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.sb-shot-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.sb-shot-actions .btn { padding: 2px 8px; font-size: 11px; }
+.sb-ctxmenu {
+  position: fixed; z-index: 1000; min-width: 160px; padding: 4px;
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--panel-2); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+.sb-ctxmenu button {
+  text-align: left; background: none; border: none; cursor: pointer;
+  color: var(--text-dim); font-size: 12.5px; padding: 7px 10px;
+  border-radius: 4px; white-space: nowrap;
+}
+.sb-ctxmenu button:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.sb-ctxmenu button.danger { color: var(--red); }
+.sb-ctxmenu button.danger:hover { background: rgba(255, 61, 90, 0.14); color: var(--red); }
+.sb-ctxmenu button:disabled { opacity: 0.4; cursor: not-allowed; }
 .sb-shot-id { font-family: var(--mono); font-size: 11.5px; font-weight: 600; color: var(--text); }
 .sb-shot-img { width: 100%; aspect-ratio: 9 / 16; object-fit: cover; border-radius: var(--radius-sm); background: var(--bg-deep); display: block; max-height: 300px; }
 .sb-shot-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }

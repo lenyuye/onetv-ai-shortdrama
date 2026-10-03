@@ -1,8 +1,16 @@
 /**
  * OneTV 节点 SDK —— 所有画布节点遵守统一 Node schema（规格 §7.2）。
  * 节点类型注册表：Rust 端 NodeRuntime 与前端 Palette 共用该定义。
+ *
+ * v2.4.1 连线自由化：输入端口不再限制单一类型/单条入边——
+ * 生成类节点（生图/生视频/片段合成）接受「文本 + 图片 + 视频」任意组合，
+ * 语义端口名保留（prompt/ref/image 仅为可读性），多源聚合由执行层解释。
+ * 旧画布数据（按原端口连接）天然兼容：端口名未变，仅 accept 放宽。
  */
 import type { NodeType, NodeTypeDef } from "@onetv/shared-types";
+
+/** 生成类输入端口的统一接受集：任何素材都能作为参考/提示来源 */
+const ANY_SOURCE = ["text/*", "image/*", "video/*", "audio/*", "*/*"];
 
 export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
   text: {
@@ -17,10 +25,10 @@ export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
     nodeType: "script",
     title: "剧本",
     inputs: [
-      { port: "brief", accept: ["text/*"] },
-      { port: "bible", accept: ["application/onetv.bible"] },
+      { port: "brief", accept: ANY_SOURCE, multiple: true },
+      { port: "bible", accept: ANY_SOURCE, multiple: true },
     ],
-    outputs: [{ port: "script", accept: ["application/onetv.script"] }],
+    outputs: [{ port: "script", accept: ["application/onetv.script", "text/*"] }],
     params: {
       model: { type: "modelRef", required: true },
       episodeCount: { type: "number", min: 1, max: 100 },
@@ -31,8 +39,8 @@ export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
   storyboard: {
     nodeType: "storyboard",
     title: "分镜",
-    inputs: [{ port: "script", accept: ["application/onetv.script"] }],
-    outputs: [{ port: "shots", accept: ["application/onetv.shots"], multiple: true }],
+    inputs: [{ port: "script", accept: ANY_SOURCE, multiple: true }],
+    outputs: [{ port: "shots", accept: ["application/onetv.shots", "text/*"], multiple: true }],
     params: {
       shotsPerScene: { type: "number", min: 1, max: 20 },
       model: { type: "modelRef" },
@@ -43,8 +51,8 @@ export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
     nodeType: "image",
     title: "生图",
     inputs: [
-      { port: "prompt", accept: ["text/*"] },
-      { port: "ref", accept: ["image/*"], multiple: true },
+      { port: "prompt", accept: ANY_SOURCE, multiple: true },
+      { port: "ref", accept: ANY_SOURCE, multiple: true },
     ],
     outputs: [{ port: "image", accept: ["image/*"], multiple: true }],
     params: {
@@ -57,9 +65,11 @@ export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
   video: {
     nodeType: "video",
     title: "生视频",
+    // v2.4.1：prompt 与 image 均接受 文本/图片/视频 混合多条输入
+    // —— 多图生视频、多文+多图生视频、图+视频续写 等都合法
     inputs: [
-      { port: "prompt", accept: ["text/*"] },
-      { port: "image", accept: ["image/*"] },
+      { port: "prompt", accept: ANY_SOURCE, multiple: true },
+      { port: "image", accept: ANY_SOURCE, multiple: true },
     ],
     outputs: [{ port: "video", accept: ["video/*"] }],
     params: {
@@ -73,7 +83,7 @@ export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
   audio: {
     nodeType: "audio",
     title: "配音/音频",
-    inputs: [{ port: "text", accept: ["text/*"] }],
+    inputs: [{ port: "text", accept: ANY_SOURCE, multiple: true }],
     outputs: [{ port: "audio", accept: ["audio/*"] }],
     params: { voice: { type: "string" }, model: { type: "modelRef" } },
     permissions: { network: "provider_only", filesystem: "project_only" },
@@ -82,8 +92,8 @@ export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
     nodeType: "video-clip",
     title: "片段合成",
     inputs: [
-      { port: "video", accept: ["video/*"], multiple: true },
-      { port: "audio", accept: ["audio/*"], multiple: true },
+      { port: "video", accept: ANY_SOURCE, multiple: true },
+      { port: "audio", accept: ANY_SOURCE, multiple: true },
     ],
     outputs: [{ port: "video", accept: ["video/*"] }],
     params: { timeline: { type: "timelineRef" }, preset: { type: "string" } },
@@ -92,7 +102,7 @@ export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
   condition: {
     nodeType: "condition",
     title: "条件分支",
-    inputs: [{ port: "in", accept: ["*/*"] }],
+    inputs: [{ port: "in", accept: ["*/*"], multiple: true }],
     outputs: [
       { port: "pass", accept: ["*/*"] },
       { port: "fail", accept: ["*/*"] },
@@ -103,7 +113,7 @@ export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
   review: {
     nodeType: "review",
     title: "人工审核",
-    inputs: [{ port: "in", accept: ["*/*"] }],
+    inputs: [{ port: "in", accept: ["*/*"], multiple: true }],
     outputs: [{ port: "approved", accept: ["*/*"] }],
     params: { note: { type: "string" } },
     permissions: { network: "none", filesystem: "none" },
@@ -111,7 +121,7 @@ export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
   export: {
     nodeType: "export",
     title: "导出",
-    inputs: [{ port: "video", accept: ["video/*"] }],
+    inputs: [{ port: "video", accept: ANY_SOURCE, multiple: true }],
     outputs: [],
     params: { preset: { type: "enum", values: ["douyin_vertical", "xhs_vertical", "horizontal_1080p", "square", "master"] } },
     permissions: { network: "none", filesystem: "project_only" },
@@ -131,7 +141,12 @@ export const NODE_PALETTE_ORDER: NodeType[] = [
   "export",
 ];
 
-/** 连线前端口类型兼容检查：不兼容时返回原因（规格 §7.3，禁止静默失败） */
+/**
+ * 连线前端口类型兼容检查（规格 §7.3，禁止静默失败）。
+ * v2.4.1：生成链路的输入端口 accept 已含通配（ANY_SOURCE 含 "* / *"），
+ * 实际上不再拒绝任何连线；此处保留 MIME 匹配逻辑供严格端口
+ * （如 text 节点只收文本）继续校验。
+ */
 export function checkPortCompatible(
   accept: string[],
   outputAccept: string[]

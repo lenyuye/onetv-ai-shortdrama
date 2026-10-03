@@ -9,12 +9,28 @@
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 const DEFAULT_USERNAME: &str = "admin";
 const DEFAULT_PASSWORD: &str = "12345";
 const ITERATIONS: u32 = 12_000;
 /// 登录会话保持：5 天内无使用才要求重新登录（v2.3）
 const SESSION_TTL_SECS: u64 = 5 * 24 * 60 * 60;
+
+/// 测试时钟偏移（秒）：时间边界测试钩子（0 = 真实系统时间）。
+/// 设置途径：① 环境变量 ONETV_TEST_TIME_OFFSET_SEC（启动时）；② 调试命令
+/// debug_set_time_offset / 设置页连点版本号 5 次唤出。仅影响会话过期判断等
+/// now_secs() 消费点，不修改系统时钟。
+static TIME_OFFSET_SECS: AtomicI64 = AtomicI64::new(0);
+
+pub fn set_time_offset(secs: i64) {
+    TIME_OFFSET_SECS.store(secs, Ordering::Relaxed);
+    tracing::warn!(seconds = secs, "test time offset changed (time-boundary test hook)");
+}
+
+pub fn time_offset() -> i64 {
+    TIME_OFFSET_SECS.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AccountFile {
@@ -89,7 +105,8 @@ impl AuthStore {
             password_hash: hash_password(DEFAULT_PASSWORD, &salt),
         };
         self.save(&account)?;
-        tracing::info!("default account initialized (admin/12345) — user must change it");
+        // 不记录默认密码明文，只保留账户名级别的信息
+        tracing::info!("default account initialized (admin) — user must change it");
         Ok(())
     }
 
@@ -252,13 +269,28 @@ impl AuthStore {
     pub fn clear_session(&self) {
         let _ = std::fs::remove_file(self.session_path());
     }
+
+    /// 会话剩余有效秒数（不刷新 last_used）。None = 无会话；0 或负 = 已过期。
+    /// 供时间边界测试钩子读取核对。
+    pub fn session_remaining_secs(&self) -> Option<i64> {
+        let raw = std::fs::read_to_string(self.session_path()).ok()?;
+        let s: SessionFile = serde_json::from_str(&raw).ok()?;
+        let elapsed = now_secs().saturating_sub(s.last_used) as i64;
+        Some(SESSION_TTL_SECS as i64 - elapsed)
+    }
 }
 
 fn now_secs() -> u64 {
-    std::time::SystemTime::now()
+    let base = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .unwrap_or(0);
+    let off = time_offset();
+    if off >= 0 {
+        base.saturating_add(off as u64)
+    } else {
+        base.saturating_sub(off.unsigned_abs())
+    }
 }
 
 fn new_salt() -> [u8; 16] {
@@ -428,5 +460,44 @@ mod tests {
             .change_credentials("12345", None, Some("newpass1"), Some("a@b.cn"))
             .unwrap();
         assert!(!store.refresh_session());
+    }
+
+    /// 时间边界测试钩子（SESSION-005~008 解除阻塞）：
+    /// 4天23:59:59 → 有效；5天整 → 有效（"5 天内"）；5天+1秒 → 过期清除。
+    #[test]
+    fn session_time_boundary_with_test_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AuthStore::new(dir.path());
+        store.ensure_initialized().unwrap();
+        store.create_session("admin").unwrap();
+        let p = dir.path().join("session.json");
+
+        // 4 天 23:59:59：仍有效（refresh 成功会顺延 last_used，故先断言剩余时长）
+        set_time_offset(5 * 86_400 - 1);
+        assert_eq!(store.session_remaining_secs(), Some(1));
+        assert!(store.refresh_session());
+
+        // 5 天整：仍有效（"5 天内"含第 5 天最后一刻，now - last_used == TTL 不超限）
+        set_time_offset(0);
+        store.create_session("admin").unwrap();
+        set_time_offset(5 * 86_400);
+        assert_eq!(store.session_remaining_secs(), Some(0));
+        assert!(store.refresh_session());
+
+        // 5 天 + 1 秒：过期，会话文件清除（会话须建立在真实时间点，再推进 TTL+1）
+        set_time_offset(0);
+        store.create_session("admin").unwrap();
+        set_time_offset(5 * 86_400 + 1);
+        assert!(!store.refresh_session());
+        assert!(!p.exists());
+
+        // 负偏移（回到过去）与会话共存：不 panic、视为有效
+        store.create_session("admin").unwrap();
+        set_time_offset(-3_600);
+        assert!(store.refresh_session());
+
+        // 恢复真实时钟（全局状态，务必复位，避免影响其他测试）
+        set_time_offset(0);
+        assert!(store.refresh_session());
     }
 }

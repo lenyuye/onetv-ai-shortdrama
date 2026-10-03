@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api-providers";
 import type { EgressPreview, JobDto, JobEventDto } from "../api-providers";
-import { onAppEvent } from "../api";
+import { errMsg, onAppEvent } from "../api";
 import { useApp } from "../store";
 
 /* ---------------- 常量 ---------------- */
@@ -37,18 +37,19 @@ const STATE_META: Record<string, { label: string; cls: string }> = {
 
 const KIND_META: Record<string, string> = {
   chat: "对话",
+  script: "剧本生成",
   vision: "视觉理解",
   structured_output: "结构化输出",
-  image_generation: "生图",
+  image_generation: "图片生成",
   image_edit: "改图",
-  video_generation: "生视频",
+  video_generation: "视频生成",
   video_edit: "剪视频",
   video_extend: "视频延展",
   tts: "配音",
   music: "音乐",
   embedding: "向量",
-  timeline_render: "时间线渲染",
-  export: "导出",
+  timeline_render: "本地合成",
+  export: "导出成片",
   import: "导入",
   video_understand: "视频理解",
 };
@@ -85,6 +86,30 @@ function safeJson(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+/** 事件 payload 展示：字符串形式的 JSON 先 parse 再用 2 空格缩进格式化，避免原样显示转义串 */
+function formatPayload(v: unknown): string {
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v);
+      if (parsed && typeof parsed === "object") return JSON.stringify(parsed, null, 2);
+    } catch {
+      /* 非 JSON 字符串，原样展示 */
+    }
+    return v;
+  }
+  return safeJson(v);
+}
+
+/** 折叠任务标题中重复的前缀（如「生成剧本：生成剧本：xx」→「生成剧本：xx」） */
+function collapseTitle(t: string): string {
+  const m = t.match(/^([^：:]+[：:])([\s\S]*)$/);
+  if (!m) return t;
+  const prefix = m[1];
+  let rest = m[2];
+  while (rest.startsWith(prefix)) rest = rest.slice(prefix.length);
+  return prefix + rest;
 }
 
 /** 事件 payload 中提取 egress（job.awaitingApproval = { job, egress, message }） */
@@ -248,7 +273,9 @@ export default function JobsView() {
       toast(`已请求取消：${j.title}`, "ok");
       await refresh();
     } catch (e) {
-      toast(`取消失败：${String(e)}`, "err");
+      const msg = errMsg(e);
+      if (msg.includes("已取消")) return; // 用户主动取消，静默
+      toast(`取消失败：${msg}`, "err");
     }
   };
 
@@ -258,7 +285,9 @@ export default function JobsView() {
       toast(`已重新入队：${j.title}`, "ok");
       await refresh();
     } catch (e) {
-      toast(`重试失败：${String(e)}`, "err");
+      const msg = errMsg(e);
+      if (msg.includes("已取消")) return; // 取消类错误静默
+      toast(`重试失败：${msg}`, "err");
     }
   };
 
@@ -268,7 +297,9 @@ export default function JobsView() {
       toast(`已批准：${j.title}`, "ok");
       await refresh();
     } catch (e) {
-      toast(`批准失败：${String(e)}`, "err");
+      const msg = errMsg(e);
+      if (msg.includes("已取消")) return; // 取消类错误静默
+      toast(`批准失败：${msg}`, "err");
     }
   };
 
@@ -279,7 +310,8 @@ export default function JobsView() {
       const events = await api.jobEvents(j.id);
       setEventsModal({ job: j, events });
     } catch (e) {
-      toast(`读取事件失败：${String(e)}`, "err");
+      const msg = errMsg(e);
+      if (!msg.includes("已取消")) toast(`读取事件失败：${msg}`, "err");
       setEventsModal(null);
     } finally {
       setEventsLoading(false);
@@ -375,7 +407,7 @@ export default function JobsView() {
         <div className="modal-overlay" onClick={() => setEventsModal(null)}>
           <div className="modal" style={{ width: "min(680px, 94vw)" }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <span>事件时间线 · {eventsModal.job.title}</span>
+              <span>事件时间线 · {collapseTitle(eventsModal.job.title)}</span>
               <button className="btn sm ghost" onClick={() => setEventsModal(null)}>✕</button>
             </div>
             <div className="modal-body">
@@ -390,7 +422,7 @@ export default function JobsView() {
                       <span className="tag blue">{ev.type}</span>
                       <span className="ev-time">{formatTime(ev.time)}</span>
                     </div>
-                    <pre className="ev-payload">{safeJson(ev.payload)}</pre>
+                    <pre className="ev-payload">{formatPayload(ev.payload)}</pre>
                   </div>
                 ))
               )}
@@ -435,7 +467,7 @@ function JobRow({
     <>
       <tr className={awaiting ? "await" : ""}>
         <td className="jobs-title" title={job.id}>
-          {job.title}
+          {collapseTitle(job.title)}
           {awaiting && <span className="jobs-await-mark">（等待确认，请批准后执行）</span>}
         </td>
         <td><span className="tag">{kindLabel(job.kind)}</span></td>
@@ -450,7 +482,7 @@ function JobRow({
           </div>
         </td>
         <td className="jobs-pm">
-          {job.providerId ?? "—"}
+          {job.providerId || "—"}
           {job.model ? <span className="jobs-model"> / {job.model}</span> : null}
         </td>
         <td className="jobs-err">

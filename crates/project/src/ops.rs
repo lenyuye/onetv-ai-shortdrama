@@ -118,6 +118,25 @@ pub fn add_episode(
     Ok(ep)
 }
 
+/// 删除分集：移除 episodes/<id>/ 目录、manifest 条目与 SQLite 记录（不可恢复）。
+pub fn remove_episode(root: &Path, manifest: &mut ProjectManifest, episode_id: &str) -> ProjectResult<()> {
+    let Some(idx) = manifest.episodes.iter().position(|e| e.id == episode_id) else {
+        return Err(ProjectError::Invalid(format!("分集不存在: {episode_id}")));
+    };
+    let removed = manifest.episodes.remove(idx);
+    let ep_dir = root.join("episodes").join(episode_id);
+    if ep_dir.exists() {
+        std::fs::remove_dir_all(&ep_dir)?;
+    }
+    write_manifest(root, manifest)?;
+    let conn = db::open(&root.join("database.sqlite"))?;
+    let _ = conn.execute("DELETE FROM episodes WHERE id = ?1", [episode_id]);
+    let _ = conn.execute("DELETE FROM nodes WHERE episode_id = ?1", [episode_id]);
+    let _ = conn.execute("DELETE FROM edges WHERE episode_id = ?1", [episode_id]);
+    tracing::info!(episode = %removed.id, "episode deleted");
+    Ok(())
+}
+
 /// 导入资产：复制进 assets/<kind>/，SHA-256 去重（同 hash 不重复入库，返回既有资产）。
 pub fn import_asset(root: &Path, src: &Path, kind: &str) -> ProjectResult<AssetRecord> {
     if !src.exists() {
@@ -469,4 +488,72 @@ mod tests {
         assert!(create_project(ws.path(), "", "9:16").is_err());
         assert_eq!(sanitize_fs_name("a/b:c*d"), "a_b_c_d");
     }
+}
+
+/* ---------------- 意识模块：记忆（v2.3.5+） ---------------- */
+
+/// 记忆条目（memories 表；意识模块 UI 直接增删改查）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryRecord {
+    pub id: String,
+    pub scope: String,
+    pub text: String,
+    pub created_at: String,
+}
+
+pub fn list_memories(root: &Path) -> ProjectResult<Vec<MemoryRecord>> {
+    let conn = db::open(&root.join("database.sqlite"))?;
+    let mut stmt = conn.prepare("SELECT id, scope, text, created_at FROM memories ORDER BY created_at DESC")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(MemoryRecord {
+                id: r.get(0)?,
+                scope: r.get(1)?,
+                text: r.get(2)?,
+                created_at: r.get(3)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+pub fn add_memory(root: &Path, text: &str, scope: &str) -> ProjectResult<MemoryRecord> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(ProjectError::Invalid("记忆内容不能为空".into()));
+    }
+    if text.chars().count() > 20_000 {
+        return Err(ProjectError::Invalid("记忆内容过长（上限 20000 字）".into()));
+    }
+    let conn = db::open(&root.join("database.sqlite"))?;
+    let id = format!("mem_{}", uuid::Uuid::new_v4().simple());
+    let now = now();
+    conn.execute(
+        "INSERT INTO memories(id, project_id, scope, text, created_at) VALUES (?1, NULL, ?2, ?3, ?4)",
+        rusqlite::params![id, scope, text, now],
+    )?;
+    Ok(MemoryRecord { id, scope: scope.into(), text: text.into(), created_at: now })
+}
+
+pub fn update_memory(root: &Path, id: &str, text: &str) -> ProjectResult<()> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(ProjectError::Invalid("记忆内容不能为空".into()));
+    }
+    let conn = db::open(&root.join("database.sqlite"))?;
+    let n = conn.execute("UPDATE memories SET text = ?2 WHERE id = ?1", rusqlite::params![id, text])?;
+    if n == 0 {
+        return Err(ProjectError::Invalid(format!("记忆不存在: {id}")));
+    }
+    Ok(())
+}
+
+pub fn delete_memory(root: &Path, id: &str) -> ProjectResult<()> {
+    let conn = db::open(&root.join("database.sqlite"))?;
+    let n = conn.execute("DELETE FROM memories WHERE id = ?1", [id])?;
+    if n == 0 {
+        return Err(ProjectError::Invalid(format!("记忆不存在: {id}")));
+    }
+    Ok(())
 }

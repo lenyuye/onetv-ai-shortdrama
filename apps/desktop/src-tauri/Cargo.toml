@@ -17,6 +17,8 @@ onetv-core = { workspace = true }
 onetv-media = { workspace = true }
 onetv-project = { workspace = true }
 onetv-security = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+base64 = "0.22"
 
 tauri = { workspace = true }
 tauri-plugin-dialog = { workspace = true }

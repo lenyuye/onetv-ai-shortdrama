@@ -18,6 +18,12 @@ export const getSettings = () => invoke<AppSettings>("settings_get");
 export const updateSettings = (patch: Partial<AppSettings>) =>
   invoke<AppSettings>("settings_update", { patch });
 
+export interface AppInfo {
+  version: string;
+  dataDir: string;
+}
+export const appInfo = () => invoke<AppInfo>("app_info");
+
 export interface FfmpegStatus {
   ffmpegPath: string | null;
   ffprobePath: string | null;
@@ -141,3 +147,126 @@ export const mailTestSend = (email: string) =>
 export const themeSetSkin = () =>
   invoke<{ ok: boolean; skin: string }>("theme_set_skin");
 export const themeClearSkin = () => invoke<AppSettings>("theme_clear_skin");
+
+/* ---------------- 错误工具 ---------------- */
+
+/** 统一提取 Tauri/JS 错误的可读文本（CommandError 是 {message} 对象，String(e) 会变成 [object Object]） */
+export function errMsg(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
+  try { return JSON.stringify(e); } catch { return String(e); }
+}
+
+/* ---------------- Agent 附件（v2.3.5 全格式上传） ---------------- */
+
+export interface AgentAttachment {
+  assetId: string;
+  name: string;
+  kind: string;
+  mime: string;
+  sizeBytes: number;
+  path: string;
+  /** 文本类附件（txt/md/json/srt 等）的内容预览；二进制为 null */
+  textPreview: string | null;
+}
+export const agentAttach = () => invoke<AgentAttachment>("agent_attach");
+
+/* ---------------- 测试时钟钩子（v2.3.5，时间边界测试用） ---------------- */
+
+export const debugSetTimeOffset = (seconds: number) =>
+  invoke<{ ok: boolean; offsetSecs: number }>("debug_set_time_offset", { seconds });
+export const debugSessionStatus = () =>
+  invoke<{ offsetSecs: number; remainingSecs: number | null }>("debug_session_status");
+
+/* ---------------- 删除能力（v2.3.5） ---------------- */
+
+/** 删除 .ytv 工程（磁盘文件夹一并删除，不可恢复；UI 必须先 confirm） */
+export const projectDelete = (projectDir: string) => invoke<void>("project_delete", { projectDir });
+/** 从最近打开列表移除记录（不删文件） */
+export const workspaceRecentRemove = (path: string) =>
+  invoke<void>("workspace_recent_remove", { path });
+/** 删除分集（episodes/<id>/ 目录与 manifest/DB 记录一并移除，不可恢复；UI 必须先 confirm） */
+export const episodeDelete = (episodeId: string) => invoke<void>("episode_delete", { episodeId });
+
+/* ---------------- 意识模块：记忆（v2.3.5+，按项目存储，需先打开项目） ---------------- */
+
+export interface MemoryRecord {
+  id: string;
+  scope: string;
+  text: string;
+  /** 后端 serde 未统一命名，两种键都兼容 */
+  createdAt?: string;
+  created_at?: string;
+}
+export const memoryList = () => invoke<MemoryRecord[]>("memory_list");
+export const memoryAdd = (text: string, scope?: string) =>
+  invoke<MemoryRecord>("memory_add", { text, scope });
+export const memoryUpdate = (id: string, text: string) =>
+  invoke<void>("memory_update", { id, text });
+export const memoryDelete = (id: string) => invoke<void>("memory_delete", { id });
+
+/* ---------------- Hermes 桥接（v2.3.5+，双向：出向指令 + 入向反向控制监听） ---------------- */
+
+export interface HermesConfig {
+  url: string | null;
+  listenPort: number;
+  enabled: boolean;
+  hasToken: boolean;
+}
+export const hermesConfigGet = () => invoke<HermesConfig>("hermes_config_get");
+/** token：undefined = 保持不变；"" = 清除；url 仅允许本机/局域网地址 */
+export const hermesConfigSave = (input: {
+  url: string;
+  listenPort: number;
+  enabled: boolean;
+  token?: string;
+}) => invoke<HermesConfig>("hermes_config_save", input);
+export const hermesTest = () =>
+  invoke<{ ok: boolean; latencyMs?: number; body?: string; message?: string }>("hermes_test");
+export const hermesSend = (text: string) =>
+  invoke<{ ok: boolean; reply?: string; message?: string }>("hermes_send", { text });
+
+export interface HermesLogEntry {
+  time: string;
+  kind: "outbound" | "inbound" | "outbound_error";
+  payload: Record<string, unknown>;
+}
+export const hermesLogRecent = (limit?: number) =>
+  invoke<HermesLogEntry[]>("hermes_log_recent", { limit });
+
+/* ---------------- Agent 附件扩展（Codex 式输入框：拖拽/粘贴导入 + 打开/显示） ---------------- */
+
+/** 按绝对路径导入附件（拖拽用），返回与 agentAttach 相同结构 */
+export const agentAttachPath = (path: string) =>
+  invoke<AgentAttachment>("agent_attach_path", { path });
+
+/** 粘贴二进制内容落盘导入（WKWebView 拿不到粘贴文件路径），单文件上限 50MB */
+export const agentAttachData = (input: { name: string; dataB64: string }) =>
+  invoke<AgentAttachment>("agent_attach_data", input);
+
+/** 用系统默认应用打开文件（附件"打开/编辑"入口） */
+export const assetOpen = (path: string) => invoke<void>("asset_open", { path });
+
+/** 在 Finder 中显示文件 */
+export const assetReveal = (path: string) => invoke<void>("asset_reveal", { path });
+
+/* ---------------- 画布节点生成面板（v2.5） ---------------- */
+
+export const canvasNodeRun = (input: {
+  episodeId: string;
+  nodeId: string;
+  prompt: string;
+  aspect?: string;
+  providerId?: string;
+  modelId?: string;
+  referenceAssetIds?: string[];
+}) =>
+  invoke<{ jobId: string; state: string }>("canvas_node_run", {
+    episodeId: input.episodeId,
+    nodeId: input.nodeId,
+    prompt: input.prompt,
+    aspect: input.aspect,
+    providerId: input.providerId,
+    modelId: input.modelId,
+    referenceAssetIds: input.referenceAssetIds,
+  });

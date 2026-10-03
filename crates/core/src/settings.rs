@@ -42,6 +42,34 @@ pub struct AppSettings {
     /// 皮肤不透明度 0.0 ~ 1.0
     #[serde(default = "default_skin_opacity", alias = "skin_opacity")]
     pub skin_opacity: f64,
+    /// 最近一次打开的 .ytv 工程目录绝对路径（None = 未打开过；重启后用于恢复）
+    #[serde(default)]
+    pub last_project: Option<String>,
+    /// 各能力默认生成模型（v2.3.5「生成模型设置」）：
+    /// key = chat | image | video | tts（推理/文本同 chat 口），value = provider+model。
+    #[serde(default, alias = "model_defaults")]
+    pub model_defaults: std::collections::HashMap<String, ModelRef>,
+    /// Hermes agent 桥接地址（仅允许本机/局域网回环地址；v2.3.5）
+    #[serde(default, alias = "hermes_url")]
+    pub hermes_url: Option<String>,
+    /// 本机回环监听端口（Hermes → OneTV 反向控制入口；0 = 随机不可用，默认 8766）
+    #[serde(default = "default_hermes_port", alias = "hermes_listen_port")]
+    pub hermes_listen_port: u16,
+    /// 是否启用 Hermes 反向控制监听
+    #[serde(default, alias = "hermes_enabled")]
+    pub hermes_enabled: bool,
+}
+
+fn default_hermes_port() -> u16 {
+    8766
+}
+
+/// 默认生成模型引用（能力 → Provider + Model）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRef {
+    pub provider_id: String,
+    pub model_id: String,
 }
 
 fn default_skin_opacity() -> f64 {
@@ -74,6 +102,11 @@ impl Default for AppSettings {
             allowed_hosts: Vec::new(),
             skin: None,
             skin_opacity: default_skin_opacity(),
+            last_project: None,
+            model_defaults: std::collections::HashMap::new(),
+            hermes_url: None,
+            hermes_listen_port: default_hermes_port(),
+            hermes_enabled: false,
         }
     }
 }

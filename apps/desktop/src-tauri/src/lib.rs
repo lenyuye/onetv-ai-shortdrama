@@ -84,6 +84,21 @@ fn settings_get(state: TState) -> AppSettings {
     state.settings.get()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppInfo {
+    version: String,
+    data_dir: String,
+}
+
+#[tauri::command]
+fn app_info() -> AppInfo {
+    AppInfo {
+        version: env!("CARGO_PKG_VERSION").into(),
+        data_dir: onetv_core::app_data_dir().display().to_string(),
+    }
+}
+
 #[tauri::command]
 fn settings_update(state: TState, patch: serde_json::Value) -> Result<AppSettings, CommandError> {
     let out = state.settings.update(|s| apply_patch(s, &patch));
@@ -91,8 +106,19 @@ fn settings_update(state: TState, patch: serde_json::Value) -> Result<AppSetting
     if let Some(agent) = AGENT.get() {
         agent.env.set_offline(out.offline_mode);
         agent.jobs.set_concurrency(out.max_concurrent_jobs);
+        agent.env.set_model_defaults(model_defaults_map(&out));
     }
     Ok(out)
+}
+
+/// settings.modelDefaults → env 默认模型表
+fn model_defaults_map(
+    s: &AppSettings,
+) -> std::collections::HashMap<String, (String, String)> {
+    s.model_defaults
+        .iter()
+        .map(|(k, v)| (k.clone(), (v.provider_id.clone(), v.model_id.clone())))
+        .collect()
 }
 
 fn apply_patch(s: &mut AppSettings, patch: &serde_json::Value) {
@@ -121,6 +147,29 @@ fn apply_patch(s: &mut AppSettings, patch: &serde_json::Value) {
     }
     if let Some(v) = patch.get("defaultProjectFolder").and_then(|v| v.as_str()) {
         s.default_project_folder = if v.trim().is_empty() { None } else { Some(v.into()) };
+    }
+    // 生成模型设置：{ chat: {providerId, modelId} | null, image: ..., video: ..., tts: ... }
+    if let Some(md) = patch.get("modelDefaults").and_then(|v| v.as_object()) {
+        for (cap, val) in md {
+            let cap = cap.to_string();
+            let entry = val.as_object().and_then(|obj| {
+                let pid = obj.get("providerId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let mid = obj.get("modelId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if pid.is_empty() || mid.is_empty() {
+                    None
+                } else {
+                    Some(onetv_core::settings::ModelRef { provider_id: pid, model_id: mid })
+                }
+            });
+            match entry {
+                Some(mr) => {
+                    s.model_defaults.insert(cap, mr);
+                }
+                None => {
+                    s.model_defaults.remove(&cap);
+                }
+            }
+        }
     }
 }
 
@@ -180,42 +229,97 @@ fn workspace_recent_add(state: TState, path: String, name: String) {
 
 /* ---------------- 文件选择 ---------------- */
 
-// ⚠️ 对话框必须在非主线程上以 blocking 模式打开：同步命令运行在主线程，
-// 会阻塞事件循环导致面板冻结（v2.0 的 bug）。所有对话框命令一律 async。
+// ⚠️ 对话框实现（v2.4.1 重写）：一律使用插件的**回调 API + oneshot 通道**，
+// 在 async 命令里 await 通道结果。此前 blocking_pick_file 在 async 上下文中
+// 于 macOS 上会静默失败（立即返回 None → 前端当成"已取消"，表现为按钮点了
+// 没反应——Agent 添加参考/上传皮肤实测复现）。回调 API 由插件派发到主线程，
+// 并挂主窗口为父级，面板必然前置弹出。
 use tauri_plugin_dialog::DialogExt;
 
-fn pick_path(app: &tauri::AppHandle, title: String, folder: bool) -> Option<PathBuf> {
-    let mut dialog = app.dialog().file().set_title(title);
-    let picked = if folder {
-        dialog.blocking_pick_folder()
-    } else {
-        dialog.blocking_pick_file()
-    };
-    picked.and_then(|p| p.as_path().map(|p| p.to_path_buf()))
+fn dialog_builder(
+    app: &tauri::AppHandle,
+    title: String,
+) -> tauri_plugin_dialog::FileDialogBuilder<tauri::Wry> {
+    let mut b = app.dialog().file().set_title(title);
+    if let Some(w) = app.get_webview_window("main") {
+        b = b.set_parent(&w);
+    }
+    b
 }
 
-fn save_path(app: &tauri::AppHandle, title: String, default_name: String) -> Option<PathBuf> {
-    app.dialog()
-        .file()
-        .set_title(title)
+async fn pick_path(app: &tauri::AppHandle, title: String, folder: bool) -> Option<PathBuf> {
+    pick_path_at(app, title, folder, None).await
+}
+
+async fn pick_path_at(
+    app: &tauri::AppHandle,
+    title: String,
+    folder: bool,
+    start_dir: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<PathBuf>>();
+    let mut dialog = dialog_builder(app, title);
+    if let Some(dir) = start_dir {
+        dialog = dialog.set_directory(dir);
+    }
+    if folder {
+        dialog.pick_folder(move |p| {
+            let _ = tx.send(p.and_then(|f| f.as_path().map(|x| x.to_path_buf())));
+        });
+    } else {
+        dialog.pick_file(move |p| {
+            let _ = tx.send(p.and_then(|f| f.as_path().map(|x| x.to_path_buf())));
+        });
+    }
+    rx.await.ok().flatten()
+}
+
+async fn save_path(app: &tauri::AppHandle, title: String, default_name: String) -> Option<PathBuf> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<PathBuf>>();
+    dialog_builder(app, title)
         .set_file_name(default_name)
-        .blocking_save_file()
-        .and_then(|p| p.as_path().map(|p| p.to_path_buf()))
+        .save_file(move |p| {
+            let _ = tx.send(p.and_then(|f| f.as_path().map(|x| x.to_path_buf())));
+        });
+    rx.await.ok().flatten()
 }
 
 #[tauri::command]
-async fn pick_directory(app: tauri::AppHandle, title: String) -> Option<String> {
-    pick_path(&app, title, true).map(|p| p.to_string_lossy().into_owned())
+async fn pick_directory(
+    state: tauri::State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+    title: String,
+) -> Result<Option<String>, String> {
+    // 初始目录：默认项目文件夹 → ~/Documents/OneTV → ~/Documents
+    // （界面提示"默认建议放在 文稿/OneTV 下"，对话框必须与提示一致）
+    let start = {
+        let s = state.settings.get();
+        s.default_project_folder
+            .clone()
+            .map(PathBuf::from)
+            .or_else(|| dirs_home().map(|h| h.join("Documents").join("OneTV")))
+            .or_else(|| dirs_home().map(|h| h.join("Documents")))
+    };
+    let picked = pick_path_at(&app, title, true, start).await.map(|p| p.to_string_lossy().into_owned());
+    Ok(picked)
+}
+
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var("HOME").ok().map(PathBuf::from)
 }
 
 #[tauri::command]
 async fn pick_file(app: tauri::AppHandle, title: String) -> Option<String> {
-    pick_path(&app, title, false).map(|p| p.to_string_lossy().into_owned())
+    pick_path(&app, title, false).await.map(|p| p.to_string_lossy().into_owned())
 }
 
 /* ---------------- 项目 ---------------- */
 
+// 前端 IPC 传参为 camelCase（workspacePath/projectTitle/aspectRatio）：
+// serde 只对外层命令参数做 camelCase 映射，结构体内部字段必须显式 rename，
+// 否则反序列化全丢 → "missing field workspace_path"（v2.3.0 新建项目 100% 失败的根因）。
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateProjectInput {
     workspace_path: String,
     project_title: String,
@@ -242,6 +346,8 @@ fn project_create(state: TState, input: CreateProjectInput) -> Result<ProjectMan
         &handle.root().to_string_lossy(),
         &input.project_title,
     );
+    // 记住最后打开的工程：重启后自动恢复（BUG：重启不恢复上次项目）
+    state.settings.update(|s| s.last_project = Some(handle.root().to_string_lossy().into_owned()));
     if let Some(agent) = AGENT.get() {
         agent.jobs.set_project_root(Some(handle.root().clone()));
         let resumed = agent.jobs.resume_on_restart();
@@ -258,6 +364,7 @@ fn project_open(state: TState, project_dir: String) -> Result<ProjectManifest, C
     let dir = PathBuf::from(&project_dir);
     let (handle, manifest) = ops::open_project(&dir).map_err(err)?;
     state.settings.touch_recent(&dir.to_string_lossy(), &manifest.project.title);
+    state.settings.update(|s| s.last_project = Some(dir.to_string_lossy().into_owned()));
     state.audit.record("project.open", &project_dir, None);
     if let Some(agent) = AGENT.get() {
         agent.jobs.set_project_root(Some(dir.clone()));
@@ -279,6 +386,7 @@ fn project_close(state: TState) {
     if let Some(agent) = AGENT.get() {
         agent.jobs.set_project_root(None);
     }
+    state.settings.update(|s| s.last_project = None);
     let mut p = state.project.write();
     p.handle = None;
     p.manifest = None;
@@ -335,6 +443,65 @@ fn episode_create(state: TState, title: Option<String>) -> Result<EpisodeDto, Co
     let ep = ops::add_episode(&root, manifest, title.as_deref()).map_err(err)?;
     state.audit.record("episode.create", &ep.id, None);
     Ok(EpisodeDto { id: ep.id, number: ep.number, title: ep.title, status: "draft".into() })
+}
+
+#[tauri::command]
+fn episode_delete(state: TState, episode_id: String) -> Result<(), CommandError> {
+    let mut p = state.project.write();
+    let root = p.handle.as_ref().map(|h| h.root().clone());
+    let Some(root) = root else {
+        return Err(err("未打开项目"));
+    };
+    let Some(manifest) = p.manifest.as_mut() else {
+        return Err(err("未打开项目"));
+    };
+    ops::remove_episode(&root, manifest, &episode_id).map_err(err)?;
+    state.audit.record("episode.delete", &episode_id, None);
+    Ok(())
+}
+
+/* ---------------- 项目删除 ---------------- */
+
+/// 删除 .ytv 工程：磁盘上整个工程文件夹不可恢复地删除，并从最近列表移除。
+/// 若该工程当前处于打开状态则先关闭。安全边界：必须是有效 OneTV 工程目录。
+#[tauri::command]
+fn project_delete(state: TState, project_dir: String) -> Result<(), CommandError> {
+    let dir = PathBuf::from(&project_dir);
+    // 必须是有效工程（校验 project.json 可解析），防止误删普通文件夹
+    let (_, manifest) = ops::open_project(&dir).map_err(err)?;
+    let title = manifest.project.title.clone();
+
+    // 当前打开的就是该工程 → 先关闭（含任务队列解绑）
+    {
+        let p = state.project.read();
+        if let Some(h) = &p.handle {
+            if h.root() == &dir {
+                drop(p);
+                if let Some(agent) = AGENT.get() {
+                    agent.jobs.set_project_root(None);
+                }
+                let mut p2 = state.project.write();
+                p2.handle = None;
+                p2.manifest = None;
+                state.settings.update(|s| s.last_project = None);
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir).map_err(err)?;
+    state.settings.update(|s| {
+        s.recent_projects.retain(|r| r.path != project_dir);
+        if s.last_project.as_deref() == Some(project_dir.as_str()) {
+            s.last_project = None;
+        }
+    });
+    state.audit.record("project.delete", &format!("{title} ({project_dir})"), None);
+    Ok(())
+}
+
+/// 从最近打开列表移除记录（不删除磁盘文件）。
+#[tauri::command]
+fn workspace_recent_remove(state: TState, path: String) {
+    state.settings.update(|s| s.recent_projects.retain(|r| r.path != path));
 }
 
 /* ---------------- Keychain ---------------- */
@@ -420,6 +587,8 @@ async fn agent_chat(
     state: tauri::State<'_, Arc<AppState>>,
     agent: tauri::State<'_, Arc<AgentState>>,
     text: String,
+    provider_id: Option<String>,
+    model_id: Option<String>,
 ) -> Result<AgentChatResult, CommandError> {
     let episode = {
         let p = state.project.read();
@@ -427,6 +596,17 @@ async fn agent_chat(
     };
     let intent = route_intent(&text);
     let mut plan = onetv_core::agent::build_plan(intent, &text, episode.as_deref());
+    // UI 模型选择器：显式指定的模型写入每个步骤输入，handlers 优先使用
+    if let Some(pid) = &provider_id {
+        for step in &mut plan.steps {
+            step.input["providerId"] = serde_json::json!(pid);
+        }
+    }
+    if let Some(mid) = &model_id {
+        for step in &mut plan.steps {
+            step.input["model"] = serde_json::json!(mid);
+        }
+    }
     plan.status = "draft".into();
 
     // chat 意图低风险：直接执行
@@ -491,7 +671,8 @@ fn job_list(agent: tauri::State<'_, Arc<AgentState>>, limit: Option<u32>) -> Vec
             "id": j.id, "kind": j.kind.as_str(), "title": j.title, "state": j.state.as_str(),
             "progress": j.progress, "providerId": j.provider_id, "model": j.model,
             "episodeId": j.episode_id, "error": j.error, "attempts": j.attempts,
-            "outputs": j.outputs, "createdAt": j.created_at, "updatedAt": j.updated_at
+            "outputs": j.outputs, "reply": j.result.get("reply").cloned().unwrap_or(serde_json::Value::Null),
+            "createdAt": j.created_at, "updatedAt": j.updated_at
         }))
         .collect()
 }
@@ -565,6 +746,38 @@ fn profile_from_json(v: serde_json::Value) -> Result<onetv_core::providers::Prov
     serde_json::from_value(v).map_err(err)
 }
 
+/// 驱动-能力校验：无效配置不入库，避免错误延迟到任务执行才暴露。
+/// （历史案例：SD 驱动下 sd1 标记"对话"并保存成功，运行期任务失败
+///   "驱动 StableDiffusion 不支持 chat 能力"。）
+fn validate_driver_capabilities(
+    p: &onetv_core::providers::ProviderProfile,
+) -> Result<(), CommandError> {
+    use onetv_core::providers::Capability as Cap;
+    let (allowed, label): (&[Cap], &str) = match p.driver {
+        ProviderDriverKind::StableDiffusion => (&[Cap::ImageGeneration], "Stable Diffusion（仅生图）"),
+        ProviderDriverKind::Comfyui => (&[Cap::ImageGeneration], "ComfyUI（仅生图）"),
+        _ => return Ok(()),
+    };
+    for m in &p.models {
+        for c in &m.capabilities {
+            if !allowed.contains(c) {
+                let cap_cn = match c {
+                    Cap::Chat => "对话",
+                    Cap::ImageGeneration => "生图",
+                    Cap::VideoGeneration => "生视频",
+                    Cap::Tts => "配音",
+                    _ => "该能力",
+                };
+                return Err(err(format!(
+                    "驱动 {label} 不支持「{cap_cn}」能力：请取消勾选模型 {} 的「{cap_cn}」，或改用支持该能力的 Provider",
+                    m.model_id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn provider_save(
     state: TState,
@@ -575,6 +788,7 @@ fn provider_save(
     if p.id.is_empty() {
         p.id = format!("provider-{}", uuid::Uuid::new_v4().simple());
     }
+    validate_driver_capabilities(&p)?;
     // 网络策略：加入白名单（Local-only 下仍然会被拒绝）
     state.settings.update(|s| {
         if !s.allowed_hosts.contains(&p.base_url) {
@@ -641,9 +855,23 @@ async fn provider_test(
         }
     };
     let latency = started.elapsed().as_millis() as u64;
+    // 面向用户净化底层错误：reqwest 原文（如 "error sending request for url (...)"）
+    // 中英混杂且不可读；失败时不宣传毫秒级延迟（会被误读为服务响应极快）。
+    let friendly = |m: String| -> String {
+        if m.contains("error sending request") || m.contains("timed out") || m.contains("timeout") {
+            "无法连接到服务（请确认服务已启动且开启 API）".into()
+        } else if m.contains("invalid peer certificate") || m.to_lowercase().contains("certificate") {
+            "TLS 证书校验失败（自签名证书请在本机信任）".into()
+        } else {
+            m
+        }
+    };
     Ok(serde_json::json!({
         "ok": result.is_ok(),
-        "message": result.err().unwrap_or_else(|| "连接成功".into()),
+        "message": match &result {
+            Ok(()) => "连接成功".to_string(),
+            Err(m) => friendly(m.clone()),
+        },
         "latencyMs": latency
     }))
 }
@@ -739,11 +967,16 @@ async fn theme_set_skin(
     state: tauri::State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, CommandError> {
-    let Some(path) = pick_path(&app, "选择皮肤图片（jpg/png）".into(), false) else {
+    let Some(path) = pick_path(&app, "选择皮肤图片（jpg/png）".into(), false).await else {
         return Err(err("已取消"));
     };
     let themes_dir = onetv_core::app_data_dir().join("themes");
     std::fs::create_dir_all(&themes_dir).map_err(err)?;
+    // 源文件必须是非空可读图片，防止复制出 0 字节残留（themes/ 曾出现 skin.jpg 0 字节垃圾）
+    let meta = std::fs::metadata(&path).map_err(err)?;
+    if meta.len() == 0 {
+        return Err(err("所选图片文件为空（0 字节），已取消应用"));
+    }
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
@@ -751,6 +984,11 @@ async fn theme_set_skin(
         .unwrap_or_else(|| "jpg".into());
     let name = format!("skin.{}", ext);
     std::fs::copy(&path, themes_dir.join(&name)).map_err(err)?;
+    let copied = std::fs::metadata(themes_dir.join(&name)).map_err(err)?.len();
+    if copied == 0 {
+        let _ = std::fs::remove_file(themes_dir.join(&name));
+        return Err(err("皮肤复制失败（写入 0 字节），已回滚"));
+    }
     state.settings.update(|s| s.skin = Some(name.clone()));
     Ok(serde_json::json!({ "ok": true, "skin": name }))
 }
@@ -947,6 +1185,8 @@ fn auth_logout(state: TState) {
     state
         .logged_in
         .store(false, std::sync::atomic::Ordering::Relaxed);
+    // 登出也要留痕：与 auth.login 对称，审计链路不留缺口
+    state.audit.record("auth.logout", "", None);
 }
 
 #[tauri::command]
@@ -1031,7 +1271,7 @@ fn skill_list(state: TState) -> Vec<serde_json::Value> {
 
 #[tauri::command]
 async fn skill_install(state: tauri::State<'_, Arc<AppState>>, app: tauri::AppHandle) -> Result<serde_json::Value, CommandError> {
-    let Some(dir) = pick_path(&app, "选择包含 skill.json 的 Skill 文件夹".into(), true) else {
+    let Some(dir) = pick_path(&app, "选择包含 skill.json 的 Skill 文件夹".into(), true).await else {
         return Err(err("已取消"));
     };
     let info = state.skills.install_from(&dir).map_err(err)?;
@@ -1083,7 +1323,7 @@ async fn project_export_pkg(
 ) -> Result<serde_json::Value, CommandError> {
     let (root, manifest) = open_ctx(&state)?;
     let default_name = format!("{}.ytv.zip", manifest.project.title);
-    let Some(dest) = save_path(&app, "导出工程包".into(), default_name) else {
+    let Some(dest) = save_path(&app, "导出工程包".into(), default_name).await else {
         return Err(err("已取消"));
     };
     let path = onetv_core::pkg::export_project(&root, &dest).map_err(err)?;
@@ -1096,10 +1336,10 @@ async fn project_import_pkg(
     state: tauri::State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, CommandError> {
-    let Some(zip_path) = pick_path(&app, "选择 .ytv.zip 工程包".into(), false) else {
+    let Some(zip_path) = pick_path(&app, "选择 .ytv.zip 工程包".into(), false).await else {
         return Err(err("已取消"));
     };
-    let Some(parent) = pick_path(&app, "选择导入位置".into(), true) else {
+    let Some(parent) = pick_path(&app, "选择导入位置".into(), true).await else {
         return Err(err("已取消"));
     };
     let path = onetv_core::pkg::import_project(&zip_path, &parent).map_err(err)?;
@@ -1116,6 +1356,737 @@ async fn project_import_pkg(
         p.manifest = Some(manifest.clone());
     }
     Ok(serde_json::json!({ "ok": true, "path": path.to_string_lossy(), "title": manifest.project.title }))
+}
+
+/* ---------------- 调试/测试钩子（时间边界 SESSION-005~008 解除阻塞） ---------------- */
+
+/// 测试时钟偏移（秒）。前端入口：设置 → 关于 OneTV → 连点版本号 5 次；
+/// 自动化入口：环境变量 ONETV_TEST_TIME_OFFSET_SEC（仅启动时读取）。
+#[tauri::command]
+fn debug_set_time_offset(seconds: i64) -> Result<serde_json::Value, CommandError> {
+    onetv_core::auth::set_time_offset(seconds);
+    Ok(serde_json::json!({ "ok": true, "offsetSecs": seconds }))
+}
+
+#[tauri::command]
+fn debug_session_status(state: TState) -> serde_json::Value {
+    serde_json::json!({
+        "offsetSecs": onetv_core::auth::time_offset(),
+        "remainingSecs": state.auth.session_remaining_secs(),
+    })
+}
+
+/* ---------------- Agent 附件（全格式上传） ---------------- */
+
+fn classify_asset_kind(ext: &str) -> &'static str {
+    match ext {
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" => "images",
+        "mp4" | "mov" | "webm" | "m4v" | "avi" | "mkv" => "videos",
+        "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" => "audio",
+        _ => "references",
+    }
+}
+
+fn is_text_like(ext: &str) -> bool {
+    matches!(
+        ext,
+        "txt" | "md" | "markdown" | "json" | "csv" | "log" | "srt" | "vtt" | "html" | "xml" | "yml" | "yaml" | "toml"
+    )
+}
+
+const ATTACH_TEXT_PREVIEW_CHARS: usize = 4000;
+
+/// Agent 对话附件：任意格式文件导入项目资产库；文本类附带回传内容预览
+/// 供 LLM 上下文使用；二进制（doc/pdf/xlsx 等）只入库并在对话中说明。
+#[tauri::command]
+async fn agent_attach(
+    state: tauri::State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, CommandError> {
+    let Some(path) = pick_path(&app, "选择要发送的附件（图片/视频/音频/文本/文档）".into(), false).await else {
+        return Err(err("已取消"));
+    };
+    agent_attach_import(&state, &path)
+}
+
+/// 拖拽/粘贴路径版附件导入（Codex 式输入框：文件拖入或 ⌘V 粘贴）。
+#[tauri::command]
+fn agent_attach_path(state: TState, path: String) -> Result<serde_json::Value, CommandError> {
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err(err(format!("文件不存在: {path}")));
+    }
+    agent_attach_import(&state, &p)
+}
+
+fn agent_attach_import(state: &Arc<AppState>, path: &std::path::Path) -> Result<serde_json::Value, CommandError> {
+    let (root, _) = open_ctx(state)?;
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let kind = classify_asset_kind(&ext);
+    let rec = onetv_project::ops::import_asset(&root, path, &kind).map_err(err)?;
+    state.audit.record("asset.import", &rec.id, None);
+
+    let text_preview = if is_text_like(&ext) {
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.chars().take(ATTACH_TEXT_PREVIEW_CHARS).collect::<String>())
+    } else {
+        None
+    };
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    state.audit.record("agent.attach", &name, None);
+    Ok(serde_json::json!({
+        "assetId": rec.id,
+        "name": name,
+        "kind": kind,
+        "mime": rec.mime,
+        "sizeBytes": rec.size_bytes,
+        "path": rec.path,
+        "textPreview": text_preview,
+    }))
+}
+
+/// 粘贴板附件导入：前端读不到粘贴文件的磁盘路径（WKWebView 限制），
+/// 由前端读出内容（base64）传此命令落盘后走统一导入。上限 50MB。
+#[tauri::command]
+fn agent_attach_data(
+    state: TState,
+    name: String,
+    data_b64: String,
+) -> Result<serde_json::Value, CommandError> {
+    use base64::Engine as _;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(err("附件名为空"));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_b64.as_bytes())
+        .map_err(|e| err(format!("附件数据解码失败: {e}")))?;
+    if bytes.len() > 50 * 1024 * 1024 {
+        return Err(err("粘贴的附件超过 50MB 上限"));
+    }
+    let tmp_dir = std::env::temp_dir().join(format!("onetv-paste-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&tmp_dir).map_err(err)?;
+    let safe_name: String = name
+        .chars()
+        .map(|c| if c == '/' || c == ':' { '_' } else { c })
+        .collect();
+    let tmp_path = tmp_dir.join(&safe_name);
+    std::fs::write(&tmp_path, &bytes).map_err(err)?;
+    let result = agent_attach_import(&state, &tmp_path);
+    let _ = std::fs::remove_dir_all(&tmp_dir); // 导入即复制进工程，临时文件即删
+    result
+}
+
+/// 用系统默认应用打开文件（附件"打开/编辑"）。
+#[tauri::command]
+fn asset_open(app: tauri::AppHandle, path: String) -> Result<(), CommandError> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_path(path, None::<&str>).map_err(err)
+}
+
+/// 在 Finder 中显示文件。
+#[tauri::command]
+fn asset_reveal(app: tauri::AppHandle, path: String) -> Result<(), CommandError> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().reveal_item_in_dir(path).map_err(err)
+}
+
+/* ---------------- 画布节点生成（v2.5：LibTV 式节点聊天框） ---------------- */
+
+/// 从画布 JSON 中读取指定节点（用于节点生成面板）。
+fn read_canvas_node(
+    root: &std::path::Path,
+    episode_id: &str,
+    node_id: &str,
+) -> Result<serde_json::Value, CommandError> {
+    let path = root.join("episodes").join(episode_id).join("canvas.json");
+    let raw = std::fs::read_to_string(&path).map_err(err)?;
+    let doc: serde_json::Value = serde_json::from_str(&raw).map_err(err)?;
+    doc.get("nodes")
+        .and_then(|n| n.as_array())
+        .and_then(|arr| arr.iter().find(|n| n.get("id").and_then(|v| v.as_str()) == Some(node_id)))
+        .cloned()
+        .ok_or_else(|| err(format!("画布节点不存在: {node_id}")))
+}
+
+/// 节点生成面板直发：按节点类型创建对应生成任务（模型/画幅/提示词由面板传入），
+/// 返回 jobId；前端轮询任务状态，成功后把 outputAssetId 回写到节点 config。
+#[tauri::command]
+fn canvas_node_run(
+    state: TState,
+    agent: tauri::State<'_, Arc<AgentState>>,
+    episode_id: String,
+    node_id: String,
+    prompt: String,
+    aspect: Option<String>,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+    reference_asset_ids: Option<Vec<String>>,
+) -> Result<serde_json::Value, CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    let node = read_canvas_node(&root, &episode_id, &node_id)?;
+    let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let title = node
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&node_id)
+        .to_string();
+    let prompt = prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err(err("提示词不能为空"));
+    }
+    let aspect = aspect.unwrap_or_else(|| "9:16".into());
+    let provider_id = provider_id.filter(|s| !s.is_empty());
+    let model_id = model_id.filter(|s| !s.is_empty());
+
+    let (kind, params, title_full) = match node_type.as_str() {
+        "image" => (
+            onetv_core::jobs::JobKind::ImageGeneration,
+            serde_json::json!({
+                "prompt": prompt, "aspect": aspect,
+                "providerId": provider_id, "model": model_id,
+                "referenceAssetIds": reference_asset_ids.unwrap_or_default(),
+                "nodeId": node_id,
+            }),
+            format!("生图（节点 {title}）"),
+        ),
+        "video" | "video-clip" => (
+            onetv_core::jobs::JobKind::VideoGeneration,
+            serde_json::json!({
+                "prompt": prompt, "aspect": aspect,
+                "providerId": provider_id, "model": model_id,
+                "referenceAssetIds": reference_asset_ids.unwrap_or_default(),
+                "nodeId": node_id,
+            }),
+            format!("生视频（节点 {title}）"),
+        ),
+        "audio" => (
+            onetv_core::jobs::JobKind::Tts,
+            serde_json::json!({
+                "text": prompt,
+                "providerId": provider_id, "model": model_id,
+                "nodeId": node_id,
+            }),
+            format!("配音（节点 {title}）"),
+        ),
+        "text" | "script" | "storyboard" | "condition" | "review" | "export" => {
+            return Err(err(format!(
+                "节点类型「{node_type}」暂不支持面板直发生成；图片/视频/音频节点可直接生成"
+            )));
+        }
+        other => return Err(err(format!("未知节点类型: {other}"))),
+    };
+    let egress = Some(serde_json::json!({
+        "destination": "Model Provider（由模型选择/生成模型设置决定）",
+        "data": "节点提示词与参考素材",
+        "via": "canvas-node-panel",
+    }));
+    let job = agent.jobs.create_job(
+        kind,
+        title_full,
+        None,
+        None,
+        params,
+        Some(node_id.clone()),
+        Some(episode_id.clone()),
+        false,
+        egress,
+    );
+    state.audit.record("canvas.node_run", &format!("{node_id} → {}", job.id), None);
+    Ok(serde_json::json!({ "jobId": job.id, "state": job.state.as_str() }))
+}
+
+/* ---------------- 意识模块：记忆（v2.3.5+） ---------------- */
+
+#[tauri::command]
+fn memory_list(state: TState) -> Result<Vec<onetv_project::ops::MemoryRecord>, CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    onetv_project::ops::list_memories(&root).map_err(err)
+}
+
+#[tauri::command]
+fn memory_add(state: TState, text: String, scope: Option<String>) -> Result<onetv_project::ops::MemoryRecord, CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    let rec = onetv_project::ops::add_memory(&root, &text, scope.as_deref().unwrap_or("project")).map_err(err)?;
+    state.audit.record("memory.add", &rec.id, None);
+    Ok(rec)
+}
+
+#[tauri::command]
+fn memory_update(state: TState, id: String, text: String) -> Result<(), CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    onetv_project::ops::update_memory(&root, &id, &text).map_err(err)?;
+    state.audit.record("memory.update", &id, None);
+    Ok(())
+}
+
+#[tauri::command]
+fn memory_delete(state: TState, id: String) -> Result<(), CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    onetv_project::ops::delete_memory(&root, &id).map_err(err)?;
+    state.audit.record("memory.delete", &id, None);
+    Ok(())
+}
+
+/* ---------------- Hermes agent 桥接（v2.3.5+，双向） ---------------- */
+///
+/// 出向：OneTV → Hermes（hermes_send，HTTP POST {url}/message）
+/// 入向：Hermes → OneTV（本机回环监听 GET /health、POST /invoke，白名单动作，token 鉴权）
+/// 安全：URL 与监听仅允许本机回环；监听默认关闭；建议设置 token；本地回环不受 Local-only 出站策略限制。
+
+static HERMES_STOP: std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>> =
+    std::sync::Mutex::new(None);
+
+fn hermes_log_path() -> PathBuf {
+    onetv_core::app_data_dir().join("hermes_log.jsonl")
+}
+
+fn hermes_log(kind: &str, payload: serde_json::Value) {
+    use std::io::Write;
+    let entry = serde_json::json!({
+        "time": chrono::Utc::now().to_rfc3339(),
+        "kind": kind,
+        "payload": payload,
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(hermes_log_path())
+    {
+        let _ = writeln!(f, "{entry}");
+    }
+}
+
+fn hermes_token() -> Option<String> {
+    onetv_security::SecretStore::get("hermes").ok().flatten()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HermesConfig {
+    url: Option<String>,
+    listen_port: u16,
+    enabled: bool,
+    has_token: bool,
+}
+
+#[tauri::command]
+fn hermes_config_get(state: TState) -> HermesConfig {
+    let s = state.settings.get();
+    HermesConfig {
+        url: s.hermes_url.clone(),
+        listen_port: s.hermes_listen_port,
+        enabled: s.hermes_enabled,
+        has_token: hermes_token().is_some(),
+    }
+}
+
+/// 保存 Hermes 配置；token 传 None 表示保持不变，传空串表示清除。
+#[tauri::command]
+fn hermes_config_save(
+    state: TState,
+    url: String,
+    listen_port: u16,
+    enabled: bool,
+    token: Option<String>,
+) -> Result<HermesConfig, CommandError> {
+    let url = url.trim().to_string();
+    if !url.is_empty() && !onetv_core::providers::router::is_local_base(&url) {
+        return Err(err("Hermes 地址仅允许本机/局域网回环地址（如 http://127.0.0.1:8765）"));
+    }
+    if let Some(t) = &token {
+        if t.is_empty() {
+            let _ = onetv_security::SecretStore::delete("hermes");
+        } else {
+            onetv_security::SecretStore::set("hermes", t).map_err(err)?;
+        }
+    }
+    let out = state.settings.update(|s| {
+        s.hermes_url = if url.is_empty() { None } else { Some(url) };
+        s.hermes_listen_port = listen_port.max(1024);
+        s.hermes_enabled = enabled;
+    });
+    hermes_restart_listener(state.inner(), &out)?;
+    Ok(HermesConfig {
+        url: out.hermes_url.clone(),
+        listen_port: out.hermes_listen_port,
+        enabled: out.hermes_enabled,
+        has_token: hermes_token().is_some(),
+    })
+}
+
+#[tauri::command]
+async fn hermes_test(state: TState<'_>) -> Result<serde_json::Value, CommandError> {
+    let url = state
+        .settings
+        .get()
+        .hermes_url
+        .ok_or_else(|| err("尚未配置 Hermes 地址"))?;
+    let token = hermes_token();
+    let started = std::time::Instant::now();
+    let url_for_req = url.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(4))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut req = client.get(format!("{url_for_req}/health"));
+        if let Some(t) = &token {
+            req = req.header("X-Hermes-Token", t);
+        }
+        let resp = req.send().map_err(|e| format!("无法连接 Hermes（{e}）"))?;
+        resp.text().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| err(e.to_string()))?;
+    let latency = started.elapsed().as_millis() as u64;
+    match result {
+        Ok(body) => Ok(serde_json::json!({ "ok": true, "latencyMs": latency, "body": body.chars().take(500).collect::<String>() })),
+        Err(e) => Ok(serde_json::json!({ "ok": false, "message": e })),
+    }
+}
+
+/// OneTV → Hermes：发送文本指令，返回 Hermes 回复文本。
+#[tauri::command]
+async fn hermes_send(state: TState<'_>, text: String) -> Result<serde_json::Value, CommandError> {
+    let url = state
+        .settings
+        .get()
+        .hermes_url
+        .ok_or_else(|| err("尚未配置 Hermes 地址"))?;
+    if text.trim().is_empty() {
+        return Err(err("消息不能为空"));
+    }
+    let token = hermes_token();
+    let text_for_req = text.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut req = client.post(format!("{url}/message")).json(&serde_json::json!({
+            "from": "onetv",
+            "text": text_for_req,
+        }));
+        if let Some(t) = &token {
+            req = req.header("X-Hermes-Token", t);
+        }
+        let resp = req.send().map_err(|e| format!("无法连接 Hermes（{e}）"))?;
+        let status = resp.status();
+        let body = resp.text().map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(format!("Hermes 返回 {status}：{}", body.chars().take(300).collect::<String>()));
+        }
+        Ok(body)
+    })
+    .await
+    .map_err(|e| err(e.to_string()))?;
+    match result {
+        Ok(body) => {
+            hermes_log("outbound", serde_json::json!({ "text": text, "reply": body }));
+            Ok(serde_json::json!({ "ok": true, "reply": body }))
+        }
+        Err(e) => {
+            hermes_log("outbound_error", serde_json::json!({ "text": text, "error": e }));
+            Ok(serde_json::json!({ "ok": false, "message": e }))
+        }
+    }
+}
+
+#[tauri::command]
+fn hermes_log_recent(limit: Option<u32>) -> Vec<serde_json::Value> {
+    let path = hermes_log_path();
+    let Ok(raw) = std::fs::read_to_string(path) else { return vec![] };
+    raw.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .take(limit.unwrap_or(100) as usize)
+        .collect()
+}
+
+/// 按设置启动/停止 Hermes 反向控制监听。
+fn hermes_restart_listener(state: &Arc<AppState>, s: &AppSettings) -> Result<(), CommandError> {
+    // 停旧监听（watch 通道通知 + 旧 sender 丢弃）
+    if let Some(tx) = HERMES_STOP.lock().unwrap().take() {
+        let _ = tx.send(true);
+    }
+    if !s.hermes_enabled {
+        tracing::info!("hermes listener disabled");
+        return Ok(());
+    }
+    let Some(agent) = AGENT.get() else {
+        return Err(err("运行时未就绪"));
+    };
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    *HERMES_STOP.lock().unwrap() = Some(tx);
+    let env = agent.env.clone();
+    let jobs = agent.jobs.clone();
+    let state2 = state.clone();
+    let port = s.hermes_listen_port;
+    let token = hermes_token();
+    tauri::async_runtime::handle().spawn(async move {
+        hermes_listen_loop(port, token, rx, state2, env, jobs).await;
+    });
+    tracing::info!(port, "hermes listener starting");
+    Ok(())
+}
+
+async fn hermes_listen_loop(
+    port: u16,
+    token: Option<String>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    state: Arc<AppState>,
+    env: Arc<onetv_core::agent::AgentEnv>,
+    jobs: Arc<onetv_core::jobs::JobManager>,
+) {
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(port, error = %e, "hermes listener bind failed");
+            let msg = serde_json::json!({ "error": format!("Hermes 监听 {port} 失败（端口被占用？）: {e}") });
+            env.events("hermes.inbound", msg);
+            return;
+        }
+    };
+    tracing::info!(port, "hermes listener ready");
+    loop {
+        tokio::select! {
+            _ = stop.changed() => break,
+            acc = listener.accept() => {
+                let Ok((stream, _)) = acc else { continue };
+                let token = token.clone();
+                let state = state.clone();
+                let env = env.clone();
+                let jobs = jobs.clone();
+                tokio::spawn(async move {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(75),
+                        hermes_handle_conn(stream, token, state, env, jobs),
+                    ).await;
+                });
+            }
+        }
+    }
+    tracing::info!("hermes listener stopped");
+}
+
+/// 极简 HTTP/1.1 处理：只支持 GET /health 与 POST /invoke（body ≤ 256KB）。
+async fn hermes_handle_conn(
+    mut stream: tokio::net::TcpStream,
+    token: Option<String>,
+    state: Arc<AppState>,
+    env: Arc<onetv_core::agent::AgentEnv>,
+    jobs: Arc<onetv_core::jobs::JobManager>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = vec![0u8; 262_144];
+    let n = match stream.read(&mut buf).await {
+        Ok(n) if n > 0 => n,
+        _ => return,
+    };
+    let raw = String::from_utf8_lossy(&buf[..n]).into_owned();
+    let mut lines = raw.split("\r\n");
+    let request_line = lines.next().unwrap_or_default().to_string();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_uppercase();
+    let url = parts.next().unwrap_or("").to_string();
+    let mut token_header: Option<String> = None;
+    let mut content_len = 0usize;
+    for line in lines {
+        let Some((k, v)) = line.split_once(':') else { continue };
+        let k = k.trim().to_ascii_lowercase();
+        let v = v.trim();
+        if k == "x-hermes-token" {
+            token_header = Some(v.to_string());
+        } else if k == "content-length" {
+            content_len = v.parse().unwrap_or(0);
+        }
+    }
+    let body = raw
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.chars().take(content_len.max(0)).collect::<String>())
+        .unwrap_or_default();
+
+    let (status, resp_json) = match (method.as_str(), url.as_str()) {
+        ("GET", u) if u.starts_with("/health") => (
+            200,
+            serde_json::json!({ "ok": true, "app": "onetv", "version": env!("CARGO_PKG_VERSION") }),
+        ),
+        ("POST", u) if u.starts_with("/invoke") => {
+            if let Some(t) = &token {
+                if token_header.as_deref() != Some(t.as_str()) {
+                    (401, serde_json::json!({ "error": "token 不匹配" }))
+                } else {
+                    hermes_invoke(&state, &env, &jobs, &body).await
+                }
+            } else {
+                hermes_invoke(&state, &env, &jobs, &body).await
+            }
+        }
+        _ => (
+            404,
+            serde_json::json!({ "error": "未知端点，可用：GET /health、POST /invoke" }),
+        ),
+    };
+    let payload = serde_json::to_string(&resp_json).unwrap_or_default();
+    let resp = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        if status == 200 { "OK" } else if status == 401 { "Unauthorized" } else if status == 404 { "Not Found" } else if status == 409 { "Conflict" } else { "Bad Request" },
+        payload.len()
+    );
+    let _ = stream.write_all(resp.as_bytes()).await;
+    let _ = stream.shutdown().await;
+    hermes_log("inbound", serde_json::json!({ "method": method, "url": url, "status": status, "response": resp_json }));
+    env.events("hermes.inbound", serde_json::json!({ "method": method, "url": url, "status": status, "response": resp_json }));
+}
+
+/// Hermes → OneTV 反向控制白名单动作（异步，可访问项目状态与完整 Agent 链路）。
+async fn hermes_invoke(
+    state: &Arc<AppState>,
+    env: &Arc<onetv_core::agent::AgentEnv>,
+    jobs: &Arc<onetv_core::jobs::JobManager>,
+    body: &str,
+) -> (u16, serde_json::Value) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return (400, serde_json::json!({ "error": "请求体必须是 JSON：{action, params}" }));
+    };
+    let action = v.get("action").and_then(|x| x.as_str()).unwrap_or("");
+    let params = v.get("params").cloned().unwrap_or(serde_json::json!({}));
+    match action {
+        "status" => {
+            let project_open = state.project.read().handle.is_some();
+            let queued = jobs.list(200).iter().filter(|j| !j.state.is_terminal()).count();
+            (
+                200,
+                serde_json::json!({
+                    "app": "onetv", "version": env!("CARGO_PKG_VERSION"),
+                    "projectOpen": project_open, "offline": env.offline_mode(), "activeJobs": queued,
+                }),
+            )
+        }
+        "job_list" => {
+            let limit = params.get("limit").and_then(|x| x.as_u64()).unwrap_or(20) as u32;
+            let list: Vec<serde_json::Value> = jobs
+                .list(limit)
+                .iter()
+                .map(|j| serde_json::json!({ "id": j.id, "kind": j.kind.as_str(), "title": j.title, "state": j.state.as_str(), "progress": j.progress }))
+                .collect();
+            (200, serde_json::json!({ "jobs": list }))
+        }
+        "job_status" => {
+            let Some(id) = params.get("id").and_then(|x| x.as_str()) else {
+                return (400, serde_json::json!({ "error": "缺少 params.id" }));
+            };
+            match jobs.load(id) {
+                Some(j) => (200, serde_json::json!({ "id": j.id, "state": j.state.as_str(), "progress": j.progress, "error": j.error })),
+                None => (404, serde_json::json!({ "error": format!("任务不存在: {id}") })),
+            }
+        }
+        "create_image" => {
+            let Some(prompt) = params.get("prompt").and_then(|x| x.as_str()) else {
+                return (400, serde_json::json!({ "error": "缺少 params.prompt" }));
+            };
+            if state.project.read().handle.is_none() {
+                return (409, serde_json::json!({ "error": "OneTV 未打开项目，无法创建生成任务" }));
+            }
+            let job = jobs.create_job(
+                onetv_core::jobs::JobKind::ImageGeneration,
+                format!("生成图片：{prompt}"),
+                None,
+                None,
+                serde_json::json!({ "prompt": prompt }),
+                None,
+                None,
+                false,
+                Some(serde_json::json!({ "destination": "Image Provider", "via": "hermes" })),
+            );
+            (200, serde_json::json!({ "jobId": job.id, "state": job.state.as_str() }))
+        }
+        "agent_chat" | "agent_approve" => hermes_agent_action(state, env, jobs, action, &params).await,
+        other => (
+            400,
+            serde_json::json!({
+                "error": format!("未知动作 {other}"),
+                "available": ["status", "job_list", "job_status", "create_image", "agent_chat", "agent_approve"],
+            }),
+        ),
+    }
+}
+
+async fn hermes_agent_action(
+    state: &Arc<AppState>,
+    env: &Arc<onetv_core::agent::AgentEnv>,
+    jobs: &Arc<onetv_core::jobs::JobManager>,
+    action: &str,
+    params: &serde_json::Value,
+) -> (u16, serde_json::Value) {
+    use onetv_core::agent::executor::Executor;
+    if action == "agent_approve" {
+        let Some(agent) = AGENT.get() else { return (500, serde_json::json!({ "error": "运行时未就绪" })) };
+        let Some(plan_id) = params.get("planId").and_then(|x| x.as_str()) else {
+            return (400, serde_json::json!({ "error": "缺少 params.planId" }));
+        };
+        let Some(plan) = agent.plans.lock().get(plan_id).cloned() else {
+            return (404, serde_json::json!({ "error": format!("计划不存在或已过期: {plan_id}") }));
+        };
+        let (root, episode) = {
+            let p = state.project.read();
+            match (&p.handle, &p.manifest) {
+                (Some(h), Some(m)) => (
+                    h.root().clone(),
+                    m.episodes.first().map(|e| e.id.clone()),
+                ),
+                _ => return (409, serde_json::json!({ "error": "OneTV 未打开项目" })),
+            }
+        };
+        let executor = Executor { env: env.clone(), jobs: jobs.clone() };
+        match executor.execute(&plan, &root, episode).await {
+            Ok(ids) => (200, serde_json::json!({ "ok": true, "jobIds": ids })),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        }
+    } else {
+        // agent_chat
+        let Some(text) = params.get("text").and_then(|x| x.as_str()) else {
+            return (400, serde_json::json!({ "error": "缺少 params.text" }));
+        };
+        let intent = onetv_core::agent::route_intent(text);
+        let episode = {
+            let p = state.project.read();
+            p.manifest.as_ref().and_then(|m| m.episodes.first().map(|e| e.id.clone()))
+        };
+        let mut plan = onetv_core::agent::build_plan(intent, text, episode.as_deref());
+        plan.status = "draft".into();
+        if intent == onetv_core::agent::Intent::Chat {
+            let root = {
+                let p = state.project.read();
+                p.handle.as_ref().map(|h| h.root().clone()).unwrap_or_else(std::env::temp_dir)
+            };
+            let executor = Executor { env: env.clone(), jobs: jobs.clone() };
+            match executor.execute(&plan, &root, None).await {
+                Ok(ids) => (200, serde_json::json!({ "ok": true, "autoExecuted": true, "jobIds": ids })),
+                Err(e) => (500, serde_json::json!({ "error": e })),
+            }
+        } else {
+            let plan_id = plan.plan_id.clone();
+            if let Some(agent) = AGENT.get() {
+                agent.plans.lock().insert(plan_id.clone(), plan.clone());
+            }
+            (
+                200,
+                serde_json::json!({ "ok": true, "autoExecuted": false, "planId": plan_id, "summary": plan.summary,
+                    "hint": "调用 action=agent_approve 并携带 planId 以执行该计划" }),
+            )
+        }
+    }
 }
 
 /* ---------------- 审计 ---------------- */
@@ -1209,7 +2180,7 @@ async fn asset_import(
     kind: String,
 ) -> Result<onetv_project::ops::AssetRecord, CommandError> {
     let (root, _) = open_ctx(&state)?;
-    let Some(path) = pick_path(&app, "选择要导入的素材文件".into(), false) else {
+    let Some(path) = pick_path(&app, "选择要导入的素材文件".into(), false).await else {
         return Err(err("已取消"));
     };
     let rec = onetv_project::ops::import_asset(&root, &path, &kind).map_err(err)?;
@@ -1329,11 +2300,155 @@ fn serve_asset(state: &AppState, uri: &tauri::http::Uri) -> tauri::http::Respons
         .unwrap()
 }
 
+/* ---------------- macOS 原生菜单栏 ---------------- */
+
+/// 应用菜单含「设置…」（macOS 惯例）、File 提供产品功能入口、Help 提供使用说明。
+/// 菜单项通过事件桥转发给前端（前端 App.tsx 监听 menu:* 切换视图）。
+fn build_app_menu(app: tauri::AppHandle) {
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+    let version = env!("CARGO_PKG_VERSION").to_string();
+
+    let app_submenu = Submenu::with_id_and_items(
+        &app,
+        "onetv-app",
+        "OneTV",
+        true,
+        &[
+            &PredefinedMenuItem::about(&app, Some("OneTV"), Some(AboutMetadata { version: Some(version.clone()), ..Default::default() })).unwrap(),
+            &PredefinedMenuItem::separator(&app).unwrap(),
+            &MenuItem::with_id(&app, "settings", "设置…", true, Some("CmdOrCtrl+,")).unwrap(),
+            &PredefinedMenuItem::separator(&app).unwrap(),
+            &PredefinedMenuItem::hide(&app, None).unwrap(),
+            &PredefinedMenuItem::hide_others(&app, None).unwrap(),
+            &PredefinedMenuItem::show_all(&app, None).unwrap(),
+            &PredefinedMenuItem::separator(&app).unwrap(),
+            &PredefinedMenuItem::quit(&app, None).unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let file_submenu = Submenu::with_id_and_items(
+        &app,
+        "onetv-file",
+        "文件",
+        true,
+        &[
+            &MenuItem::with_id(&app, "new-project", "新建项目…", true, Some("CmdOrCtrl+N")).unwrap(),
+            &MenuItem::with_id(&app, "open-project", "打开项目…", true, Some("CmdOrCtrl+O")).unwrap(),
+            &PredefinedMenuItem::separator(&app).unwrap(),
+            &MenuItem::with_id(&app, "export-pkg", "导出工程包…", true, Some("CmdOrCtrl+E")).unwrap(),
+            &PredefinedMenuItem::separator(&app).unwrap(),
+            &PredefinedMenuItem::close_window(&app, None).unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let edit_submenu = Submenu::with_items(
+        &app,
+        "编辑",
+        true,
+        &[
+            &PredefinedMenuItem::undo(&app, None).unwrap(),
+            &PredefinedMenuItem::redo(&app, None).unwrap(),
+            &PredefinedMenuItem::separator(&app).unwrap(),
+            &PredefinedMenuItem::cut(&app, None).unwrap(),
+            &PredefinedMenuItem::copy(&app, None).unwrap(),
+            &PredefinedMenuItem::paste(&app, None).unwrap(),
+            &PredefinedMenuItem::select_all(&app, None).unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let view_submenu = Submenu::with_items(
+        &app,
+        "显示",
+        true,
+        &[&PredefinedMenuItem::fullscreen(&app, None).unwrap()],
+    )
+    .unwrap();
+
+    let window_submenu = Submenu::with_items(
+        &app,
+        "窗口",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(&app, None).unwrap(),
+            &PredefinedMenuItem::maximize(&app, None).unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let help_submenu = Submenu::with_id_and_items(
+        &app,
+        "onetv-help",
+        "帮助",
+        true,
+        &[&MenuItem::with_id(&app, "help", "OneTV 使用说明", true, None::<&str>).unwrap()],
+    )
+    .unwrap();
+
+    let menu = Menu::with_items(
+        &app,
+        &[
+            &app_submenu,
+            &file_submenu,
+            &edit_submenu,
+            &view_submenu,
+            &window_submenu,
+            &help_submenu,
+        ],
+    )
+    .unwrap();
+    let _ = app.set_menu(menu);
+
+    let h = app.clone();
+    app.on_menu_event(move |_app, event| {
+        let id = event.id().as_ref();
+        match id {
+            "settings" => {
+                let _ = h.emit("menu:settings", ());
+            }
+            "new-project" => {
+                let _ = h.emit("menu:new-project", ());
+            }
+            "open-project" => {
+                let _ = h.emit("menu:open-project", ());
+            }
+            "export-pkg" => {
+                let _ = h.emit("menu:export-pkg", ());
+            }
+            "help" => {
+                use tauri_plugin_dialog::DialogExt;
+                h.dialog()
+                    .message(format!(
+                        "OneTV {version} — 本地优先的短剧创作工作台\n\n\
+                         快速上手：\n\
+                         1. 「工作区」新建或打开 .ytv 项目（菜单 文件/新建项目，⌘N）\n\
+                         2. 「剧本」用 AI 生成或手写剧本\n\
+                         3. 「分镜」拆分镜头、批量生图、合成成片\n\
+                         4. 「模型」配置你的 Provider（内置 Mock 离线演示）\n\
+                         5. 「设置」（⌘,）管理外观、账户、隐私与 FFmpeg\n\n\
+                         数据边界：项目只存本机；API Key 只进 macOS 钥匙串；默认零遥测。"
+                    ))
+                    .show(|_| {});
+            }
+            _ => {}
+        }
+    });
+}
+
 /* ---------------- 启动 ---------------- */
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     onetv_core::init_tracing();
+
+    // 时间边界测试钩子：ONETV_TEST_TIME_OFFSET_SEC=±秒数（启动时注入测试时钟偏移）
+    if let Ok(v) = std::env::var("ONETV_TEST_TIME_OFFSET_SEC") {
+        if let Ok(secs) = v.trim().parse::<i64>() {
+            onetv_core::auth::set_time_offset(secs);
+        }
+    }
 
     let data_dir = onetv_core::app_data_dir();
     let settings = SettingsStore::new(&data_dir);
@@ -1403,9 +2518,10 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
 
-            // Provider 注册表（首次启动自动内置 Mock 离线演示 Provider）
+            // Provider 注册表（内置 Mock 离线演示 Provider 按 id 补种：
+            // 仅在列表为空时补种的话，误删 Mock 后重启无法恢复）
             let mut registry = ProviderRegistry::load(&data_dir);
-            if registry.list().is_empty() {
+            if !registry.list().iter().any(|p| p.id == "builtin-mock") {
                 let mut mock = onetv_core::providers::ProviderProfile::new(
                     "离线演示（Mock）",
                     ProviderDriverKind::Mock,
@@ -1419,9 +2535,27 @@ pub fn run() {
                     model_binding("mock-tts-v1", &[Capability::Tts]),
                 ];
                 registry.upsert(mock);
-                tracing::info!("seeded builtin mock provider");
+                tracing::info!("seeded builtin mock provider (was missing)");
             }
             let registry = Arc::new(RwLock::new(registry));
+
+            // 清理 themes/ 目录中的 0 字节残留（历史上传失败产物）
+            {
+                let themes = data_dir.join("themes");
+                if let Ok(entries) = std::fs::read_dir(&themes) {
+                    for e in entries.flatten() {
+                        if let Ok(meta) = e.metadata() {
+                            if meta.is_file() && meta.len() == 0 {
+                                let _ = std::fs::remove_file(e.path());
+                                tracing::warn!(file = %e.path().display(), "removed 0-byte skin residue");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // macOS 原生菜单栏（应用菜单设「设置…」、File 功能入口、Help 帮助）
+            build_app_menu(handle.clone());
 
             // 事件桥（Rust → 前端）
             let h2 = handle.clone();
@@ -1436,10 +2570,11 @@ pub fn run() {
             // 注册全部 Agent 处理器
             onetv_core::agent::executor::register_all_handlers(env.clone(), &jobs);
 
-            // 设置同步：离线模式 / 并发
+            // 设置同步：离线模式 / 并发 / 生成模型默认
             let s = state.settings.get();
             env.set_offline(s.offline_mode);
             jobs.set_concurrency(s.max_concurrent_jobs);
+            env.set_model_defaults(model_defaults_map(&s));
 
             let agent_state = Arc::new(AgentState {
                 env,
@@ -1449,11 +2584,48 @@ pub fn run() {
             });
             let _ = AGENT.set(agent_state.clone());
             app.manage(agent_state);
+
+            // 启动时自动恢复上次打开的工程（BUG：重启后显示"未打开项目"，需手动重开）
+            if let Some(last) = state.settings.get().last_project.clone() {
+                let dir = PathBuf::from(&last);
+                if dir.join("project.json").is_file() {
+                    match ops::open_project(&dir) {
+                        Ok((handle, manifest)) => {
+                            state.settings.touch_recent(&last, &manifest.project.title);
+                            if let Some(agent) = AGENT.get() {
+                                agent.jobs.set_project_root(Some(dir.clone()));
+                                let resumed = agent.jobs.resume_on_restart();
+                                if resumed > 0 {
+                                    tracing::info!(resumed, "jobs resumed on startup restore");
+                                }
+                            }
+                            {
+                                let mut p = state.project.write();
+                                p.handle = Some(handle);
+                                p.manifest = Some(manifest);
+                            }
+                            tracing::info!(path = %last, "restored last project on startup");
+                        }
+                        Err(e) => {
+                            tracing::warn!(path = %last, error = %e, "failed to restore last project");
+                        }
+                    }
+                } else {
+                    tracing::warn!(path = %last, "last project no longer exists");
+                }
+            }
+
+            // Hermes 反向控制监听（按设置启用；默认关闭）
+            let s_snapshot = state.settings.get();
+            if let Err(e) = hermes_restart_listener(&state, &s_snapshot) {
+                tracing::warn!(error = e.message, "hermes listener failed to start");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             settings_get,
             settings_update,
+            app_info,
             ffmpeg_status,
             workspace_recent_list,
             workspace_recent_add,
@@ -1465,6 +2637,9 @@ pub fn run() {
             project_info,
             episode_list,
             episode_create,
+            episode_delete,
+            project_delete,
+            workspace_recent_remove,
             doc_get,
             doc_save,
             canvas_get,
@@ -1507,6 +2682,23 @@ pub fn run() {
             mail_config_get,
             mail_test_send,
             auth_send_code,
+            debug_set_time_offset,
+            debug_session_status,
+            agent_attach,
+            canvas_node_run,
+            agent_attach_path,
+            agent_attach_data,
+            asset_open,
+            asset_reveal,
+            memory_list,
+            memory_add,
+            memory_update,
+            memory_delete,
+            hermes_config_get,
+            hermes_config_save,
+            hermes_test,
+            hermes_send,
+            hermes_log_recent,
         ])
         .on_window_event(|window, event| {
             // macOS 惯例：点红色关闭按钮 = 隐藏窗口，应用驻留后台（不退出）
@@ -1534,4 +2726,34 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v2.3.4 回归：前端 camelCase 入参必须能反序列化（此前缺 rename_all 导致
+    /// "missing field 'workspace_path'"，新建项目 100% 失败）。
+    #[test]
+    fn create_project_input_accepts_camel_case() {
+        let raw = serde_json::json!({
+            "workspacePath": "/tmp/demo",
+            "projectTitle": "测试剧",
+            "aspectRatio": "16:9"
+        });
+        let input: CreateProjectInput = serde_json::from_value(raw).expect("camelCase 反序列化失败");
+        assert_eq!(input.workspace_path, "/tmp/demo");
+        assert_eq!(input.project_title, "测试剧");
+        assert_eq!(input.aspect_ratio, "16:9");
+    }
+
+    #[test]
+    fn create_project_input_defaults_aspect() {
+        let raw = serde_json::json!({
+            "workspacePath": "/tmp/demo",
+            "projectTitle": "测试剧"
+        });
+        let input: CreateProjectInput = serde_json::from_value(raw).unwrap();
+        assert_eq!(input.aspect_ratio, "9:16");
+    }
 }

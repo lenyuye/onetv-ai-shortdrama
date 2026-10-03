@@ -28,6 +28,21 @@ fn route_err(e: impl std::fmt::Display) -> JobError {
     JobError::fatal(e.to_string())
 }
 
+/// 模型选择优先级：任务参数显式指定（providerId/model，来自 UI 模型选择器）
+/// → 设置的「生成模型默认」（AgentEnv.defaults，cap = chat|image|video|tts）→ Router 自动。
+fn preferred_model(
+    env: &AgentEnv,
+    params: &serde_json::Value,
+    cap: &str,
+) -> (Option<String>, Option<String>) {
+    let from_params_p = params.get("providerId").and_then(|v| v.as_str()).map(String::from);
+    let from_params_m = params.get("model").and_then(|v| v.as_str()).map(String::from);
+    if from_params_p.is_some() || from_params_m.is_some() {
+        return (from_params_p, from_params_m);
+    }
+    env.model_default(cap).map(|(p, m)| (Some(p), Some(m))).unwrap_or((None, None))
+}
+
 /// 统一 LLM 对话入口：按 Router 选择 Provider，按驱动分发。返回文本。
 pub async fn llm_chat(
     env: &AgentEnv,
@@ -84,7 +99,11 @@ pub fn script_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
                 ChatMessage::system(SCRIPT_SYSTEM_PROMPT),
                 ChatMessage::user(format!("短剧需求：{brief}\n\n请输出本集剧本 JSON。")),
             ];
-            let (raw, provider_id, model) = llm_chat(&env, &messages, true, None, None).await?;
+            let (raw, provider_id, model) = {
+                let (pp, pm) = preferred_model(&env, &ctx.params, "chat");
+                llm_chat(&env, &messages, true, pp.as_deref(), pm.as_deref()).await?
+            };
+            ctx.set_meta(json!({ "providerId": provider_id, "model": model }));
             ctx.report(0.7, "解析剧本 JSON…");
             let doc = ScriptDoc::parse(&raw).map_err(route_err)?;
             let doc = serde_json::to_value(&doc).map_err(|e| fatal(e.to_string()))?;
@@ -117,7 +136,13 @@ pub fn chat_reply_handler(env: Arc<AgentEnv>) -> JobHandler {
                 ChatMessage::system("你是 OneTV 短剧制作台的 AI 助手，熟悉剧本、分镜与生成工作流，回答简洁专业，用中文。"),
                 ChatMessage::user(text),
             ];
-            let (reply, _p, _m) = llm_chat(&env, &messages, false, None, None).await?;
+            let (reply, provider_id, model) = {
+                let (pp, pm) = preferred_model(&env, &ctx.params, "chat");
+                llm_chat(&env, &messages, false, pp.as_deref(), pm.as_deref()).await?
+            };
+            // 回复双通道：实时事件驱动对话流 + result 元数据落库（任务事件可追溯）。
+            // 之前只发事件且回写 outputs=[]，任务显示"已完成"但回复既不在对话流也无法追溯。
+            ctx.set_meta(json!({ "providerId": provider_id, "model": model, "reply": reply }));
             env.events("agent.message", json!({ "text": reply, "kind": "chat" }));
             Ok(vec![])
         })
@@ -131,22 +156,24 @@ async fn generate_one_image(
     prompt: &str,
     aspect: &str,
     out_dir: &Path,
-) -> Result<Vec<PathBuf>, JobError> {
+    preferred_provider: Option<&str>,
+    preferred_model_id: Option<&str>,
+) -> Result<(Vec<PathBuf>, String, String), JobError> {
     let registry = { env.registry.read().clone() };
     let decision = ModelRouter::route(
         &registry,
         Capability::ImageGeneration,
-        None,
-        None,
+        preferred_provider,
+        preferred_model_id,
         env.offline_mode(),
         false,
     )
     .map_err(route_err)?;
-    match decision.provider.driver {
+    let files = match decision.provider.driver {
         ProviderDriverKind::Mock => {
             mock::generate_image(env.media(), prompt, aspect, out_dir)
                 .await
-                .map_err(|e| transient(e.to_string()))
+                .map_err(|e| transient(e.to_string()))?
         }
         ProviderDriverKind::OpenaiCompatible => {
             let size = match aspect {
@@ -156,7 +183,7 @@ async fn generate_one_image(
             };
             openai::generate_image(env.gateway(), &decision.provider, &decision.model_id, prompt, size, 1, out_dir)
                 .await
-                .map_err(|e| transient(e.to_string()))
+                .map_err(|e| transient(e.to_string()))?
         }
         ProviderDriverKind::StableDiffusion => {
             crate::providers::sd::txt2img(
@@ -170,7 +197,7 @@ async fn generate_one_image(
                 out_dir,
             )
             .await
-            .map_err(|e| transient(e.to_string()))
+            .map_err(|e| transient(e.to_string()))?
         }
         ProviderDriverKind::Comfyui => {
             // 与 SD 驱动同一逻辑：本地直连、免鉴权、Local-only 可用
@@ -186,10 +213,11 @@ async fn generate_one_image(
                 || false,
             )
             .await
-            .map_err(|e| transient(e.to_string()))
+            .map_err(|e| transient(e.to_string()))?
         }
-        other => Err(fatal(format!("驱动 {other:?} 暂不支持生图；请使用 OpenAI 兼容 / Mock Provider"))),
-    }
+        other => return Err(fatal(format!("驱动 {other:?} 暂不支持生图；请使用 OpenAI 兼容 / Mock Provider"))),
+    };
+    Ok((files, decision.provider.id, decision.model_id))
 }
 
 pub fn image_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
@@ -200,7 +228,10 @@ pub fn image_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
             let aspect = ctx.params.get("aspect").and_then(|v| v.as_str()).unwrap_or("9:16").to_string();
             let out_dir = ctx.root.join("renders").join(&ctx.job_id);
             ctx.report(0.2, "调用生图 Provider…");
-            let files = generate_one_image(&env, &prompt, &aspect, &out_dir).await?;
+            let (pp, pm) = preferred_model(&env, &ctx.params, "image");
+            let (files, provider_id, model) =
+                generate_one_image(&env, &prompt, &aspect, &out_dir, pp.as_deref(), pm.as_deref()).await?;
+            ctx.set_meta(json!({ "providerId": provider_id, "model": model }));
             ctx.report(0.9, "保存结果…");
             Ok(files.iter().map(|p| p.to_string_lossy().into_owned()).collect())
         })
@@ -235,7 +266,10 @@ pub fn storyboard_image_batch_handler(env: Arc<AgentEnv>) -> JobHandler {
                 }
                 let prompt = build_shot_prompt(shot, &bible_style);
                 ctx.report(i as f64 / total as f64, &format!("生成分镜图 {}/{}…", i + 1, total));
-                let files = generate_one_image(&env, &prompt, "9:16", &out_dir).await?;
+                let (pp, pm) = preferred_model(&env, &ctx.params, "image");
+                let (files, provider_id, model) =
+                    generate_one_image(&env, &prompt, "9:16", &out_dir, pp.as_deref(), pm.as_deref()).await?;
+                ctx.set_meta(json!({ "providerId": provider_id, "model": model }));
                 if let Some(asset_id) = register_asset(&ctx.root, files.first(), "images") {
                     updated[i]["outputAssetId"] = json!(asset_id);
                     updated[i]["status"] = json!("ready");
@@ -301,16 +335,19 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
             let aspect = ctx.params.get("aspect").and_then(|v| v.as_str()).unwrap_or("9:16").to_string();
             let duration = ctx.params.get("duration").and_then(|v| v.as_u64()).unwrap_or(5) as u32;
             let registry = { env.registry.read().clone() };
+            let (vpp, vpm) = preferred_model(&env, &ctx.params, "video");
             let decision = ModelRouter::route(
                 &registry,
                 Capability::VideoGeneration,
-                ctx.params.get("providerId").and_then(|v| v.as_str()),
-                ctx.params.get("model").and_then(|v| v.as_str()),
+                vpp.as_deref(),
+                vpm.as_deref(),
                 env.offline_mode(),
                 false,
             )
             .map_err(route_err)?;
             ctx.report(0.15, &format!("调用视频 Provider：{}/{}", decision.provider.name, decision.model_id));
+            let provider_id = decision.provider.id.clone();
+            let model_id = decision.model_id.clone();
             let out_dir = ctx.root.join("renders").join(&ctx.job_id);
             let files = match decision.provider.driver {
                 ProviderDriverKind::Mock => {
@@ -357,6 +394,7 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
                 }
             };
             ctx.report(0.9, "下载/保存结果…");
+            ctx.set_meta(json!({ "providerId": provider_id, "model": model_id }));
             Ok(files.iter().map(|p| p.to_string_lossy().into_owned()).collect())
         })
     })
@@ -373,7 +411,8 @@ pub fn tts_handler(env: Arc<AgentEnv>) -> JobHandler {
                 return Err(fatal("没有可配音的文本"));
             }
             let registry = { env.registry.read().clone() };
-            let decision = ModelRouter::route(&registry, Capability::Tts, None, None, env.offline_mode(), false)
+            let (tpp, tpm) = preferred_model(&env, &ctx.params, "tts");
+            let decision = ModelRouter::route(&registry, Capability::Tts, tpp.as_deref(), tpm.as_deref(), env.offline_mode(), false)
                 .map_err(route_err)?;
             let out_dir = ctx.root.join("renders").join(&ctx.job_id);
             let dest = out_dir.join("voice.mp3");
@@ -389,6 +428,7 @@ pub fn tts_handler(env: Arc<AgentEnv>) -> JobHandler {
                 }
                 other => return Err(fatal(format!("驱动 {other:?} 暂不支持 TTS"))),
             }
+            ctx.set_meta(json!({ "providerId": decision.provider.id, "model": decision.model_id }));
             Ok(vec![dest.to_string_lossy().into_owned()])
         })
     })

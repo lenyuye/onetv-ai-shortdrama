@@ -499,6 +499,24 @@ export interface SkillManifest {
 /* Settings                                                            */
 /* ------------------------------------------------------------------ */
 
+/* ---------------- 生成模型设置（v2.3.5，对应 Rust settings.model_defaults） ---------------- */
+
+/** 能力 → 默认模型的引用（Rust 侧 ModelRef { provider_id, model_id }，camelCase 序列化） */
+export interface ModelRef {
+  providerId: string;
+  modelId: string;
+}
+
+/** 「生成模型设置」四个能力键（与 Rust settings.model_defaults 的 HashMap key 一致） */
+export type ModelDefaultCapability = "chat" | "image" | "video" | "tts";
+
+/**
+ * 各能力默认生成模型表。
+ * 值允许 null：经 IPC 传 null 表示清除该能力的默认（undefined 会被 JSON 序列化丢弃，
+ * 后端对非对象值 / 缺 providerId|modelId 的对象一律执行删除该 key）。
+ */
+export type ModelDefaults = Partial<Record<ModelDefaultCapability, ModelRef | null>>;
+
 export interface AppSettings {
   schemaVersion: string;
   theme: "dark" | "light";
@@ -514,6 +532,8 @@ export interface AppSettings {
   skin?: string;
   /** v2.1 皮肤不透明度 0-1 */
   skinOpacity?: number;
+  /** v2.3.5 各能力默认生成模型；缺省 key = 自动路由 */
+  modelDefaults?: ModelDefaults;
 }
 
 /* ------------------------------------------------------------------ */

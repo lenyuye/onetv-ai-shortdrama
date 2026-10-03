@@ -25,6 +25,9 @@ pub struct AgentEnv {
     pub media: MediaLocator,
     offline: Arc<AtomicBool>,
     events_sink: EventSink,
+    /// 各能力默认生成模型（设置 → 模型 → 生成模型设置）：
+    /// key = chat | image | video | tts；handlers 未显式指定模型时回退到这里。
+    defaults: RwLock<std::collections::HashMap<String, (String, String)>>,
 }
 
 impl AgentEnv {
@@ -40,6 +43,7 @@ impl AgentEnv {
             media,
             offline: Arc::new(AtomicBool::new(false)),
             events_sink,
+            defaults: RwLock::new(std::collections::HashMap::new()),
         })
     }
 
@@ -57,6 +61,16 @@ impl AgentEnv {
     }
     pub fn events(&self, name: &str, payload: serde_json::Value) {
         (self.events_sink)(name, payload);
+    }
+
+    /// 同步「生成模型设置」（settings.modelDefaults → env）。
+    pub fn set_model_defaults(&self, map: std::collections::HashMap<String, (String, String)>) {
+        *self.defaults.write() = map;
+    }
+
+    /// 某能力的默认 (providerId, modelId)。
+    pub fn model_default(&self, cap: &str) -> Option<(String, String)> {
+        self.defaults.read().get(cap).cloned()
     }
 }
 

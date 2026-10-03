@@ -118,6 +118,9 @@ pub struct JobRecord {
     pub idempotency_key: String,
     pub attempts: u32,
     pub outputs: Vec<String>,
+    /// 任务结果元数据：非文件类产出（如对话回复文本）与 provider/model 归属，随任务落库。
+    #[serde(default)]
+    pub result: serde_json::Value,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -129,11 +132,16 @@ pub struct JobContext {
     pub episode_id: Option<String>,
     pub cancel: Arc<AtomicBool>,
     progress: Arc<dyn Fn(f64, &str) + Send + Sync>,
+    /// 处理器回写结果元数据（providerId/model/reply），立即持久化到 jobs 表。
+    set_meta: Arc<dyn Fn(serde_json::Value) + Send + Sync>,
 }
 
 impl JobContext {
     pub fn report(&self, p: f64, msg: &str) {
         (self.progress)(p.clamp(0.0, 1.0), msg);
+    }
+    pub fn set_meta(&self, meta: serde_json::Value) {
+        (self.set_meta)(meta);
     }
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
@@ -154,6 +162,7 @@ impl JobContext {
             episode_id,
             cancel: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(|_, _| {}),
+            set_meta: Arc::new(|_| {}),
         }
     }
 }
@@ -257,14 +266,15 @@ impl JobManager {
     fn persist(&self, job: &JobRecord) {
         if let Some(conn) = self.db() {
             let _ = conn.execute(
-                "INSERT INTO jobs(id, node_id, episode_id, kind, provider_id, model, params_json, state, progress, title, cost_json, error, remote_job_id, idempotency_key, created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
-                 ON CONFLICT(id) DO UPDATE SET state=?8, progress=?9, error=?12, remote_job_id=?13, updated_at=?16",
+                "INSERT INTO jobs(id, node_id, episode_id, kind, provider_id, model, params_json, state, progress, title, cost_json, error, remote_job_id, idempotency_key, attempts, result_json, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+                 ON CONFLICT(id) DO UPDATE SET state=?8, progress=?9, error=?12, remote_job_id=?13, attempts=?15, result_json=?16, provider_id=?5, model=?6, updated_at=?18",
                 rusqlite::params![
                     job.id, job.node_id, job.episode_id, job.kind.as_str(), job.provider_id,
                     job.model, serde_json::to_string(&job.params).unwrap_or_default(),
                     job.state.as_str(), job.progress, job.title, "{}",
                     job.error, job.remote_job_id, job.idempotency_key,
+                    job.attempts, serde_json::to_string(&job.result).unwrap_or_default(),
                     job.created_at, job.updated_at
                 ],
             );
@@ -321,6 +331,7 @@ impl JobManager {
             idempotency_key,
             attempts: 0,
             outputs: Vec::new(),
+            result: serde_json::json!({}),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -339,18 +350,24 @@ impl JobManager {
         job
     }
 
+    /// 幂等去重只对「仍在途」的任务生效（排队/运行中）：防止重复提交扣费。
+    /// 已成功/失败/取消的任务不再拦截 —— 否则用户再次批准同一计划时会静默复用
+    /// 旧任务、不产生任何新任务（表现即"批准执行后零任务产生"）。
     fn find_existing_by_key(&self, key: &str) -> Option<JobRecord> {
         let conn = self.db()?;
         conn.query_row(
-            "SELECT id, provider_id, model, title FROM jobs WHERE idempotency_key = ?1 AND state NOT IN ('FAILED','CANCELED') ORDER BY created_at DESC LIMIT 1",
+            "SELECT id, provider_id, model, title FROM jobs
+             WHERE idempotency_key = ?1
+               AND state IN ('QUEUED','VALIDATING','AWAITING_APPROVAL','SUBMITTING','RUNNING','DOWNLOADING','POST_PROCESSING','RETRY_WAIT')
+             ORDER BY created_at DESC LIMIT 1",
             [key],
             |r| {
                 Ok(JobRecord {
                     id: r.get::<_, String>(0)?,
                     kind: JobKind::Chat, // 幂等复用仅用于展示
                     title: r.get::<_, String>(3)?,
-                    state: JobState::Succeeded,
-                    progress: 1.0,
+                    state: JobState::Queued,
+                    progress: 0.0,
                     provider_id: r.get(1)?,
                     model: r.get(2)?,
                     node_id: None,
@@ -362,6 +379,7 @@ impl JobManager {
                     idempotency_key: key.into(),
                     attempts: 1,
                     outputs: Vec::new(),
+                    result: serde_json::json!({}),
                     created_at: String::new(),
                     updated_at: String::new(),
                 })
@@ -562,6 +580,30 @@ impl JobManager {
                 }
             })
         };
+        // 处理器回写的结果元数据（provider/model/reply）：本地快照 + 立即落库
+        let meta_snapshot: Arc<RwLock<serde_json::Value>> = Arc::new(RwLock::new(serde_json::json!({})));
+        let set_meta: Arc<dyn Fn(serde_json::Value) + Send + Sync> = {
+            let mgr2 = mgr.clone();
+            let job_id2 = job_id.clone();
+            let snapshot = meta_snapshot.clone();
+            Arc::new(move |meta| {
+                *snapshot.write() = meta.clone();
+                if let Some(mut j) = mgr2.load(&job_id2) {
+                    if let Some(p) = meta.get("providerId").and_then(|v| v.as_str()) {
+                        j.provider_id = Some(p.to_string());
+                    }
+                    if let Some(m) = meta.get("model").and_then(|v| v.as_str()) {
+                        j.model = Some(m.to_string());
+                    }
+                    if let Some(r) = meta.get("reply") {
+                        j.result["reply"] = r.clone();
+                        mgr2.add_event(&job_id2, "reply", serde_json::json!({"text": r}));
+                    }
+                    j.updated_at = now();
+                    mgr2.persist(&j);
+                }
+            })
+        };
 
         // 状态推进：VALIDATING → RUNNING
         for st in [JobState::Submitting, JobState::Running] {
@@ -579,6 +621,7 @@ impl JobManager {
             episode_id: job.episode_id.clone(),
             cancel,
             progress: persist_progress,
+            set_meta,
         };
 
         let cancel_for_check = ctx.cancel.clone();
@@ -607,8 +650,13 @@ impl JobManager {
                 job.outputs = asset_ids;
                 job.error = None;
                 job.updated_at = now();
+                // 非文件产出（如对话回复）随成功状态落库
+                job.result = meta_snapshot.read().clone();
                 mgr.persist(&job);
-                mgr.add_event(&job_id, "succeeded", serde_json::json!({"outputs": job.outputs}));
+                mgr.add_event(&job_id, "succeeded", serde_json::json!({
+                    "outputs": job.outputs,
+                    "reply": job.result.get("reply").cloned().unwrap_or(serde_json::Value::Null)
+                }));
                 mgr.emit("job.succeeded", job_public(&job));
             }
             Err(e) => {
@@ -687,7 +735,7 @@ fn kind_dir(kind: &JobKind) -> &'static str {
 
 fn query_job(conn: &Connection, id: &str) -> Option<JobRecord> {
     conn.query_row(
-        "SELECT id, kind, title, state, progress, provider_id, model, node_id, episode_id, params_json, error, remote_job_id, idempotency_key, created_at, updated_at FROM jobs WHERE id = ?1",
+        "SELECT id, kind, title, state, progress, provider_id, model, node_id, episode_id, params_json, error, remote_job_id, idempotency_key, created_at, updated_at, attempts, result_json FROM jobs WHERE id = ?1",
         [id],
         |r| {
             let state_str: String = r.get(3)?;
@@ -719,8 +767,9 @@ fn query_job(conn: &Connection, id: &str) -> Option<JobRecord> {
                 error: r.get(10)?,
                 remote_job_id: r.get(11)?,
                 idempotency_key: r.get(12)?,
-                attempts: 0,
+                attempts: r.get::<_, i64>(15).unwrap_or(0).max(0) as u32,
                 outputs: Vec::new(),
+                result: serde_json::from_str(&r.get::<_, String>(16).unwrap_or_default()).unwrap_or_default(),
                 created_at: r.get(13)?,
                 updated_at: r.get(14)?,
             })
@@ -742,6 +791,7 @@ fn job_public(job: &JobRecord) -> serde_json::Value {
         "error": job.error,
         "attempts": job.attempts,
         "outputs": job.outputs,
+        "reply": job.result.get("reply").cloned().unwrap_or(serde_json::Value::Null),
         "createdAt": job.created_at,
         "updatedAt": job.updated_at,
     })

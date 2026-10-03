@@ -13,7 +13,13 @@
  * 因此这里是「读 camelCase、写 snake_case」，映射统一收在 providerSave 内。
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { Capability, ProviderDriver } from "@onetv/shared-types";
+import type {
+  Capability,
+  ModelDefaultCapability,
+  ModelDefaults,
+  ModelRef,
+  ProviderDriver,
+} from "@onetv/shared-types";
 
 /* ---------------- 类型（与 Rust provider_public / job_list 的 JSON 输出一致） ---------------- */
 
@@ -124,6 +130,57 @@ export const CAPABILITY_OPTIONS: { value: Capability; label: string }[] = [
 
 export const capabilityLabel = (c: Capability): string =>
   CAPABILITY_OPTIONS.find((o) => o.value === c)?.label ?? c;
+
+/**
+ * Provider 编辑表单「能力多选」的五项核心生成能力。
+ * 其它既有能力（vision / image_edit / embedding 等）不在表单展示，但保存时原样保留。
+ */
+export const EDITOR_CAPABILITY_OPTIONS: { value: Capability; label: string }[] = [
+  { value: "chat", label: "对话" },
+  { value: "structured_output", label: "结构化输出" },
+  { value: "image_generation", label: "生图" },
+  { value: "video_generation", label: "生视频" },
+  { value: "tts", label: "配音" },
+];
+
+/** 驱动-能力约束：SD / ComfyUI 后端只接受生图（lib.rs validate_driver_capabilities） */
+const DRIVER_ALLOWED_CAPS: Partial<Record<ProviderDriver, readonly Capability[]>> = {
+  "stable-diffusion": ["image_generation"],
+  comfyui: ["image_generation"],
+};
+
+/** 返回该驱动允许的能力白名单；null = 不限制 */
+export const driverAllowedCaps = (d: ProviderDriver): readonly Capability[] | null =>
+  DRIVER_ALLOWED_CAPS[d] ?? null;
+
+/* ---------------- 「生成模型设置」（settings.modelDefaults） ---------------- */
+
+/** 四个能力键的行标签（卡片行 + toast 文案） */
+export const MODEL_DEFAULT_ROWS: { key: ModelDefaultCapability; label: string; short: string }[] = [
+  { key: "chat", label: "对话 / 推理", short: "对话" },
+  { key: "image", label: "图片生成", short: "图片" },
+  { key: "video", label: "视频生成", short: "视频" },
+  { key: "tts", label: "音频配音", short: "配音" },
+];
+
+/** 能力键 → 下拉筛选模型所需的 Capability */
+export const MODEL_DEFAULT_CAP: Record<ModelDefaultCapability, Capability> = {
+  chat: "chat",
+  image: "image_generation",
+  video: "video_generation",
+  tts: "tts",
+};
+
+/** select option 值编码：providerId 与 modelId 用 "::" 分隔（providerId 为 provider-<uuid>，不含冒号） */
+export const modelOptionValue = (ref: ModelRef): string => `${ref.providerId}::${ref.modelId}`;
+
+/** 解析 select option 值；非法返回 null（= 自动路由） */
+export const parseModelOptionValue = (v: string): ModelRef | null => {
+  if (!v) return null;
+  const i = v.indexOf("::");
+  if (i <= 0 || i === v.length - 2) return null;
+  return { providerId: v.slice(0, i), modelId: v.slice(i + 2) };
+};
 
 /* ---------------- Providers ---------------- */
 

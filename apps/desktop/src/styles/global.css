@@ -279,8 +279,7 @@ textarea {
 input[type="text"],
 input[type="password"],
 input[type="number"],
-textarea,
-select {
+textarea {
   background: var(--bg-deep);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -291,7 +290,7 @@ select {
   min-width: 0;
 }
 
-input:focus, textarea:focus, select:focus {
+input:focus, textarea:focus {
   border-color: var(--blue);
   box-shadow: 0 0 0 2px rgba(77, 124, 254, 0.18);
 }
@@ -512,6 +511,35 @@ textarea { resize: vertical; min-height: 64px; }
   z-index: 1;
 }
 
+/* ---------- 皮肤透出（v2.3.2）----------
+   有自定义皮肤时（body.has-skin），主界面表面改半透明让皮肤透出；
+   无皮肤时保持原实色，可读性不受影响。 */
+body.has-skin .app-main {
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+body.has-skin .topbar {
+  background: color-mix(in srgb, #131830 80%, transparent);
+}
+body.has-skin .leftnav,
+body.has-skin .bottombar,
+body.has-skin .rightbar {
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+}
+body.has-skin .card,
+body.has-skin .panel {
+  background: color-mix(in srgb, var(--panel-2) 86%, transparent);
+}
+html[data-theme="light"] body.has-skin .topbar {
+  background: color-mix(in srgb, #ffffff 85%, transparent);
+}
+html[data-theme="light"] body.has-skin .leftnav,
+html[data-theme="light"] body.has-skin .bottombar,
+html[data-theme="light"] body.has-skin .rightbar,
+html[data-theme="light"] body.has-skin .card,
+html[data-theme="light"] body.has-skin .panel {
+  background: color-mix(in srgb, #ffffff 88%, transparent);
+}
+
 /* ---------- 浅色主题 ---------- */
 html[data-theme="light"] {
   --bg: #f2f4fa;
@@ -551,8 +579,7 @@ html[data-theme="light"] .card { background: #ffffff; }
 html[data-theme="light"] input[type="text"],
 html[data-theme="light"] input[type="password"],
 html[data-theme="light"] input[type="number"],
-html[data-theme="light"] textarea,
-html[data-theme="light"] select {
+html[data-theme="light"] textarea {
   background: #f7f8fd;
   border-color: var(--border-strong);
   color: var(--text);
@@ -594,6 +621,9 @@ html[data-theme="light"] .login-wrap {
   width: 76px;
   height: 76px;
   border-radius: 50%;
+  object-fit: cover;
+  /* logo 已满幅且透明角用照片背景色补齐；轻微放大防边缘锯齿缝隙 */
+  transform: scale(1.03);
   box-shadow: var(--glow-pink);
 }
 .login-logo h1 { font-size: 22px; margin-top: 10px; letter-spacing: 1px; }
@@ -610,14 +640,17 @@ html[data-theme="light"] .login-wrap {
 .login-btn { width: 100%; justify-content: center; padding: 10px; font-size: 14px; margin-top: 6px; }
 .login-foot {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 10px;
+  align-items: baseline;
+  gap: 4px 10px;
   margin-top: 14px;
   font-size: 11px;
   color: var(--muted);
   line-height: 1.5;
 }
-.login-foot a { color: var(--blue); cursor: pointer; white-space: nowrap; }
+.login-foot span { flex: 1 1 100%; min-width: 0; }
+.login-foot a { color: var(--blue); cursor: pointer; white-space: nowrap; margin-left: auto; }
 .login-privacy {
   margin-top: 14px;
   padding-top: 12px;
@@ -625,4 +658,55 @@ html[data-theme="light"] .login-wrap {
   text-align: center;
   font-size: 10.5px;
   color: var(--muted);
+}
+
+/* ---------- select 选择框统一重设计（v2.3.7 · 方案A 深色玻璃/浅色玻璃自适应） ----------
+   替换 macOS 系统银色原生样式：appearance:none 去系统外观，自绘 chevron，
+   颜色全部走 CSS 变量，浅色/暗色主题自动适配。 */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background-color: var(--select-bg, rgba(19, 24, 48, 0.92));
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  border: 1px solid var(--select-border, rgba(120, 140, 200, 0.35));
+  border-radius: 10px;
+  padding: 7px 34px 7px 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+select:hover {
+  border-color: var(--select-border-hover, #5b8cff);
+}
+select:focus {
+  outline: none;
+  border-color: var(--select-border-hover, #5b8cff);
+  box-shadow: 0 0 0 3px var(--select-focus-ring, rgba(91, 140, 255, 0.22));
+}
+select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+select option {
+  background: #141a33;
+  color: #eef1ff;
+}
+[data-theme="light"] select {
+  --select-bg: rgba(255, 255, 255, 0.92);
+  --select-border: rgba(90, 105, 150, 0.35);
+  --select-border-hover: #3b6fe0;
+  --select-focus-ring: rgba(59, 111, 224, 0.18);
+  --select-chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8'><path d='M1 1l5 5 5-5' stroke='%235a6488' stroke-width='1.6' fill='none' stroke-linecap='round'/></svg>");
+}
+[data-theme="light"] select option {
+  background: #ffffff;
+  color: #1c2340;
+}
+
+/* 默认（暗色主题）chevron */
+:root {
+  --select-chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8'><path d='M1 1l5 5 5-5' stroke='%23aeb8e0' stroke-width='1.6' fill='none' stroke-linecap='round'/></svg>");
 }

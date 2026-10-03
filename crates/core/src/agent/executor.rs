@@ -15,6 +15,17 @@ pub struct Executor {
     pub jobs: Arc<JobManager>,
 }
 
+/// 生成任务标题：文本自带同类前缀（如用户输入"生成剧本：…"）时不再叠加，
+/// 避免"生成剧本：生成剧本：…"式重复。
+fn titled(prefix: &str, text: &str) -> String {
+    let t = text.trim();
+    if t.starts_with(prefix) {
+        t.to_string()
+    } else {
+        format!("{prefix}{t}")
+    }
+}
+
 impl Executor {
     /// 执行已批准的 Plan：本地工具立即执行，远程/长任务入 Job 队列。
     /// 返回创建的 job id 列表（含本地步骤跳过说明）。
@@ -124,7 +135,11 @@ impl Executor {
                     "Agent 对话",
                     None,
                     None,
-                    json!({ "text": step.input.get("text").cloned().unwrap_or(json!("")) }),
+                    json!({
+                        "text": step.input.get("text").cloned().unwrap_or(json!("")),
+                        "providerId": step.input.get("providerId").cloned().unwrap_or(serde_json::Value::Null),
+                        "model": step.input.get("model").cloned().unwrap_or(serde_json::Value::Null)
+                    }),
                     None,
                     None,
                     false,
@@ -140,7 +155,7 @@ impl Executor {
                 }));
                 let job = jobs.create_job(
                     JobKind::Script,
-                    format!("生成剧本：{}", step.input.get("brief").and_then(|v| v.as_str()).unwrap_or("").to_string()),
+                    titled("生成剧本：", step.input.get("brief").and_then(|v| v.as_str()).unwrap_or("")),
                     None,
                     None,
                     step.input.clone(),
@@ -159,7 +174,7 @@ impl Executor {
                 }));
                 let job = jobs.create_job(
                     JobKind::ImageGeneration,
-                    format!("生成图片：{}", step.input.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string()),
+                    titled("生成图片：", step.input.get("prompt").and_then(|v| v.as_str()).unwrap_or("")),
                     None,
                     None,
                     step.input.clone(),

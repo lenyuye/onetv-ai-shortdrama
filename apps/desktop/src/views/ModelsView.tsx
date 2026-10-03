@@ -1,10 +1,14 @@
 /**
- * 模型视图 —— Provider 管理 / API Playground（规格 §22.1 / §22.9）。
+ * 模型视图 —— Provider 管理 / 生成模型设置 / API Playground（规格 §22.1 / §22.9）。
  *
- * - Provider 卡片：驱动 / Base URL（host 展示）/ 模型与能力 tag / 启用开关 /
+ * - 🎯 生成模型设置卡片：对话/图片/视频/配音四个能力的默认模型（settings.modelDefaults），
+ *   即选即存；选「自动路由」即清除该 key（IPC 传 null，undefined 会被 JSON 序列化丢弃）
+ * - Provider 卡片：驱动 / Base URL（host 展示）/ 多模型与能力 tag / 启用开关 /
  *   钥匙串 Key 状态 / 测试连接 / 读取模型 / 编辑 / 删除
  * - 新增 / 编辑 modal：驱动下拉（PROVIDER_DRIVERS，切换自动填默认 Base URL），
- *   API Key 只写系统钥匙串（secure_key_set），模型行支持能力多选；
+ *   API Key 只写系统钥匙串（secure_key_set），模型区域为**多模型列表编辑**
+ *   （每行 modelId + 显示名 + 能力多选 checkbox + 删除；「读取模型」结果按 modelId
+ *   去重合并进列表而非覆盖）；SD / ComfyUI 驱动仅允许勾选生图（后端拒绝非法组合）；
  *   custom-http 驱动额外提供 httpTemplate JSON 模板（白名单变量 ${input.*} / ${model.id} / ${secret.apiKey} / ${jobId}）
  * - API Playground：选 Provider + 模型 + prompt → Network Preview → 发送测试（响应经 Rust 端脱敏）
  *
@@ -12,7 +16,13 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { PROVIDER_DRIVERS } from "@onetv/provider-sdk";
-import type { Capability, ProviderDriver } from "@onetv/shared-types";
+import type {
+  Capability,
+  ModelDefaultCapability,
+  ModelDefaults,
+  ModelRef,
+  ProviderDriver,
+} from "@onetv/shared-types";
 import * as api from "../api-providers";
 import type { ProviderDto, ProviderTestResult } from "../api-providers";
 import { useApp } from "../store";
@@ -61,7 +71,11 @@ function newDraft(): EditorDraft {
   };
 }
 
-function draftFrom(p: ProviderDto): EditorDraft {
+function draftFrom(p: ProviderDto, fetched: string[] = []): EditorDraft {
+  const rows: ModelRow[] = p.models.length
+    ? p.models.map((m) => ({ modelId: m.modelId, displayName: m.displayName, capabilities: [...m.capabilities] }))
+    : [];
+  // 「读取模型」拉取过的远端模型自动合并进列表（按 modelId 去重），而非要求用户逐个手工复制
   return {
     id: p.id,
     name: p.name,
@@ -71,11 +85,35 @@ function draftFrom(p: ProviderDto): EditorDraft {
     timeoutMs: p.timeoutMs,
     concurrency: p.concurrency,
     enabled: p.enabled,
-    models: p.models.length
-      ? p.models.map((m) => ({ modelId: m.modelId, displayName: m.displayName, capabilities: [...m.capabilities] }))
-      : [{ modelId: "", displayName: "", capabilities: ["chat"] }],
+    models: mergeFetchedModels(rows, fetched, p.driver).rows,
     httpTemplateText: p.httpTemplate ? JSON.stringify(p.httpTemplate, null, 2) : "",
   };
+}
+
+/** 新合并行的默认能力：SD / ComfyUI 只能生图，其余默认对话 */
+function defaultCapsForDriver(d: ProviderDriver): Capability[] {
+  return api.driverAllowedCaps(d) ? ["image_generation"] : ["chat"];
+}
+
+/** 按驱动约束净化能力（SD / ComfyUI 仅生图；全被过滤掉时回退为白名单首个能力） */
+function sanitizeCaps(caps: Capability[], driver: ProviderDriver): Capability[] {
+  const allowed = api.driverAllowedCaps(driver);
+  if (!allowed) return caps;
+  const kept = caps.filter((c) => allowed.includes(c));
+  return kept.length ? kept : [...allowed];
+}
+
+/** 远端模型列表合并进模型行（按 modelId 去重，不覆盖既有行） */
+function mergeFetchedModels(rows: ModelRow[], ids: string[], driver: ProviderDriver): { rows: ModelRow[]; added: number } {
+  const seen = new Set(rows.map((r) => r.modelId.trim()).filter(Boolean));
+  const add: ModelRow[] = [];
+  for (const raw of ids) {
+    const id = raw.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    add.push({ modelId: id, displayName: id, capabilities: defaultCapsForDriver(driver) });
+  }
+  return { rows: [...rows, ...add], added: add.length };
 }
 
 /** Base URL 只展示 host（完整地址放在 tooltip） */
@@ -118,6 +156,23 @@ const HTTP_TEMPLATE_HINT =
   "模板变量白名单：${input.*}、${model.id}、${secret.apiKey}、${jobId}；禁止任意脚本执行。" +
   '示例：{"method":"POST","url":"https://api.example.com/v1/generate","headers":{"Authorization":"Bearer ${secret.apiKey}"},"body":{"prompt":"${input.prompt}","jobId":"${jobId}"}}';
 
+/** Tauri 命令 Err 时前端拿到 {message} 对象，统一提取可读文案 */
+const errMsg = (e: unknown): string => {
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
+  try { return JSON.stringify(e); } catch { return String(e); }
+};
+
+/** 净化连接失败文案：reqwest 原文（如 "error sending request for url (…)"）改为可读中文 */
+const cleanTestMessage = (m: string): string =>
+  m.replace(/error sending request for url\s*\([^)]*\)/gi, "无法连接到服务（请确认服务已启动且开启 API）");
+
+/** 本地驱动 / 本机地址的 Provider（Local-only 下仍然可用） */
+const LOCAL_DRIVERS: readonly ProviderDriver[] = ["mock", "ollama", "comfyui", "stable-diffusion"];
+const isLocalProvider = (p: ProviderDto): boolean =>
+  LOCAL_DRIVERS.includes(p.driver) ||
+  /^(https?:\/\/)?(127\.0\.0\.1|localhost|192\.168\.|10\.|172\.)/i.test(p.baseUrl);
+
 /* ---------------- Provider 卡片 ---------------- */
 
 function ProviderCard({
@@ -126,6 +181,7 @@ function ProviderCard({
   testBusy,
   reading,
   fetched,
+  offlineBlocked,
   onToggle,
   onTest,
   onRead,
@@ -139,6 +195,7 @@ function ProviderCard({
   testBusy: boolean;
   reading: boolean;
   fetched: string[];
+  offlineBlocked: boolean;
   onToggle: () => void;
   onTest: () => void;
   onRead: () => void;
@@ -148,19 +205,23 @@ function ProviderCard({
   onCopyModel: (modelId: string) => void;
 }) {
   return (
-    <div className={`card pv-card ${p.enabled ? "" : "pv-off"}`}>
+    <div className={`card pv-card ${p.enabled ? "" : "pv-off"} ${offlineBlocked ? "pv-cloud-off" : ""}`}>
       <div className="pv-head">
         <div className="pv-title">
           <span className="pv-name">{p.name}</span>
           <span className="tag blue">{driverLabel(p.driver)}</span>
           {!p.enabled && <span className="tag">已停用</span>}
+          {offlineBlocked && <span className="tag amber">Local-only 下不可用</span>}
+          {test && (test.ok
+            ? <span className="tag green">已连接</span>
+            : <span className="tag red">未连接</span>)}
         </div>
         <div className="pv-switch">
           <span className={`pv-key ${p.hasKey ? "on" : ""}`} title={p.hasKey ? "API Key 已存入系统钥匙串" : "未配置 API Key"}>
             {p.hasKey ? "🟢 已配置 Key" : "⚪ 未配置 Key"}
           </span>
           <label className="checkbox-row" title="停用后任务引擎不再调度该 Provider">
-            <input type="checkbox" checked={p.enabled} onChange={onToggle} />
+            <input type="checkbox" checked={p.enabled} onChange={onToggle} disabled={offlineBlocked} />
             启用
           </label>
         </div>
@@ -175,8 +236,9 @@ function ProviderCard({
         {p.models.length === 0 ? (
           <span className="hint">未配置模型，可「编辑」添加或「读取模型」后手工填入</span>
         ) : (
-          p.models.map((m) => (
-            <div className="pv-model" key={m.modelId}>
+          p.models.map((m, i) => (
+            // key 拼上序号：历史数据可能出现重复 modelId，避免 React key 冲突导致渲染缺失
+            <div className="pv-model" key={`${m.modelId}-${i}`}>
               <span className="tag mono">{m.modelId}</span>
               {m.displayName && m.displayName !== m.modelId && <span className="pv-disp">{m.displayName}</span>}
               {m.capabilities.map((c) => (
@@ -189,7 +251,7 @@ function ProviderCard({
 
       {fetched.length > 0 && (
         <div className="pv-fetched">
-          <span className="hint">远端模型（点击复制 modelId 后到编辑表单手工填入）：</span>
+          <span className="hint">远端模型（编辑时自动合并进模型列表；点击可复制 modelId）：</span>
           {fetched.map((id) => (
             <span key={id} className="tag blue pv-copy" title={`点击复制 ${id}`} onClick={() => onCopyModel(id)}>
               {id}
@@ -198,10 +260,24 @@ function ProviderCard({
         </div>
       )}
 
-      {test && <div className={`pv-test ${test.ok ? "ok" : "err"}`}>{test.ok ? "✅" : "❌"} {test.message}{test.latencyMs != null ? ` · ${test.latencyMs} ms` : ""}</div>}
+      {test && (
+        <div className={`pv-test ${test.ok ? "ok" : "err"}`}>
+          {test.ok ? "✅" : "❌"} {cleanTestMessage(test.message)}
+          {test.ok
+            ? (test.latencyMs != null ? ` · ${test.latencyMs} ms` : "")
+            : " · 连接失败"}
+        </div>
+      )}
 
       <div className="pv-actions">
-        <button className="btn sm" disabled={testBusy} onClick={onTest}>{testBusy ? "测试中…" : "测试连接"}</button>
+        <button
+          className="btn sm"
+          disabled={testBusy || offlineBlocked}
+          title={offlineBlocked ? "Local-only 模式下云端 Provider 不可测试" : undefined}
+          onClick={onTest}
+        >
+          {testBusy ? "测试中…" : "测试连接"}
+        </button>
         <button className="btn sm" disabled={reading} onClick={onRead}>{reading ? "读取中…" : "读取模型"}</button>
         {p.hasKey && (
           <button className="btn sm danger" onClick={onClearKey} title="从钥匙串删除该 Provider 的 API Key">
@@ -216,21 +292,105 @@ function ProviderCard({
   );
 }
 
+/* ---------------- 🎯 生成模型设置卡片（settings.modelDefaults，规格 §22.1） ---------------- */
+
+function providerNameOf(id: string, providers: ProviderDto[]): string {
+  return providers.find((p) => p.id === id)?.name ?? id;
+}
+
+function ModelDefaultsCard({
+  providers,
+  defaults,
+  busy,
+  onChange,
+}: {
+  providers: ProviderDto[];
+  defaults: ModelDefaults | undefined;
+  busy: boolean;
+  onChange: (cap: ModelDefaultCapability, ref: ModelRef | null) => void;
+}) {
+  return (
+    <div className="card md-card">
+      <h3>🎯 生成模型设置</h3>
+      <div className="hint" style={{ marginBottom: 10 }}>
+        用于所有生成入口的默认模型；在对话/剧本/画布中也可临时选择其他模型，临时选择优先于这里
+      </div>
+      <div className="md-rows">
+        {api.MODEL_DEFAULT_ROWS.map((row) => {
+          const cap = api.MODEL_DEFAULT_CAP[row.key];
+          const cur = defaults?.[row.key] ?? null;
+          const curVal = cur ? api.modelOptionValue(cur) : "";
+          // 选项 = 所有已启用 Provider 中具备该能力的模型，按 Provider 分组
+          const usable = providers.filter(
+            (p) => p.enabled && p.models.some((m) => m.capabilities.includes(cap)),
+          );
+          const curUsable =
+            !!cur &&
+            usable.some(
+              (p) =>
+                p.id === cur.providerId &&
+                p.models.some((m) => m.modelId === cur.modelId && m.capabilities.includes(cap)),
+            );
+          return (
+            <div className="md-row" key={row.key}>
+              <label>{row.label}</label>
+              <select
+                value={curVal}
+                disabled={busy}
+                onChange={(e) => onChange(row.key, api.parseModelOptionValue(e.target.value))}
+              >
+                <option value="">自动路由（默认）</option>
+                {usable.map((p) => (
+                  <optgroup key={p.id} label={p.name}>
+                    {p.models
+                      .filter((m) => m.capabilities.includes(cap))
+                      .map((m, i) => (
+                        <option
+                          key={`${m.modelId}-${i}`}
+                          value={api.modelOptionValue({ providerId: p.id, modelId: m.modelId })}
+                        >
+                          {p.name} · {m.modelId}
+                        </option>
+                      ))}
+                  </optgroup>
+                ))}
+                {cur && !curUsable && <option value={curVal}>{providerNameOf(cur.providerId, providers)} · {cur.modelId}（当前不可用）</option>}
+              </select>
+              {cur && !curUsable && (
+                <span className="md-stale">⚠️ 所选模型已停用/删除，任务将回退自动路由</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {providers.filter((p) => p.enabled).length === 0 && (
+        <div className="hint" style={{ marginTop: 8 }}>
+          暂无已启用的 Provider —— 先在下方添加 / 启用，再回到这里选择默认模型
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- 主视图 ---------------- */
 
 export default function ModelsView() {
-  const { toast } = useApp();
+  const { toast, settings, patchSettings } = useApp();
+  const offlineMode = !!settings?.offlineMode;
 
   const [providers, setProviders] = useState<ProviderDto[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [editor, setEditor] = useState<EditorDraft | null>(null);
   const [saving, setSaving] = useState(false);
+  const [editorReading, setEditorReading] = useState(false);
 
   const [testResults, setTestResults] = useState<Record<string, ProviderTestResult>>({});
   const [testBusy, setTestBusy] = useState<Record<string, boolean>>({});
   const [reading, setReading] = useState<Record<string, boolean>>({});
   const [fetchedModels, setFetchedModels] = useState<Record<string, string[]>>({});
+
+  const [mdBusy, setMdBusy] = useState(false);
 
   // Playground
   const [pgProvider, setPgProvider] = useState("");
@@ -254,6 +414,25 @@ export default function ModelsView() {
     void refresh();
   }, [refresh]);
 
+  /* ---------- 🎯 生成模型设置（即选即存） ---------- */
+
+  const saveModelDefault = async (cap: ModelDefaultCapability, ref: ModelRef | null) => {
+    setMdBusy(true);
+    try {
+      // 带上既有 key 原样回传（后端只更新提供的 key）；清除某能力 = 该 key 传 null
+      //（undefined 会被 JSON 序列化丢弃，后端收不到该 key，无法删除）
+      const md: ModelDefaults = { ...(settings?.modelDefaults ?? {}) };
+      md[cap] = ref;
+      await patchSettings({ modelDefaults: md });
+      const short = api.MODEL_DEFAULT_ROWS.find((r) => r.key === cap)?.short ?? cap;
+      toast(ref ? `已保存默认${short}模型` : `已清除默认${short}模型，恢复自动路由`, "ok");
+    } catch (e) {
+      toast(`保存失败：${errMsg(e)}`, "err");
+    } finally {
+      setMdBusy(false);
+    }
+  };
+
   /* ---------- 卡片操作 ---------- */
 
   const toggleEnabled = async (p: ProviderDto) => {
@@ -273,7 +452,7 @@ export default function ModelsView() {
       await refresh();
       toast(p.enabled ? `已停用 ${p.name}` : `已启用 ${p.name}`, "ok");
     } catch (e) {
-      toast(`操作失败：${String(e)}`, "err");
+      toast(`操作失败：${errMsg(e)}`, "err");
     }
   };
 
@@ -283,7 +462,7 @@ export default function ModelsView() {
       const r = await api.providerTest(p.id);
       setTestResults((t) => ({ ...t, [p.id]: r }));
     } catch (e) {
-      setTestResults((t) => ({ ...t, [p.id]: { ok: false, message: String(e) } }));
+      setTestResults((t) => ({ ...t, [p.id]: { ok: false, message: errMsg(e) } }));
     } finally {
       setTestBusy((b) => ({ ...b, [p.id]: false }));
     }
@@ -295,25 +474,25 @@ export default function ModelsView() {
       const r = await api.providerModels(p.id);
       if (r.ok) {
         setFetchedModels((f) => ({ ...f, [p.id]: r.models }));
-        toast(`读取到 ${r.models.length} 个模型，点击模型 ID 复制后填入编辑表单`, "ok");
+        toast(`读取到 ${r.models.length} 个模型；编辑该 Provider 时会自动合并进模型列表（按 modelId 去重）`, "ok");
       } else {
         toast(`读取模型失败：${r.message ?? "未知错误"}`, "err");
       }
     } catch (e) {
-      toast(`读取模型失败：${String(e)}`, "err");
+      toast(`读取模型失败：${errMsg(e)}`, "err");
     } finally {
       setReading((r) => ({ ...r, [p.id]: false }));
     }
   };
 
   const doDelete = async (p: ProviderDto) => {
-    if (!window.confirm(`删除 Provider「${p.name}」？\n钥匙串中的 API Key 会被一并删除，此操作不可恢复。`)) return;
+    if (!window.confirm(`确定删除 Provider「${p.name}」吗？该操作不可恢复。`)) return;
     try {
       await api.providerDelete(p.id);
       await refresh();
       toast("已删除", "ok");
     } catch (e) {
-      toast(`删除失败：${String(e)}`, "err");
+      toast(`删除失败：${errMsg(e)}`, "err");
     }
   };
 
@@ -324,7 +503,7 @@ export default function ModelsView() {
       await refresh();
       toast("密钥已从钥匙串删除", "ok");
     } catch (e) {
-      toast(`删除密钥失败：${String(e)}`, "err");
+      toast(`删除密钥失败：${errMsg(e)}`, "err");
     }
   };
 
@@ -333,7 +512,7 @@ export default function ModelsView() {
       await navigator.clipboard.writeText(modelId);
       toast("modelId 已复制，可粘贴到编辑表单", "ok");
     } catch (e) {
-      toast(`复制失败：${String(e)}`, "err");
+      toast(`复制失败：${errMsg(e)}`, "err");
     }
   };
 
@@ -353,6 +532,8 @@ export default function ModelsView() {
       driver,
       baseUrl: info?.defaultBaseUrl ?? d.baseUrl,
       timeoutMs: info?.defaultTimeoutMs ?? d.timeoutMs,
+      // 驱动-能力约束：SD / ComfyUI 仅允许生图（后端会拒绝非法组合，切换时同步净化已勾选项）
+      models: d.models.map((m) => ({ ...m, capabilities: sanitizeCaps(m.capabilities, driver) })),
     }));
   };
 
@@ -378,18 +559,59 @@ export default function ModelsView() {
     }));
 
   const addModelRow = () =>
-    setDraftSafe((d) => ({ ...d, models: [...d.models, { modelId: "", displayName: "", capabilities: ["chat"] }] }));
+    setDraftSafe((d) => ({
+      ...d,
+      models: [...d.models, { modelId: "", displayName: "", capabilities: defaultCapsForDriver(d.driver) }],
+    }));
 
   const removeModelRow = (idx: number) =>
     setDraftSafe((d) => ({ ...d, models: d.models.filter((_, i) => i !== idx) }));
+
+  /** 编辑表单内「读取模型并合并」：拉取远端列表按 modelId 去重后并入，不覆盖已填行 */
+  const readModelsIntoEditor = async () => {
+    const d = editor;
+    if (!d?.id) return;
+    setEditorReading(true);
+    try {
+      const r = await api.providerModels(d.id);
+      if (!r.ok) {
+        toast(`读取模型失败：${r.message ?? "未知错误"}`, "err");
+        return;
+      }
+      const merged = mergeFetchedModels(d.models, r.models, d.driver);
+      if (merged.added > 0) {
+        setEditor((cur) => (cur && cur.id === d.id ? { ...cur, models: merged.rows } : cur));
+        toast(`已合并 ${merged.added} 个新模型（按 modelId 去重）`, "ok");
+      } else {
+        toast("远端模型均已存在于列表，无需合并", "info");
+      }
+    } catch (e) {
+      toast(`读取模型失败：${errMsg(e)}`, "err");
+    } finally {
+      setEditorReading(false);
+    }
+  };
 
   const saveEditor = async () => {
     const d = editor;
     if (!d) return;
     if (!d.name.trim()) return toast("请填写 Provider 名称", "warn");
     if (!d.baseUrl.trim()) return toast("请填写 Base URL", "warn");
-    const models = d.models.filter((m) => m.modelId.trim());
+    // 过滤空行 + 按 modelId 去重（保留首个），避免「后者覆盖前者」的重复项进入后端
+    const seen = new Set<string>();
+    let droppedDup = 0;
+    const models = d.models.filter((m) => {
+      const id = m.modelId.trim();
+      if (!id) return false;
+      if (seen.has(id)) {
+        droppedDup += 1;
+        return false;
+      }
+      seen.add(id);
+      return true;
+    });
     if (models.length === 0) return toast("至少添加一个模型（填写 modelId）", "warn");
+    if (droppedDup > 0) toast(`已忽略 ${droppedDup} 个重复 modelId 的模型行`, "warn");
     if (d.driver === "custom-http" && d.httpTemplateText.trim()) {
       try {
         JSON.parse(d.httpTemplateText);
@@ -413,7 +635,7 @@ export default function ModelsView() {
         models: models.map((m) => ({
           modelId: m.modelId.trim(),
           displayName: m.displayName.trim() || m.modelId.trim(),
-          capabilities: m.capabilities,
+          capabilities: sanitizeCaps(m.capabilities, d.driver),
         })),
         timeoutMs: Math.max(1_000, d.timeoutMs || 180_000),
         concurrency: Math.max(1, d.concurrency || 1),
@@ -430,7 +652,7 @@ export default function ModelsView() {
       setEditor(null);
       await refresh();
     } catch (e) {
-      toast(`保存失败：${String(e)}`, "err");
+      toast(`保存失败：${errMsg(e)}`, "err");
     } finally {
       setSaving(false);
     }
@@ -454,7 +676,7 @@ export default function ModelsView() {
       const r = await api.playgroundTest(pgProv.id, pgModel, pgPrompt);
       setPgResult(r);
     } catch (e) {
-      toast(`测试失败：${String(e)}`, "err");
+      toast(`测试失败：${errMsg(e)}`, "err");
     } finally {
       setPgBusy(false);
     }
@@ -495,10 +717,11 @@ export default function ModelsView() {
               testBusy={!!testBusy[p.id]}
               reading={!!reading[p.id]}
               fetched={fetchedModels[p.id] ?? []}
+              offlineBlocked={offlineMode && !isLocalProvider(p)}
               onToggle={() => void toggleEnabled(p)}
               onTest={() => void doTest(p)}
               onRead={() => void doReadModels(p)}
-              onEdit={() => setEditor(draftFrom(p))}
+              onEdit={() => setEditor(draftFrom(p, fetchedModels[p.id] ?? []))}
               onDelete={() => void doDelete(p)}
               onClearKey={() => void doClearKey(p)}
               onCopyModel={(id) => void copyModelId(id)}
@@ -506,6 +729,14 @@ export default function ModelsView() {
           ))}
         </div>
       )}
+
+      {/* 🎯 生成模型设置（v2.3.7 调序：API/Provider 设置置顶，本卡片置底；即选即存，选「自动路由」= 清除该能力默认） */}
+      <ModelDefaultsCard
+        providers={providers}
+        defaults={settings?.modelDefaults}
+        busy={mdBusy}
+        onChange={(cap, ref) => void saveModelDefault(cap, ref)}
+      />
 
       {/* API Playground（规格 §22.9） */}
       <div className="card pg-card">
@@ -645,42 +876,84 @@ export default function ModelsView() {
               </div>
 
               <div className="field">
-                <label>模型管理（modelId + 能力）</label>
-                {editor.models.map((m, i) => (
-                  <div className="mv-model-row" key={i}>
-                    <div className="mv-model-grid">
-                      <input
-                        type="text"
-                        value={m.modelId}
-                        placeholder="modelId，例如 gpt-4o / qwen2.5:7b"
-                        onChange={(e) => patchModel(i, { modelId: e.target.value })}
-                      />
-                      <input
-                        type="text"
-                        value={m.displayName}
-                        placeholder="显示名（可留空）"
-                        onChange={(e) => patchModel(i, { displayName: e.target.value })}
-                      />
-                      {editor.models.length > 1 && (
-                        <button className="btn sm danger" onClick={() => removeModelRow(i)}>移除</button>
-                      )}
+                <div className="mv-model-head">
+                  <label>模型管理（可配置多个：modelId + 显示名 + 能力）</label>
+                  {editor.id ? (
+                    <button
+                      className="btn sm"
+                      disabled={editorReading}
+                      title="拉取该 Provider 远端模型列表，按 modelId 去重后合并进下方列表（不覆盖已填内容）"
+                      onClick={() => void readModelsIntoEditor()}
+                    >
+                      {editorReading ? "读取中…" : "⟳ 读取模型并合并"}
+                    </button>
+                  ) : (
+                    <span className="sub">保存后再打开「编辑」即可读取远端模型并合并</span>
+                  )}
+                </div>
+                {editor.driver === "stable-diffusion" || editor.driver === "comfyui" ? (
+                  <span className="sub">
+                    ⚠️ 该驱动仅支持「生图」能力（后端会拒绝其他组合），已自动限制可勾选项
+                  </span>
+                ) : null}
+                {editor.models.length === 0 && (
+                  <span className="sub">尚无模型：点击「➕ 添加模型」手工填写，或用「读取模型并合并」拉取</span>
+                )}
+                {editor.models.map((m, i) => {
+                  const allowed = api.driverAllowedCaps(editor.driver);
+                  // 表单外既有能力（vision / embedding 等）不在 checkbox 中展示，保存时原样保留
+                  const extra = m.capabilities.filter(
+                    (c) => !api.EDITOR_CAPABILITY_OPTIONS.some((o) => o.value === c),
+                  );
+                  return (
+                    <div className="mv-model-row" key={i}>
+                      <div className="mv-model-grid">
+                        <input
+                          type="text"
+                          value={m.modelId}
+                          placeholder="modelId，例如 gpt-4o / qwen2.5:7b"
+                          onChange={(e) => patchModel(i, { modelId: e.target.value })}
+                        />
+                        <input
+                          type="text"
+                          value={m.displayName}
+                          placeholder="显示名（可留空）"
+                          onChange={(e) => patchModel(i, { displayName: e.target.value })}
+                        />
+                        <button className="btn sm danger" onClick={() => removeModelRow(i)}>删除</button>
+                      </div>
+                      <div className="mv-cap-checks">
+                        {api.EDITOR_CAPABILITY_OPTIONS.map((c) => {
+                          const blocked = !!allowed && !allowed.includes(c.value);
+                          return (
+                            <label
+                              key={c.value}
+                              className={`mv-cap-check ${blocked ? "off" : ""}`}
+                              title={blocked ? "该驱动不支持此能力（后端会拒绝非法组合）" : undefined}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={m.capabilities.includes(c.value)}
+                                disabled={blocked}
+                                onChange={() => toggleCap(i, c.value)}
+                              />
+                              {c.label}
+                            </label>
+                          );
+                        })}
+                        {extra.length > 0 && (
+                          <span className="mv-extra-caps" title="既有能力，保存时原样保留">
+                            {extra.map((c) => (
+                              <span key={c} className="tag pink">{api.capabilityLabel(c)}</span>
+                            ))}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="cap-chips">
-                      {api.CAPABILITY_OPTIONS.map((c) => (
-                        <button
-                          key={c.value}
-                          type="button"
-                          className={`cap-chip ${m.capabilities.includes(c.value) ? "on" : ""}`}
-                          onClick={() => toggleCap(i, c.value)}
-                        >
-                          {c.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
                 <div>
-                  <button className="btn sm" onClick={addModelRow}>+ 添加模型</button>
+                  <button className="btn sm" onClick={addModelRow}>➕ 添加模型</button>
                 </div>
               </div>
 
@@ -716,6 +989,10 @@ const MODELS_CSS = `
 .pv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; margin-bottom: 14px; }
 .pv-card { display: flex; flex-direction: column; gap: 8px; }
 .pv-card.pv-off { opacity: 0.6; }
+.pv-card.pv-cloud-off { opacity: 0.5; }
+.pv-card.pv-cloud-off .pv-name { color: var(--muted); }
+.pv-card.pv-cloud-off .pv-url,
+.pv-card.pv-cloud-off .pv-models { pointer-events: none; }
 .pv-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
 .pv-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .pv-name { font-weight: 600; font-size: 13px; color: var(--text); }
@@ -764,18 +1041,28 @@ const MODELS_CSS = `
 .pv-security ul { margin-left: 18px; display: flex; flex-direction: column; gap: 3px; color: var(--text-dim); font-size: 12px; }
 .mv-2col { display: flex; gap: 12px; }
 .mv-2col .field { flex: 1; }
+.mv-model-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .mv-model-row {
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 8px 10px; margin-bottom: 8px; background: var(--bg-deep);
 }
 .mv-model-grid { display: flex; gap: 8px; margin-bottom: 6px; }
-.mv-model-grid input { flex: 1; }
-.cap-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.cap-chip {
-  padding: 2px 9px; border-radius: 99px; cursor: pointer; font-size: 11px;
-  border: 1px solid var(--border-strong); background: transparent; color: var(--muted);
-  transition: all 0.12s ease;
+.mv-model-grid input { flex: 1; min-width: 0; }
+.mv-cap-checks { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.mv-cap-check {
+  display: flex; align-items: center; gap: 5px; cursor: pointer;
+  font-size: 11.5px; color: var(--text-dim); user-select: none;
 }
-.cap-chip:hover { border-color: var(--cyan); }
-.cap-chip.on { color: var(--cyan); border-color: rgba(38, 208, 232, 0.45); background: rgba(38, 208, 232, 0.12); }
+.mv-cap-check:hover { color: var(--text); }
+.mv-cap-check input { accent-color: var(--cyan); cursor: pointer; }
+.mv-cap-check.off { opacity: 0.38; cursor: not-allowed; }
+.mv-cap-check.off input { cursor: not-allowed; }
+.mv-extra-caps { display: flex; flex-wrap: wrap; gap: 4px; }
+/* 🎯 生成模型设置卡片 */
+.md-card { margin-bottom: 14px; }
+.md-rows { display: flex; flex-direction: column; gap: 8px; }
+.md-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.md-row > label { min-width: 96px; font-size: 12.5px; color: var(--text); flex-shrink: 0; }
+.md-row > select { flex: 1; min-width: 220px; }
+.md-stale { font-size: 11px; color: var(--amber, #ffb454); }
 `;

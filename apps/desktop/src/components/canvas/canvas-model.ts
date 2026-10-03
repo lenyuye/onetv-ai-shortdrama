@@ -150,15 +150,36 @@ export function docCoreJson(doc: CanvasDocument): string {
 }
 
 /** 节点卡片参数摘要：config 前 max 个键值对。 */
+/** 端口名中文映射（节点卡片显示用；技术标识保留在 Handle tooltip 中） */
+export const PORT_CN: Record<string, string> = {
+  in: "输入", out: "输出", prompt: "提示词", ref: "参考图", brief: "需求",
+  bible: "设定", script: "剧本", shots: "镜头", image: "图片", video: "视频",
+  audio: "音频", text: "文本", pass: "通过", fail: "驳回", approved: "已审",
+};
+export const portCn = (p: string): string => PORT_CN[p] ?? p;
+
+/** 参数键中文映射（节点卡片摘要显示用） */
+export const PARAM_CN: Record<string, string> = {
+  model: "模型", providerId: "供应商", modelId: "模型", prompt: "提示词",
+  text: "文本", aspectRatio: "画幅", count: "数量", duration: "时长",
+  voice: "音色", style: "风格", shotsPerScene: "镜头数", episodeCount: "集数",
+  timeline: "时间线", preset: "预设", expression: "条件", note: "备注",
+};
+export const paramCn = (k: string): string => PARAM_CN[k] ?? k;
+
 export function configSummary(config: Record<string, unknown> | undefined, max = 2): string {
-  const entries = Object.entries(config ?? {}).slice(0, max);
-  if (entries.length === 0) return "无参数";
+  const entries = Object.entries(config ?? {}).filter(([, v]) => {
+    const sv = typeof v === "string" ? v : v == null ? "" : JSON.stringify(v);
+    return sv !== "" && sv !== "null";
+  });
+  if (entries.length === 0) return "参数未设置";
   return entries
+    .slice(0, max)
     .map(([k, v]) => {
       let s = typeof v === "string" ? v : JSON.stringify(v);
       if (s === undefined) s = "";
       if (s.length > 16) s = `${s.slice(0, 16)}…`;
-      return `${k}=${s || "∅"}`;
+      return `${paramCn(k)}：${s || "未设置"}`;
     })
     .join(" · ");
 }

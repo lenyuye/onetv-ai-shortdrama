@@ -21,11 +21,25 @@ fn excluded(rel: &str) -> bool {
 }
 
 pub fn export_project(root: &Path, dest_zip: &Path) -> Result<PathBuf, PkgError> {
+    // 所见即所得：dest 以 .zip 结尾则原样落盘（不重复追加后缀）；
+    // 未带 .zip 则补一次后缀，最终落盘路径以返回值为准。
+    let dest = if dest_zip
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("zip"))
+        .unwrap_or(false)
+    {
+        dest_zip.to_path_buf()
+    } else {
+        let mut s = dest_zip.as_os_str().to_os_string();
+        s.push(".zip");
+        PathBuf::from(s)
+    };
     // 导出前 WAL checkpoint，保证 database.sqlite 自包含
     if let Ok(conn) = onetv_project::db::open(&root.join("database.sqlite")) {
         let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     }
-    let file = std::fs::File::create(dest_zip)?;
+    let file = std::fs::File::create(&dest)?;
     let mut zip = zip::ZipWriter::new(file);
     let opts =
         zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -51,8 +65,8 @@ pub fn export_project(root: &Path, dest_zip: &Path) -> Result<PathBuf, PkgError>
         }
     }
     zip.finish()?;
-    tracing::info!(files = total, dest = %dest_zip.display(), "project exported");
-    Ok(dest_zip.to_path_buf())
+    tracing::info!(files = total, dest = %dest.display(), "project exported");
+    Ok(dest)
 }
 
 fn walk(root: &Path, dir: &Path) -> Vec<PathBuf> {
@@ -173,6 +187,26 @@ mod tests {
         assert_eq!(m2.project.title, "导出测试");
         let eps = ops::list_episodes(h2.root(), &m2).unwrap();
         assert_eq!(eps.len(), 1);
+    }
+
+    #[test]
+    fn export_dest_suffix_wysiwyg() {
+        let ws = tempfile::tempdir().unwrap();
+        let (h, mut m) = ops::create_project(ws.path(), "后缀测试", "9:16").unwrap();
+        let _ep = ops::add_episode(h.root(), &mut m, None).unwrap();
+
+        // 带 .zip 结尾：落盘路径 === 传入路径，不重复追加后缀
+        let dest = ws.path().join("A.ytv.zip");
+        let out = export_project(h.root(), &dest).unwrap();
+        assert_eq!(out, dest);
+        assert!(dest.exists());
+
+        // 不带 .zip：补一次后缀并返回最终路径
+        let dest2 = ws.path().join("B.ytv");
+        let out2 = export_project(h.root(), &dest2).unwrap();
+        assert_eq!(out2, ws.path().join("B.ytv.zip"));
+        assert!(out2.exists());
+        assert!(!dest2.exists());
     }
 
     #[test]

@@ -6,7 +6,10 @@ use rusqlite::Connection;
 
 use crate::error::{ProjectError, ProjectResult};
 
-const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_init", include_str!("../migrations/0001_init.sql")),
+    ("0002_jobs_result", include_str!("../migrations/0002_jobs_result.sql")),
+];
 
 pub fn open(path: &Path) -> ProjectResult<Connection> {
     let conn = Connection::open(path)?;
