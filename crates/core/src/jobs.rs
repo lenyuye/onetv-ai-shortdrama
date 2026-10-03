@@ -652,6 +652,9 @@ impl JobManager {
                 job.updated_at = now();
                 // 非文件产出（如对话回复）随成功状态落库
                 job.result = meta_snapshot.read().clone();
+                // 产物资产 id 一并持久化进 result_json：query_job 重建时据此还原 outputs，
+                // 否则 job_list / job 事件里的 outputs 恒为空（节点生成面板无法回填 outputAssetId）
+                job.result["outputs"] = serde_json::json!(job.outputs);
                 mgr.persist(&job);
                 mgr.add_event(&job_id, "succeeded", serde_json::json!({
                     "outputs": job.outputs,
@@ -752,6 +755,14 @@ fn query_job(conn: &Connection, id: &str) -> Option<JobRecord> {
                 "CANCELED" => JobState::Canceled,
                 _ => JobState::Failed,
             };
+            let result: serde_json::Value =
+                serde_json::from_str(&r.get::<_, String>(16).unwrap_or_default()).unwrap_or_default();
+            // 从 result_json["outputs"] 还原产物资产 id（成功时由 run_job 持久化）
+            let outputs = result
+                .get("outputs")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
             Ok(JobRecord {
                 id: r.get(0)?,
                 kind: JobKind::from_str(&r.get::<_, String>(1)?),
@@ -768,8 +779,8 @@ fn query_job(conn: &Connection, id: &str) -> Option<JobRecord> {
                 remote_job_id: r.get(11)?,
                 idempotency_key: r.get(12)?,
                 attempts: r.get::<_, i64>(15).unwrap_or(0).max(0) as u32,
-                outputs: Vec::new(),
-                result: serde_json::from_str(&r.get::<_, String>(16).unwrap_or_default()).unwrap_or_default(),
+                outputs,
+                result,
                 created_at: r.get(13)?,
                 updated_at: r.get(14)?,
             })
@@ -787,6 +798,7 @@ fn job_public(job: &JobRecord) -> serde_json::Value {
         "progress": job.progress,
         "providerId": job.provider_id,
         "model": job.model,
+        "nodeId": job.node_id,
         "episodeId": job.episode_id,
         "error": job.error,
         "attempts": job.attempts,

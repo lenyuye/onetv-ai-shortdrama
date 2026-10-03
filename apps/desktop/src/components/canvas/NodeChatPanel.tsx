@@ -55,10 +55,18 @@ function quickActions(type: NodeType): { icon: string; label: string; tpl: strin
       ];
     case "audio":
       return [{ icon: "🎙️", label: "台词配音", tpl: "为下面的台词配音：" }];
+    case "text":
+      return [
+        { icon: "✍️", label: "润色改写", tpl: "润色这段文本：" },
+        { icon: "📖", label: "续写", tpl: "续写这段文本：" },
+      ];
     default:
       return [];
   }
 }
+
+/** 支持面板直发生成的节点类型（其余类型后端明确报错，前端直接禁用避免空跑） */
+const RUNNABLE_TYPES: NodeType[] = ["image", "video", "video-clip", "audio", "text"];
 
 export default function NodeChatPanel({
   node,
@@ -80,10 +88,13 @@ export default function NodeChatPanel({
     node.type === "image" ? "image_generation"
     : node.type === "video" || node.type === "video-clip" ? "video_generation"
     : node.type === "audio" ? "tts"
+    : node.type === "text" ? "chat"
     : "";
   const capableProviders = providers.filter((p) =>
     cap ? p.models.some((m) => m.capabilities.includes(cap)) : false
   );
+  /** 当前节点类型是否支持面板直发生成 */
+  const runnable = RUNNABLE_TYPES.includes(node.type);
 
   const [prompt, setPrompt] = useState("");
   const [providerId, setProviderId] = useState("");
@@ -96,6 +107,8 @@ export default function NodeChatPanel({
   const [jobState, setJobState] = useState<string | null>(null);
   const [jobError, setJobError] = useState("");
   const [resultPath, setResultPath] = useState<string | null>(null);
+  /** 文本节点的生成结果（Chat 任务回复，回填 config.text 的同时在面板展示） */
+  const [resultText, setResultText] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const pickerRef = useRef<HTMLDivElement | null>(null);
@@ -183,7 +196,7 @@ export default function NodeChatPanel({
 
   const send = async () => {
     const text = prompt.trim();
-    if (!text || sending) return;
+    if (!text || sending || !runnable) return;
     setSending(true);
     setJobError("");
     setJobState("排队中…");
@@ -200,19 +213,26 @@ export default function NodeChatPanel({
       setJobState("任务已入队");
       pollRef.current = window.setInterval(async () => {
         try {
-          const jobs: JobDto[] = await jobList(50);
+          const jobs: JobDto[] = await jobList(200);
           const j = jobs.find((x) => x.id === r.jobId);
           if (!j) return;
           if (j.state === "SUCCEEDED") {
             if (pollRef.current) window.clearInterval(pollRef.current);
             setJobState(null);
             setSending(false);
-            const outId = (j.outputs ?? [])[0];
-            if (outId) {
-              onConfig(node.id, { outputAssetId: outId, status: "ready" });
-              const list = await assetList().catch(() => []);
-              const hit = list.find((a) => a.id === outId);
-              setResultPath(hit?.path ?? null);
+            if (node.type === "text") {
+              // 文本节点：Chat 任务回复 → 回填节点 text 并在面板展示
+              const reply = j.reply ?? "";
+              onConfig(node.id, { text: reply, status: "ready" });
+              setResultText(reply);
+            } else {
+              const outId = (j.outputs ?? [])[0];
+              if (outId) {
+                onConfig(node.id, { outputAssetId: outId, status: "ready" });
+                const list = await assetList().catch(() => []);
+                const hit = list.find((a) => a.id === outId);
+                setResultPath(hit?.path ?? null);
+              }
             }
             setPrompt("");
           } else if (j.state === "FAILED" || j.state === "CANCELED") {
@@ -260,9 +280,27 @@ export default function NodeChatPanel({
         <button className="node-chat-close" title="关闭" onClick={onClose}>×</button>
       </div>
 
-      {/* 预览区：已有产物直接展示；否则给出尝试快捷项 */}
+      {/* 预览区：文本节点显示文本产物；媒体节点显示已有产物；否则给出尝试快捷项 */}
       <div className="node-chat-preview">
-        {showImage ? (
+        {node.type === "text" ? (
+          <div className="node-chat-text">
+            {resultText ?? ((node.config as { text?: string }).text || "") ? (
+              <pre className="node-chat-text-body">
+                {resultText ?? (node.config as { text?: string }).text}
+              </pre>
+            ) : (
+              <div className="node-chat-placeholder">
+                <div className="node-chat-try">尝试：</div>
+                {actions.map((a) => (
+                  <button key={a.label} className="node-chat-try-item" onClick={() => setPrompt((v) => (v ? v + " " : "") + a.tpl)}>
+                    <span className="node-chat-try-ic">{a.icon}</span>
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : showImage ? (
           <img src={assetUrl(resultPath!)} alt="生成结果" />
         ) : showVideo ? (
           <video src={assetUrl(resultPath!)} controls />
@@ -355,14 +393,19 @@ export default function NodeChatPanel({
         className="node-chat-prompt"
         value={prompt}
         placeholder={
-          node.type === "image"
+          !runnable
+            ? "该节点类型暂不支持面板直发生成（文本/图片/视频/音频节点可直接生成）"
+            : node.type === "image"
             ? "可直接文字生图，或绑定参考后输入指令，如：将背景改为雪夜"
             : node.type === "video" || node.type === "video-clip"
             ? "描述要生成的视频镜头，如：雨夜霓虹街头，主角撑伞走过"
             : node.type === "audio"
             ? "输入要配音的台词文本"
+            : node.type === "text"
+            ? "输入要生成的文本内容或指令，如：写一段女主雨夜的内心独白"
             : "输入提示词"
         }
+        disabled={!runnable}
         onChange={(e) => setPrompt(e.target.value)}
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void send(); }
@@ -402,7 +445,7 @@ export default function NodeChatPanel({
           </select>
         )}
         <span style={{ flex: 1 }} />
-        <button className="node-chat-send" disabled={sending || !prompt.trim()} onClick={() => void send()} title="⌘+Enter 发送">
+        <button className="node-chat-send" disabled={sending || !prompt.trim() || !runnable} onClick={() => void send()} title="⌘+Enter 发送">
           {sending ? "…" : "↑"}
         </button>
       </div>

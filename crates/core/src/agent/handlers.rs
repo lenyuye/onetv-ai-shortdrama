@@ -43,6 +43,38 @@ fn preferred_model(
     env.model_default(cap).map(|(p, m)| (Some(p), Some(m))).unwrap_or((None, None))
 }
 
+/// 解析 params.referenceAssetIds → 项目资产记录。
+/// 节点生成面板绑定的参考（本地上传 / 画布节点产物 / 节点已挂参考）经此真正进入生成链路；
+/// 此前该字段只落进 params JSON、无任何消费方（绑定后不生效）。
+fn resolve_references(root: &Path, params: &serde_json::Value) -> Vec<onetv_project::ops::AssetRecord> {
+    let ids: Vec<&str> = params
+        .get("referenceAssetIds")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect())
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return vec![];
+    }
+    let assets = onetv_project::ops::list_assets(root).unwrap_or_default();
+    ids.iter()
+        .filter_map(|id| assets.iter().find(|a| &a.id == id).cloned())
+        .collect()
+}
+
+/// 首个图片参考的本地路径（图生图 / 图生视频底图用）。
+fn first_image_ref(refs: &[onetv_project::ops::AssetRecord]) -> Option<PathBuf> {
+    refs.iter().find(|a| a.kind == "images").map(|a| PathBuf::from(&a.path))
+}
+
+/// CustomHttp 模板可用的参考清单（模板变量 input.references / input.referenceAssetIds）。
+fn refs_json(refs: &[onetv_project::ops::AssetRecord]) -> serde_json::Value {
+    serde_json::Value::Array(
+        refs.iter()
+            .map(|a| json!({ "assetId": a.id, "path": a.path, "kind": a.kind }))
+            .collect(),
+    )
+}
+
 /// 统一 LLM 对话入口：按 Router 选择 Provider，按驱动分发。返回文本。
 pub async fn llm_chat(
     env: &AgentEnv,
@@ -143,7 +175,11 @@ pub fn chat_reply_handler(env: Arc<AgentEnv>) -> JobHandler {
             // 回复双通道：实时事件驱动对话流 + result 元数据落库（任务事件可追溯）。
             // 之前只发事件且回写 outputs=[]，任务显示"已完成"但回复既不在对话流也无法追溯。
             ctx.set_meta(json!({ "providerId": provider_id, "model": model, "reply": reply }));
-            env.events("agent.message", json!({ "text": reply, "kind": "chat" }));
+            // quiet=true（画布文本节点面板生成）时不推送到 Agent 对话流，回复由面板/节点回填消费
+            let quiet = ctx.params.get("quiet").and_then(|v| v.as_bool()).unwrap_or(false);
+            if !quiet {
+                env.events("agent.message", json!({ "text": reply, "kind": "chat" }));
+            }
             Ok(vec![])
         })
     })
@@ -158,6 +194,7 @@ async fn generate_one_image(
     out_dir: &Path,
     preferred_provider: Option<&str>,
     preferred_model_id: Option<&str>,
+    references: &[onetv_project::ops::AssetRecord],
 ) -> Result<(Vec<PathBuf>, String, String), JobError> {
     let registry = { env.registry.read().clone() };
     let decision = ModelRouter::route(
@@ -169,11 +206,54 @@ async fn generate_one_image(
         false,
     )
     .map_err(route_err)?;
+    // 参考图（图生图）目前只有 Mock（离线合成）与 CustomHttp（模板自取路径）两个驱动可用；
+    // 其余驱动带参考时明确报错，避免静默丢弃参考造成"已生效"的错觉
+    if !references.is_empty()
+        && !matches!(decision.provider.driver, ProviderDriverKind::Mock | ProviderDriverKind::CustomHttp)
+    {
+        return Err(fatal(format!(
+            "驱动 {:?} 暂不支持参考图（图生图）；请移除参考，或改用 Mock / Custom HTTP Provider",
+            decision.provider.driver
+        )));
+    }
     let files = match decision.provider.driver {
         ProviderDriverKind::Mock => {
-            mock::generate_image(env.media(), prompt, aspect, out_dir)
+            mock::generate_image(env.media(), prompt, aspect, first_image_ref(references).as_deref(), out_dir)
                 .await
                 .map_err(|e| transient(e.to_string()))?
+        }
+        ProviderDriverKind::CustomHttp => {
+            let tmpl_val = decision
+                .provider
+                .http_template
+                .clone()
+                .ok_or_else(|| fatal("Custom HTTP Provider 缺少请求模板（httpTemplate 字段）"))?;
+            let tmpl: crate::providers::custom_http::HttpTemplate =
+                serde_json::from_value(tmpl_val).map_err(|e| fatal(format!("模板解析失败: {e}")))?;
+            let secret = if decision.provider.auth.auth_type != "none" {
+                Some(env.gateway().secret_for(&decision.provider).map_err(route_err)?)
+            } else {
+                None
+            };
+            let input = json!({
+                "prompt": prompt,
+                "aspectRatio": aspect,
+                "referenceAssetIds": references.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+                "references": refs_json(references),
+            });
+            let out = crate::providers::custom_http::execute(
+                env.gateway(),
+                &decision.provider,
+                &decision.model_id,
+                &tmpl,
+                &input,
+                secret,
+                out_dir,
+                || false,
+            )
+            .await
+            .map_err(|e| transient(e.to_string()))?;
+            out.result_urls.iter().map(PathBuf::from).collect()
         }
         ProviderDriverKind::OpenaiCompatible => {
             let size = match aspect {
@@ -226,11 +306,12 @@ pub fn image_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
         Box::pin(async move {
             let prompt = ctx.params.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let aspect = ctx.params.get("aspect").and_then(|v| v.as_str()).unwrap_or("9:16").to_string();
+            let references = resolve_references(&ctx.root, &ctx.params);
             let out_dir = ctx.root.join("renders").join(&ctx.job_id);
             ctx.report(0.2, "调用生图 Provider…");
             let (pp, pm) = preferred_model(&env, &ctx.params, "image");
             let (files, provider_id, model) =
-                generate_one_image(&env, &prompt, &aspect, &out_dir, pp.as_deref(), pm.as_deref()).await?;
+                generate_one_image(&env, &prompt, &aspect, &out_dir, pp.as_deref(), pm.as_deref(), &references).await?;
             ctx.set_meta(json!({ "providerId": provider_id, "model": model }));
             ctx.report(0.9, "保存结果…");
             Ok(files.iter().map(|p| p.to_string_lossy().into_owned()).collect())
@@ -268,7 +349,7 @@ pub fn storyboard_image_batch_handler(env: Arc<AgentEnv>) -> JobHandler {
                 ctx.report(i as f64 / total as f64, &format!("生成分镜图 {}/{}…", i + 1, total));
                 let (pp, pm) = preferred_model(&env, &ctx.params, "image");
                 let (files, provider_id, model) =
-                    generate_one_image(&env, &prompt, "9:16", &out_dir, pp.as_deref(), pm.as_deref()).await?;
+                    generate_one_image(&env, &prompt, "9:16", &out_dir, pp.as_deref(), pm.as_deref(), &[]).await?;
                 ctx.set_meta(json!({ "providerId": provider_id, "model": model }));
                 if let Some(asset_id) = register_asset(&ctx.root, files.first(), "images") {
                     updated[i]["outputAssetId"] = json!(asset_id);
@@ -334,6 +415,7 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
             let prompt = ctx.params.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let aspect = ctx.params.get("aspect").and_then(|v| v.as_str()).unwrap_or("9:16").to_string();
             let duration = ctx.params.get("duration").and_then(|v| v.as_u64()).unwrap_or(5) as u32;
+            let references = resolve_references(&ctx.root, &ctx.params);
             let registry = { env.registry.read().clone() };
             let (vpp, vpm) = preferred_model(&env, &ctx.params, "video");
             let decision = ModelRouter::route(
@@ -351,7 +433,7 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
             let out_dir = ctx.root.join("renders").join(&ctx.job_id);
             let files = match decision.provider.driver {
                 ProviderDriverKind::Mock => {
-                    mock::generate_video(env.media(), &prompt, duration, &aspect, &out_dir)
+                    mock::generate_video(env.media(), &prompt, duration, &aspect, first_image_ref(&references).as_deref(), &out_dir)
                         .await
                         .map_err(|e| transient(e.to_string()))?
                 }
@@ -371,7 +453,9 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
                     let input = json!({
                         "prompt": prompt,
                         "aspectRatio": aspect,
-                        "durationSec": duration
+                        "durationSec": duration,
+                        "referenceAssetIds": references.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+                        "references": refs_json(&references),
                     });
                     let out = crate::providers::custom_http::execute(
                         env.gateway(),

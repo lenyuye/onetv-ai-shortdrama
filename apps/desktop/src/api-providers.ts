@@ -88,10 +88,14 @@ export interface JobDto {
   progress: number;
   providerId?: string | null;
   model?: string | null;
+  /** 来源画布节点（节点生成面板直发的任务携带，用于产物回填） */
+  nodeId?: string | null;
   episodeId?: string | null;
   error?: string | null;
   attempts?: number;
   outputs?: string[];
+  /** 对话类任务的文本回复（画布文本节点生成回填用） */
+  reply?: string | null;
   createdAt: string;
   updatedAt: string;
 }

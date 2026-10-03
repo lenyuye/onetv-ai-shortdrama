@@ -810,6 +810,30 @@ function CanvasWorkbench({
     );
     scheduleSave();
   };
+
+  // 全局兜底：任务成功事件携带 nodeId 时直接回填节点（面板已关闭/切走也能收到产物）。
+  // 修复前仅面板轮询回填——面板一关，生成结果就永远挂不到节点上。
+  useEffect(() => {
+    const un = api.onAppEvent<{ nodeId?: string | null; outputs?: string[]; reply?: string | null }>(
+      "job.succeeded",
+      (job) => {
+        const nid = job?.nodeId;
+        if (!nid) return;
+        const fn = nodesRef.current.find((n) => n.id === nid);
+        if (!fn) return; // 已切换分集或节点已删除
+        const out = job.outputs?.[0];
+        if (out) {
+          handleChatConfig(nid, { outputAssetId: out, status: "ready" });
+        } else if (job.reply && fn.data.cn.type === "text") {
+          handleChatConfig(nid, { text: job.reply, status: "ready" });
+        }
+      }
+    );
+    return () => {
+      un.then((f) => f()).catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const updateSelectedNode = (mut: (cn: CanvasNode) => CanvasNode) => {
     if (!selectedFlowNode) return;
     const id = selectedFlowNode.id;

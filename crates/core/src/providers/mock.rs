@@ -65,6 +65,7 @@ pub async fn generate_image(
     locator: &MediaLocator,
     prompt: &str,
     aspect: &str,
+    ref_image: Option<&std::path::Path>,
     out_dir: &std::path::Path,
 ) -> GatewayResult<Vec<std::path::PathBuf>> {
     let resolved = locator.resolve().map_err(|e| super::gateway::GatewayError::Network(e.to_string()))?;
@@ -83,13 +84,30 @@ pub async fn generate_image(
         // ffmpeg gradients 的 seed 允许范围 [-1, u32::MAX]
         h.finish() % 4_000_000_000
     };
-    let status = std::process::Command::new(&resolved.ffmpeg)
-        .args(["-y", "-v", "error", "-f", "lavfi", "-i"])
-        .arg(format!("gradients=s={w}x{h}:c0=0x1a2550:c1=0xd42a8c:c2=0x2a9df4:seed={seed}:nb_colors=3"))
-        .args(["-frames:v", "1"])
-        .arg(&dest)
-        .status()
-        .map_err(|e| super::gateway::GatewayError::Network(e.to_string()))?;
+    let status = match ref_image {
+        // 图生图（离线 Mock）：参考图缩放裁切为底图，叠加 prompt 种子渐变层，体现"基于参考重绘"
+        Some(ref_img) => std::process::Command::new(&resolved.ffmpeg)
+            .args(["-y", "-v", "error"])
+            .arg("-i")
+            .arg(ref_img)
+            .args(["-f", "lavfi", "-i"])
+            .arg(format!("gradients=s={w}x{h}:c0=0x1a2550:c1=0xd42a8c:c2=0x2a9df4:seed={seed}:nb_colors=3"))
+            .args([
+                "-filter_complex",
+                &format!("[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}[base];[1:v]format=rgba,colorchannelmixer=aa=0.25[ov];[base][ov]overlay=0:0"),
+            ])
+            .args(["-frames:v", "1"])
+            .arg(&dest)
+            .status()
+            .map_err(|e| super::gateway::GatewayError::Network(e.to_string()))?,
+        None => std::process::Command::new(&resolved.ffmpeg)
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i"])
+            .arg(format!("gradients=s={w}x{h}:c0=0x1a2550:c1=0xd42a8c:c2=0x2a9df4:seed={seed}:nb_colors=3"))
+            .args(["-frames:v", "1"])
+            .arg(&dest)
+            .status()
+            .map_err(|e| super::gateway::GatewayError::Network(e.to_string()))?,
+    };
     if !status.success() {
         return Err(super::gateway::GatewayError::Network("mock 生图失败（FFmpeg）".into()));
     }
@@ -101,6 +119,7 @@ pub async fn generate_video(
     prompt: &str,
     duration: u32,
     aspect: &str,
+    ref_image: Option<&std::path::Path>,
     out_dir: &std::path::Path,
 ) -> GatewayResult<Vec<std::path::PathBuf>> {
     let resolved = locator.resolve().map_err(|e| super::gateway::GatewayError::Network(e.to_string()))?;
@@ -117,14 +136,33 @@ pub async fn generate_video(
         prompt.hash(&mut h);
         h.finish()
     };
-    let status = std::process::Command::new(&resolved.ffmpeg)
-        .args(["-y", "-v", "error", "-f", "lavfi", "-i"])
-        .arg(format!("testsrc2=duration={duration}:size={w}x{h}:rate=30"))
-        .args(["-vf", &format!("hue=h={}:s=1.4", seed % 360)])
-        .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast"])
-        .arg(&dest)
-        .status()
-        .map_err(|e| super::gateway::GatewayError::Network(e.to_string()))?;
+    let status = match ref_image {
+        // 图生视频（离线 Mock）：参考图循环为底视频，叠加 hue 偏移的测试图案层
+        Some(ref_img) => std::process::Command::new(&resolved.ffmpeg)
+            .args(["-y", "-v", "error"])
+            .args(["-loop", "1", "-t", &duration.to_string()])
+            .arg("-i")
+            .arg(ref_img)
+            .args(["-f", "lavfi", "-i"])
+            .arg(format!("testsrc2=duration={duration}:size={w}x{h}:rate=30"))
+            .args([
+                "-filter_complex",
+                &format!("[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}[base];[1:v]format=rgba,colorchannelmixer=aa=0.18,hue=h={}:s=1.4[ov];[base][ov]overlay=0:0", seed % 360),
+            ])
+            .args(["-t", &duration.to_string()])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast"])
+            .arg(&dest)
+            .status()
+            .map_err(|e| super::gateway::GatewayError::Network(e.to_string()))?,
+        None => std::process::Command::new(&resolved.ffmpeg)
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i"])
+            .arg(format!("testsrc2=duration={duration}:size={w}x{h}:rate=30"))
+            .args(["-vf", &format!("hue=h={}:s=1.4", seed % 360)])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast"])
+            .arg(&dest)
+            .status()
+            .map_err(|e| super::gateway::GatewayError::Network(e.to_string()))?,
+    };
     if !status.success() {
         return Err(super::gateway::GatewayError::Network("mock 生视频失败（FFmpeg）".into()));
     }

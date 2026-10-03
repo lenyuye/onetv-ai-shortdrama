@@ -1576,9 +1576,20 @@ fn canvas_node_run(
             }),
             format!("配音（节点 {title}）"),
         ),
-        "text" | "script" | "storyboard" | "condition" | "review" | "export" => {
+        // 文本节点：面板直发文本生成（Chat 任务，quiet 不占用 Agent 对话流；回复由面板回填节点 text）
+        "text" => (
+            onetv_core::jobs::JobKind::Chat,
+            serde_json::json!({
+                "text": prompt,
+                "providerId": provider_id, "model": model_id,
+                "nodeId": node_id,
+                "quiet": true,
+            }),
+            format!("文本生成（节点 {title}）"),
+        ),
+        "script" | "storyboard" | "condition" | "review" | "export" => {
             return Err(err(format!(
-                "节点类型「{node_type}」暂不支持面板直发生成；图片/视频/音频节点可直接生成"
+                "节点类型「{node_type}」暂不支持面板直发生成；文本/图片/视频/音频节点可直接生成"
             )));
         }
         other => return Err(err(format!("未知节点类型: {other}"))),
