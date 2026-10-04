@@ -90,14 +90,23 @@ export default function HermesView() {
     void refreshLogs();
 
     // Hermes 回调 OneTV（反向控制调用）时实时追加到历史
+    // cancelled 标志：卸载早于 listen promise resolve 时阻止监听器泄漏（与其他视图统一）
     let unlisten: (() => void) | null = null;
+    let cancelled = false;
     api.onAppEvent<api.HermesLogEntry["payload"]>("hermes.inbound", (payload) => {
       setLogs((prev) => [
         { time: new Date().toISOString(), kind: "inbound", payload: payload ?? {} },
         ...prev,
       ]);
-    }).then((f) => (unlisten = f));
+    }).then((f) => {
+      if (cancelled) {
+        f();
+        return;
+      }
+      unlisten = f;
+    });
     return () => {
+      cancelled = true;
       unlisten?.();
     };
   }, [refreshLogs]);

@@ -46,6 +46,7 @@ interface EditorDraft {
   enabled: boolean;
   models: ModelRow[];
   httpTemplateText: string; // custom-http 的 JSON 模板
+  workflowTemplateText: string; // comfyui 的 API 格式工作流 JSON（FLUX/Wan）
 }
 
 const driverInfo = (d: ProviderDriver) => PROVIDER_DRIVERS.find((x) => x.driver === d);
@@ -68,6 +69,7 @@ function newDraft(): EditorDraft {
     enabled: true,
     models: [{ modelId: "", displayName: "", capabilities: ["chat"] }],
     httpTemplateText: "",
+    workflowTemplateText: "",
   };
 }
 
@@ -87,6 +89,7 @@ function draftFrom(p: ProviderDto, fetched: string[] = []): EditorDraft {
     enabled: p.enabled,
     models: mergeFetchedModels(rows, fetched, p.driver).rows,
     httpTemplateText: p.httpTemplate ? JSON.stringify(p.httpTemplate, null, 2) : "",
+    workflowTemplateText: p.workflowTemplate ? JSON.stringify(p.workflowTemplate, null, 2) : "",
   };
 }
 
@@ -447,6 +450,7 @@ export default function ModelsView() {
         concurrency: p.concurrency,
         enabled: !p.enabled,
         httpTemplate: p.httpTemplate ?? null,
+        workflowTemplate: p.workflowTemplate ?? null,
         authType: p.authType,
       });
       await refresh();
@@ -524,6 +528,41 @@ export default function ModelsView() {
   // 包一层：draft 为 null 时安全忽略
   const setDraftSafe = (fn: (d: EditorDraft) => EditorDraft) =>
     setEditor((d) => (d ? fn(d) : d));
+
+  /* ---------- 生成平台预设（v2.6.4） ---------- */
+  const [presets, setPresets] = useState<api.GenPresetDto[]>([]);
+  const [presetSel, setPresetSel] = useState("");
+  useEffect(() => {
+    if (!editor || presets.length > 0) return;
+    api.providerPresetList().then(setPresets).catch(() => {});
+  }, [editor, presets.length]);
+  const applyPreset = (id: string) => {
+    const p = presets.find((x) => x.id === id);
+    if (!p || !editor) return;
+    let origin = "";
+    try {
+      origin = new URL((p.template as { url?: string }).url ?? "").origin;
+    } catch {
+      origin = "";
+    }
+    setEditor({
+      ...editor,
+      id: null,
+      name: editor.name.trim() || p.name,
+      driver: "custom-http",
+      baseUrl: origin,
+      timeoutMs: 600_000,
+      models: [
+        {
+          modelId: p.defaultModelId,
+          displayName: p.defaultModelName,
+          capabilities: [p.category === "image" ? "image_generation" : "video_generation"],
+        },
+      ],
+      httpTemplateText: JSON.stringify(p.template, null, 2),
+    });
+    toast(`已套用预设「${p.name}」：填好 API Key 即可保存（模板可按平台最新文档微调）`, "ok");
+  };
 
   const changeDriver = (driver: ProviderDriver) => {
     const info = driverInfo(driver);
@@ -621,8 +660,16 @@ export default function ModelsView() {
     }
 
     let httpTemplate: unknown = null;
+    let workflowTemplate: unknown = null;
     if (d.driver === "custom-http" && d.httpTemplateText.trim()) {
       httpTemplate = JSON.parse(d.httpTemplateText);
+    }
+    if (d.driver === "comfyui" && d.workflowTemplateText.trim()) {
+      try {
+        workflowTemplate = JSON.parse(d.workflowTemplateText);
+      } catch {
+        return toast("ComfyUI 工作流模板不是合法 JSON", "err");
+      }
     }
 
     setSaving(true);
@@ -641,6 +688,7 @@ export default function ModelsView() {
         concurrency: Math.max(1, d.concurrency || 1),
         enabled: d.enabled,
         httpTemplate,
+        workflowTemplate,
         authType: authTypeOf(d.driver),
       });
       const key = d.apiKey.trim();
@@ -830,6 +878,46 @@ export default function ModelsView() {
                 </select>
               </div>
 
+              {!editor.id && presets.length > 0 && (
+                <div className="field" style={{ background: "var(--panel-2)", borderRadius: 8, padding: 12, border: "1px dashed var(--border-strong)" }}>
+                  <label>⚡ 平台预设一键填充（选平台 → 填 API Key → 保存即用）</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <select
+                      value={presetSel}
+                      onChange={(e) => setPresetSel(e.target.value)}
+                      aria-label="选择平台预设"
+                      style={{ flex: 1 }}
+                    >
+                      <option value="">选择平台预设（图片 / 视频生成）…</option>
+                      <optgroup label="🖼️ 图片生成">
+                        {presets.filter((x) => x.category === "image").map((x) => (
+                          <option key={x.id} value={x.id}>{x.name}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="🎬 视频生成">
+                        {presets.filter((x) => x.category === "video").map((x) => (
+                          <option key={x.id} value={x.id}>{x.name}</option>
+                        ))}
+                      </optgroup>
+                    </select>
+                    <button className="btn blue" disabled={!presetSel} onClick={() => applyPreset(presetSel)}>
+                      套用
+                    </button>
+                  </div>
+                  {(() => {
+                    const p = presets.find((x) => x.id === presetSel);
+                    if (!p) return null;
+                    return (
+                      <span className="sub" style={{ display: "block", marginTop: 6 }}>
+                        {p.notes}
+                        {"  "}
+                        <a href={p.docsUrl} target="_blank" rel="noreferrer" style={{ color: "var(--blue)" }}>官方文档 ↗</a>
+                      </span>
+                    );
+                  })()}
+                </div>
+              )}
+
               <div className="field">
                 <label>Base URL *</label>
                 <input
@@ -891,9 +979,14 @@ export default function ModelsView() {
                     <span className="sub">保存后再打开「编辑」即可读取远端模型并合并</span>
                   )}
                 </div>
-                {editor.driver === "stable-diffusion" || editor.driver === "comfyui" ? (
+                {editor.driver === "stable-diffusion" ? (
                   <span className="sub">
                     ⚠️ 该驱动仅支持「生图」能力（后端会拒绝其他组合），已自动限制可勾选项
+                  </span>
+                ) : null}
+                {editor.driver === "comfyui" ? (
+                  <span className="sub">
+                    生图恒可用；勾选「生视频」需在下方填写工作流模板（Wan 等本地工作流），保存时会校验
                   </span>
                 ) : null}
                 {editor.models.length === 0 && (
@@ -956,6 +1049,21 @@ export default function ModelsView() {
                   <button className="btn sm" onClick={addModelRow}>➕ 添加模型</button>
                 </div>
               </div>
+
+              {editor.driver === "comfyui" && (
+                <div className="field">
+                  <label>ComfyUI 工作流模板（API 格式 JSON；FLUX 出图 / Wan 生视频）</label>
+                  <textarea
+                    value={editor.workflowTemplateText}
+                    style={{ minHeight: 140, fontFamily: "var(--mono)" }}
+                    placeholder={'在 ComfyUI 排好工作流 → 设置里开启「启用 Dev 模式 / API 格式」→ Save (API Format) 导出 JSON 粘贴到这里。\n占位符：文本节点写 __prompt__（正面）与 __negative__（负面）；seed / noise_seed 填 0 = 每次随机。\n图生视频/图生图：首帧参考图会自动上传并填入所有 LoadImage 类节点。'}
+                    onChange={(e) => patchDraft({ workflowTemplateText: e.target.value })}
+                  />
+                  <span className="sub">
+                    留空 = 内置 SD 工作流（仅生图）；填写后按工作流执行，产物（图片/视频）自动入库。本地直连不出公网。
+                  </span>
+                </div>
+              )}
 
               {editor.driver === "custom-http" && (
                 <div className="field">

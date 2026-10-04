@@ -79,16 +79,19 @@ export interface AgentChatModel {
 }
 
 /** 规划并返回执行计划；低风险 Chat 意图会被后端直接执行（autoExecuted=true）。
- *  model 非空时把 providerId/modelId 传给后端（计划步骤优先使用该模型），不传则走默认。 */
+ *  model 非空时把 providerId/modelId 传给后端（计划步骤优先使用该模型），不传则走默认。
+ *  history（v2.6.3）：本会话最近几轮 [{role, content}]，仅 chat 意图注入 LLM 上下文。 */
 export async function agentChat(
   text: string,
-  model?: AgentChatModel | null
+  model?: AgentChatModel | null,
+  history?: { role: string; content: string }[]
 ): Promise<AgentChatResult> {
   const raw =
     asObj(
       await invoke<unknown>("agent_chat", {
         text,
         ...(model ? { providerId: model.providerId, modelId: model.modelId } : {}),
+        ...(history && history.length > 0 ? { history } : {}),
       })
     ) ?? {};
   return {

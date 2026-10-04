@@ -43,6 +43,8 @@ export interface ProviderDto {
   /** Keychain 中是否已存有该 Provider 的 API Key */
   hasKey: boolean;
   httpTemplate: unknown;
+  /** ComfyUI 工作流模板（v2.7：API 格式导出的 workflow JSON） */
+  workflowTemplate: unknown;
 }
 
 export interface ProviderSaveInput {
@@ -56,6 +58,7 @@ export interface ProviderSaveInput {
   concurrency?: number;
   enabled: boolean;
   httpTemplate?: unknown;
+  workflowTemplate?: unknown;
   /** 决定 auth.type；ollama/mock 应传 none，其余默认 bearer */
   authType?: string;
 }
@@ -150,7 +153,8 @@ export const EDITOR_CAPABILITY_OPTIONS: { value: Capability; label: string }[] =
 /** 驱动-能力约束：SD / ComfyUI 后端只接受生图（lib.rs validate_driver_capabilities） */
 const DRIVER_ALLOWED_CAPS: Partial<Record<ProviderDriver, readonly Capability[]>> = {
   "stable-diffusion": ["image_generation"],
-  comfyui: ["image_generation"],
+  // ComfyUI：生图恒可；配置工作流模板后可开生视频（Wan 等本地工作流）
+  comfyui: ["image_generation", "video_generation"],
 };
 
 /** 返回该驱动允许的能力白名单；null = 不限制 */
@@ -215,6 +219,7 @@ export async function providerSave(profile: ProviderSaveInput): Promise<Provider
     enabled: profile.enabled,
     network_policy_id: "default",
     http_template: profile.httpTemplate ?? null,
+    workflow_template: profile.workflowTemplate ?? null,
   };
   return invoke<ProviderDto>("provider_save", { profile: wire });
 }
@@ -248,6 +253,25 @@ export const jobList = (limit = 200) => invoke<JobDto[]>("job_list", { limit });
 export const jobEvents = (id: string) => invoke<JobEventDto[]>("job_events", { id });
 
 export const jobCancel = (id: string) => invoke<void>("job_cancel", { id });
+
+/* ---------------- 生成平台预设（v2.6.4） ---------------- */
+
+export interface GenPresetDto {
+  category: "image" | "video";
+  id: string;
+  name: string;
+  vendor: string;
+  docsUrl: string;
+  authType: string;
+  headerName: string | null;
+  template: unknown;
+  defaultModelId: string;
+  defaultModelName: string;
+  notes: string;
+}
+
+/** 内置图片/视频平台预设（一键填充 Custom HTTP Provider 表单） */
+export const providerPresetList = () => invoke<GenPresetDto[]>("provider_preset_list");
 
 export const jobRetry = (id: string) => invoke<void>("job_retry", { id });
 

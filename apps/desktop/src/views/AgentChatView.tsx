@@ -3,8 +3,12 @@
  * chat 意图低风险自动执行并回显模型回复；创作意图先出计划，批准后入任务队列。
  * 输入框为 Codex 式整体容器：参考 chip 行 + textarea + 工具行（＋添加参考 / 发送），
  * 支持拖拽导入与粘贴文件导入（FileReader → base64 → agent_attach_data）。
+ * v2.6.1：消息/忙碌态提升到 agentChatStore（切视图/重启不丢，事件按 jobId 归档），
+ * 支持停止生成与助手消息 Markdown 渲染。
  */
-import { useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
+import { memo, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import * as api from "../api";
 import { assetUrl } from "../api-assets";
@@ -12,26 +16,16 @@ import * as story from "../api-story";
 import { canvasGet } from "../api-canvas";
 import { skill_list } from "../api-extras";
 import { errMsg } from "../api-story";
+import { jobCancel } from "../api-providers";
 import { useApp } from "../store";
-
-interface ChatMsg {
-  id: string;
-  role: "user" | "assistant" | "system";
-  text: string;
-  plan?: {
-    planId: string;
-    intent: string;
-    summary: string;
-    risk: string;
-    remoteCalls: number;
-    steps: { id: string; tool: string; description: string; approval: string }[];
-    /** 低风险自动执行的计划：不显示批准/拒绝按钮 */
-    auto?: boolean;
-    /** 批准/拒绝后置位：按钮消失，状态不再自相矛盾 */
-    decided?: "approved" | "rejected";
-  };
-  time: string;
-}
+import {
+  useAgentChat,
+  rememberJobSession,
+  uid,
+  DEFAULT_SESSION_TITLE,
+  type ChatMsg,
+  type ChatSession,
+} from "../agentChatStore";
 
 const INTENT_CN: Record<string, string> = {
   chat: "对话",
@@ -204,6 +198,74 @@ const AGENT_CSS = `
   color: var(--muted); flex-shrink: 0; width: 42px; text-align: right;
 }
 .agent-preview-meta > div > span:last-child { word-break: break-all; user-select: text; }
+.agent-msg-copy {
+  background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 10px; font-family: var(--font);
+  padding: 0 4px; border-radius: 4px; opacity: 0; transition: opacity .12s ease;
+}
+.agent-msg-copy:hover { color: var(--blue); background: rgba(120, 140, 255, 0.12); }
+.agent-msg-bubble:hover .agent-msg-copy { opacity: 1; }
+.agent-md { font-size: 12.5px; line-height: 1.6; word-break: break-word; }
+.agent-md p { margin: 0 0 6px; }
+.agent-md > :last-child { margin-bottom: 0; }
+.agent-md ul, .agent-md ol { margin: 4px 0 6px; padding-left: 20px; }
+.agent-md h1, .agent-md h2, .agent-md h3, .agent-md h4 { font-size: 13px; margin: 8px 0 4px; }
+.agent-md blockquote { margin: 4px 0; padding: 2px 10px; border-left: 3px solid var(--border-strong); color: var(--muted); }
+.agent-md code { font-family: var(--mono); font-size: 11.5px; background: rgba(127, 140, 170, 0.16); border-radius: 4px; padding: 1px 4px; }
+.agent-md hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.agent-md table { border-collapse: collapse; margin: 6px 0; }
+.agent-md th, .agent-md td { border: 1px solid var(--border); padding: 3px 8px; font-size: 11.5px; }
+.agent-md a { color: var(--blue); }
+.agent-md-code-wrap { display: block; position: relative; margin: 6px 0; }
+.agent-md-code-wrap pre { margin: 0; }
+.agent-md-code-wrap pre code {
+  display: block; overflow-x: auto; white-space: pre;
+  background: var(--bg-deep); border: 1px solid var(--border);
+  border-radius: 8px; padding: 9px 12px;
+}
+.agent-md-copy {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  background: var(--panel-2); border: 1px solid var(--border);
+  cursor: pointer; color: var(--muted); font-size: 10px; font-family: var(--font);
+  padding: 2px 7px; border-radius: 5px;
+}
+.agent-md-copy:hover { color: var(--text); border-color: var(--border-strong); }
+.agent-stream-cursor {
+  display: inline-block; margin-left: 1px; color: var(--blue);
+  animation: onetv-blink 1s steps(2, start) infinite;
+}
+@keyframes onetv-blink { to { visibility: hidden; } }
+.sess-sidebar {
+  width: 208px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px;
+  border-right: 1px solid var(--border); background: var(--panel);
+  padding: 12px 10px 10px;
+}
+.sess-head { font-size: 11px; color: var(--muted); padding: 0 4px; letter-spacing: 0.5px; }
+.sess-new { width: 100%; }
+.sess-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; min-height: 0; }
+.sess-item {
+  position: relative; display: flex; align-items: center; gap: 6px;
+  padding: 7px 24px 7px 10px; border-radius: 8px; cursor: pointer;
+  font-size: 12px; color: var(--text-dim);
+}
+.sess-item:hover { background: rgba(120, 140, 255, 0.1); color: var(--text); }
+.sess-item.active { background: var(--blue-soft, rgba(77, 124, 254, 0.14)); color: var(--text); }
+.sess-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess-del {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer; color: var(--muted);
+  font-size: 13px; line-height: 1; padding: 1px 4px; border-radius: 4px; opacity: 0;
+  transition: opacity .12s ease;
+}
+.sess-item:hover .sess-del { opacity: 1; }
+.sess-del:hover { color: var(--red); background: rgba(255, 84, 112, 0.12); }
+.sess-rename {
+  width: 100%; background: var(--bg-deep); border: 1px solid var(--blue);
+  border-radius: 6px; color: var(--text); font-size: 12px; padding: 3px 6px;
+  font-family: var(--font);
+}
+.sess-rename:focus { outline: none; }
+.sess-foot { font-size: 10.5px; color: var(--muted); padding: 2px 4px 0; }
 `;
 
 /** 所选 AI 对话模型（null = 自动：模型页「生成模型设置」的默认模型或自动路由） */
@@ -244,15 +306,79 @@ const TOOL_PRESETS: { name: string; tpl: string }[] = [
   { name: "视频理解", tpl: "视频理解：分析这个视频" },
 ];
 
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
-}
+/** 助手消息 Markdown 渲染（GFM 表格/删除线等；代码块带复制按钮；链接新窗打开） */
+const MdBlock = memo(function MdBlock({ text }: { text: string }) {
+  return (
+    <div className="agent-md">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          // pre 由 code 的块级分支自渲染（否则会出现嵌套 pre）
+          pre: ({ children }) => <>{children}</>,
+          code({ className, children }) {
+            const raw = String(children ?? "").replace(/\n$/, "");
+            const isBlock = /language-/.test(className ?? "") || raw.includes("\n");
+            if (!isBlock) {
+              return <code className={className}>{children}</code>;
+            }
+            return (
+              <span className="agent-md-code-wrap">
+                <button
+                  className="agent-md-copy"
+                  onClick={() => void navigator.clipboard.writeText(raw)}
+                >
+                  复制
+                </button>
+                <pre>
+                  <code className={className}>{raw}</code>
+                </pre>
+              </span>
+            );
+          },
+          a({ children, ...rest }) {
+            return (
+              <a {...rest} target="_blank" rel="noreferrer">
+                {children}
+              </a>
+            );
+          },
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+});
+
+/** zustand v5 选择器的稳定空值：缺失键时必须返回同一引用，否则无限重渲染（白屏） */
+const EMPTY_SESSIONS: ChatSession[] = [];
+const EMPTY_JOBS: string[] = [];
 
 export default function AgentChatView() {
-  const { project, toast } = useApp();
-  const [msgs, setMsgs] = useState<ChatMsg[]>([]);
+  const { project, projectRoot, toast } = useApp();
+  /** 对话键 = 项目 root 路径：消息/忙碌态按项目隔离 */
+  const chatKey = projectRoot;
+  const sessions = useAgentChat((s) => (chatKey ? s.sessionsByProject[chatKey] ?? EMPTY_SESSIONS : EMPTY_SESSIONS));
+  const currentSession = useAgentChat((s) => {
+    if (!chatKey) return null;
+    const list = s.sessionsByProject[chatKey] ?? EMPTY_SESSIONS;
+    return list.find((x) => x.id === s.currentByProject[chatKey]) ?? list[0] ?? null;
+  });
+  const msgs = currentSession?.msgs ?? [];
+  const busy = useAgentChat((s) => (chatKey ? s.busyByProject[chatKey] ?? false : false));
+  const activeJobs = useAgentChat((s) => (chatKey ? s.activeJobsByProject[chatKey] ?? EMPTY_JOBS : EMPTY_JOBS));
+  /** 当前项目+当前会话的流式打字内容（可能多个 jobId 并发，这里只展示一个聊天流） */
+  const streamingText = useAgentChat((s) => {
+    if (!chatKey || !currentSession) return undefined;
+    const hit = Object.values(s.streamingByJob).find(
+      (v) => v.root === chatKey && v.sessionId === currentSession.id
+    );
+    return hit?.text;
+  });
+  // 会话管理：重命名态
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState("");
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
   const [approving, setApproving] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<api.AgentAttachment[]>([]);
   /** 大＋的通用条目：链接 / @画布节点 / 技能 / 工具（与文件参考共同计入上限） */
@@ -373,25 +499,12 @@ export default function AgentChatView() {
     };
   }, []);
 
-  useEffect(() => {
-    const unlisteners: Promise<unknown>[] = [
-      api.onAppEvent<{ text: string }>("agent.message", (p) => {
-        if (p?.text) {
-          setMsgs((m) => [
-            ...m,
-            { id: uid(), role: "assistant", text: p.text, time: new Date().toLocaleTimeString() },
-          ]);
-        }
-      }),
-    ];
-    return () => {
-      unlisteners.forEach((u) => u.then((f) => (f as () => void)()).catch(() => {}));
-    };
-  }, []);
+  // agent.message 由 agentChatStore 的全局事件桥统一接收归档（App.tsx 初始化），
+  // 视图只负责渲染——切视图期间到达的回复也会落入 store，不再丢失。
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [msgs.length]);
+  }, [msgs.length, streamingText?.length]);
 
   // 拖拽导入：enter/over 高亮容器，drop 逐个按路径导入（仅打开项目后生效）
   useEffect(() => {
@@ -535,7 +648,7 @@ export default function AgentChatView() {
 
   const send = async () => {
     const text = input.trim();
-    if (busy || (!text && attachments.length === 0 && extras.length === 0)) return;
+    if (busy || !chatKey || (!text && attachments.length === 0 && extras.length === 0)) return;
     // 气泡显示：原文 + 每个条目一行标记（不塞入 4000 字预览正文）
     const bubbleParts: string[] = [];
     if (text) bubbleParts.push(text);
@@ -563,44 +676,114 @@ export default function AgentChatView() {
     setInput("");
     setAttachments([]);
     setExtras([]);
-    setMsgs((m) => [
-      ...m,
-      { id: uid(), role: "user", text: bubbleParts.join("\n"), time: new Date().toLocaleTimeString() },
-    ]);
-    setBusy(true);
+    const session = currentSession ?? (() => {
+      const id = useAgentChat.getState().newSession(chatKey);
+      return useAgentChat.getState().sessionsOf(chatKey).find((x) => x.id === id)!;
+    })();
+    useAgentChat.getState().appendTo(chatKey, session.id, {
+      id: uid(),
+      role: "user",
+      text: bubbleParts.join("\n"),
+      time: new Date().toLocaleTimeString(),
+    });
+    useAgentChat.getState().setBusy(chatKey, true);
     try {
-      const r = await story.agentChat(sendParts.join("\n\n"), aiModel);
-      setMsgs((m) => [
-        ...m,
-        {
-          id: uid(),
-          role: "assistant",
-          text: r.autoExecuted
-            ? `已自动执行：${r.plan.summary}（低风险任务自动运行，回复稍后显示在下方）`
-            : r.plan.summary,
-          plan: {
-            planId: r.plan.planId,
-            intent: r.plan.intent,
-            summary: r.plan.summary,
-            risk: String(r.plan.estimated?.risk ?? "low"),
-            remoteCalls: Number(r.plan.estimated?.remoteCalls ?? 0),
-            steps: r.plan.steps ?? [],
-            auto: !!r.autoExecuted,
-          },
-          time: new Date().toLocaleTimeString(),
+      // 会话上下文：取本会话最近 8 条 user/assistant 文本（排除计划卡与系统提示）
+      const history = session.msgs
+        .filter((m) => m.role === "user" || (m.role === "assistant" && !m.plan))
+        .slice(-8)
+        .map((m) => ({ role: m.role, content: m.text }));
+      const r = await story.agentChat(sendParts.join("\n\n"), aiModel, history);
+      // jobId → 项目+会话归档：切项目/切会话期间到达的回复仍归入本会话
+      if (r.jobIds.length > 0) {
+        rememberJobSession(r.jobIds, chatKey, session.id);
+        useAgentChat.getState().setActiveJobs(chatKey, r.jobIds);
+      }
+      useAgentChat.getState().appendTo(chatKey, session.id, {
+        id: uid(),
+        role: "assistant",
+        text: r.autoExecuted
+          ? `已自动执行：${r.plan.summary}（低风险任务自动运行，回复稍后显示在下方）`
+          : r.plan.summary,
+        plan: {
+          planId: r.plan.planId,
+          intent: r.plan.intent,
+          summary: r.plan.summary,
+          risk: String(r.plan.estimated?.risk ?? "low"),
+          remoteCalls: Number(r.plan.estimated?.remoteCalls ?? 0),
+          steps: r.plan.steps ?? [],
+          auto: !!r.autoExecuted,
         },
-      ]);
+        time: new Date().toLocaleTimeString(),
+      });
       if (r.autoExecuted) {
         toast("对话任务已自动执行（Mock/本地模型不出公网）", "ok");
       }
     } catch (e) {
-      setMsgs((m) => [
-        ...m,
-        { id: uid(), role: "system", text: `⚠️ ${story.errMsg(e)}`, time: new Date().toLocaleTimeString() },
-      ]);
+      useAgentChat.getState().appendTo(chatKey, session.id, {
+        id: uid(),
+        role: "system",
+        text: `⚠️ ${story.errMsg(e)}`,
+        time: new Date().toLocaleTimeString(),
+      });
     } finally {
-      setBusy(false);
+      useAgentChat.getState().setBusy(chatKey, false);
     }
+  };
+
+  /** 停止生成：取消当前对话创建的任务（远程已提交的由后端幂等/取消标志兜底） */
+  const stopGenerating = async () => {
+    if (!chatKey || activeJobs.length === 0) return;
+    const ids = [...activeJobs];
+    let ok = 0;
+    for (const id of ids) {
+      try {
+        await jobCancel(id);
+        ok++;
+      } catch {
+        /* 单个取消失败继续（可能已终态） */
+      }
+    }
+    useAgentChat.getState().setActiveJobs(chatKey, []);
+    useAgentChat.getState().setBusy(chatKey, false);
+    for (const id of ids) useAgentChat.getState().finishStreaming(id);
+    if (chatKey) {
+      const cur = useAgentChat.getState().currentSessionOf(chatKey);
+      if (cur) {
+        useAgentChat.getState().appendTo(chatKey, cur.id, {
+          id: uid(),
+          role: "system",
+          text: `⛔ 已停止生成（取消任务 ${ok}/${ids.length} 个）`,
+          time: new Date().toLocaleTimeString(),
+        });
+      }
+    }
+  };
+
+  /** 清空当前会话消息（localStorage 同步清理） */
+  const clearChat = () => {
+    if (!chatKey) return;
+    useAgentChat.getState().clearCurrent(chatKey);
+    toast("当前会话已清空", "ok");
+  };
+
+  /* ---------- 会话管理 ---------- */
+  const startNewSession = () => {
+    if (!chatKey) return;
+    useAgentChat.getState().newSession(chatKey);
+  };
+  const startRename = (s: ChatSession) => {
+    setRenamingId(s.id);
+    setRenameText(s.title);
+  };
+  const commitRename = () => {
+    if (renamingId && chatKey) useAgentChat.getState().renameSession(chatKey, renamingId, renameText);
+    setRenamingId(null);
+  };
+  const removeSession = (s: ChatSession) => {
+    if (!chatKey) return;
+    useAgentChat.getState().deleteSession(chatKey, s.id);
+    toast(`已删除会话「${s.title}」`, "ok");
   };
 
   const approve = async (planId: string) => {
@@ -608,13 +791,16 @@ export default function AgentChatView() {
     try {
       const ids = await story.agentApprove(planId);
       toast(`已批准，创建了 ${ids.length} 个任务（可在「任务」页查看进度）`, "ok");
-      setMsgs((m) =>
-        m.map((msg) => {
-          if (msg.plan?.planId !== planId) return msg;
-          const plan = { ...msg.plan!, decided: "approved" as const };
+      if (chatKey && currentSession && ids.length > 0) {
+        rememberJobSession(ids, chatKey, currentSession.id);
+      }
+      if (chatKey && currentSession) {
+        useAgentChat.getState().updateByPlanId(chatKey, currentSession.id, planId, (msg) => {
+          if (!msg.plan) return msg;
+          const plan = { ...msg.plan, decided: "approved" as const };
           return { ...msg, plan, text: `${msg.text}\n\n✅ 已批准执行 → 任务 ${ids.length} 个已进入队列` };
-        })
-      );
+        });
+      }
     } catch (e) {
       toast(`批准失败：${story.errMsg(e)}`, "err");
     } finally {
@@ -623,23 +809,76 @@ export default function AgentChatView() {
   };
 
   const reject = (planId: string) => {
-    setMsgs((m) =>
-      m.map((msg) => {
-        if (msg.plan?.planId !== planId) return msg;
-        const plan = { ...msg.plan!, decided: "rejected" as const };
-        return { ...msg, plan, text: `${msg.text}\n\n❌ 已拒绝（未创建任何任务）` };
-      })
-    );
+    if (!chatKey || !currentSession) return;
+    useAgentChat.getState().updateByPlanId(chatKey, currentSession.id, planId, (msg) => {
+      if (!msg.plan) return msg;
+      const plan = { ...msg.plan, decided: "rejected" as const };
+      return { ...msg, plan, text: `${msg.text}\n\n❌ 已拒绝（未创建任何任务）` };
+    });
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div className="page-header" style={{ padding: "14px 22px 0", marginBottom: 0 }}>
+    <div style={{ display: "flex", height: "100%", minHeight: 0 }}>
+      {/* 会话侧栏（v2.6.3）：多会话新建/切换/重命名/删除，各会话独立上下文 */}
+      <aside className="sess-sidebar">
+        <div className="sess-head">会话</div>
+        <button className="btn sm sess-new" onClick={startNewSession} title="新建一个独立上下文的对话">
+          ＋ 新会话
+        </button>
+        <div className="sess-list">
+          {sessions.map((s) => (
+            <div
+              key={s.id}
+              className={`sess-item${currentSession?.id === s.id ? " active" : ""}`}
+              title={`${s.title}（双击重命名）`}
+              onClick={() => chatKey && useAgentChat.getState().switchSession(chatKey, s.id)}
+              onDoubleClick={() => startRename(s)}
+            >
+              {renamingId === s.id ? (
+                <input
+                  className="sess-rename"
+                  autoFocus
+                  value={renameText}
+                  onChange={(e) => setRenameText(e.target.value)}
+                  onBlur={commitRename}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitRename();
+                    if (e.key === "Escape") setRenamingId(null);
+                  }}
+                />
+              ) : (
+                <>
+                  <span className="sess-title">{s.title}</span>
+                  <button
+                    className="sess-del"
+                    title="删除会话"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeSession(s);
+                    }}
+                  >
+                    ×
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="sess-foot">双击重命名 · 各会话独立上下文</div>
+      </aside>
+      <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, height: "100%" }}>
+      <div className="page-header" style={{ padding: "14px 22px 0", marginBottom: 0, display: "flex", alignItems: "flex-start", gap: 12 }}>
         <div>
           <h1 style={{ fontSize: 16 }}>🤖 Agent 对话</h1>
           <div className="desc">
             例如：「写第一集剧本」「把剧本拆成分镜」「按分镜顺序合成成片」—— 高风险操作会先出计划由你批准
           </div>
+        </div>
+        <div style={{ marginLeft: "auto", flexShrink: 0, display: "flex", gap: 8 }}>
+          <button className="btn sm" disabled={msgs.length === 0} title="清空当前项目的对话记录（本机保存的也会清除）" onClick={clearChat}>
+            🗑 清空对话
+          </button>
         </div>
       </div>
 
@@ -653,6 +892,7 @@ export default function AgentChatView() {
         {msgs.map((m) => (
           <div
             key={m.id}
+            className="agent-msg-bubble"
             style={{
               display: "flex",
               justifyContent: m.role === "user" ? "flex-end" : "flex-start",
@@ -666,14 +906,23 @@ export default function AgentChatView() {
                 border: `1px solid ${m.role === "system" ? "rgba(255,181,71,.4)" : "var(--border)"}`,
                 borderRadius: 10,
                 padding: "10px 14px",
-                whiteSpace: "pre-wrap",
+                whiteSpace: m.role === "assistant" ? "normal" : "pre-wrap",
                 fontSize: 12.5,
               }}
             >
-              <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4 }}>
-                {m.role === "user" ? "我" : m.role === "system" ? "系统" : "Agent"} · {m.time}
+              <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                <span>{m.role === "user" ? "我" : m.role === "system" ? "系统" : "Agent"} · {m.time}</span>
+                {m.role === "assistant" && m.text && (
+                  <button
+                    className="agent-msg-copy"
+                    title="复制原文"
+                    onClick={() => void navigator.clipboard.writeText(m.text)}
+                  >
+                    复制
+                  </button>
+                )}
               </div>
-              {m.text}
+              {m.role === "assistant" ? <MdBlock text={m.text} /> : m.text}
               {m.plan && (
                 <div style={{ marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
@@ -715,6 +964,29 @@ export default function AgentChatView() {
             </div>
           </div>
         ))}
+        {/* 流式进行中的回复（打字机气泡；完整回复到达后由事件桥收尾替换） */}
+        {streamingText !== undefined && (
+          <div className="agent-msg-bubble" style={{ display: "flex", justifyContent: "flex-start", marginBottom: 12 }}>
+            <div
+              style={{
+                maxWidth: "78%",
+                background: "var(--panel-2)",
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                padding: "10px 14px",
+                fontSize: 12.5,
+              }}
+            >
+              <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4 }}>
+                Agent · 正在输入…
+              </div>
+              <div className="agent-md agent-streaming">
+                {streamingText || "…"}
+                <span className="agent-stream-cursor">▍</span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div style={{ padding: "10px 22px 14px", borderTop: "1px solid var(--border)" }}>
@@ -975,6 +1247,11 @@ export default function AgentChatView() {
                 )}
               </div>
             )}
+            {busy && activeJobs.length > 0 && (
+              <button className="btn" onClick={() => void stopGenerating()} title="取消当前对话任务（远程已提交的由后端取消标志兜底）">
+                ⏹ 停止
+              </button>
+            )}
             <button
               className="btn primary"
               disabled={busy || (!input.trim() && attachments.length === 0 && extras.length === 0)}
@@ -1033,6 +1310,7 @@ export default function AgentChatView() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

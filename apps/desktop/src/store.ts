@@ -1,5 +1,6 @@
 /**
- * 全局 UI 状态（zustand）——只存 UI 态与轻量数据；业务数据走 TanStack Query / Rust。
+ * 全局 UI 状态（zustand）——只存 UI 态与轻量数据；业务数据由各视图经 api-* 层
+ * 自行拉取（useEffect + cancelled 守卫模式），密钥/设置等敏感数据在 Rust 侧。"
  */
 import { create } from "zustand";
 import type { AppSettings, ProjectManifest } from "@onetv/shared-types";

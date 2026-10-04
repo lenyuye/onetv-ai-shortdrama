@@ -19,6 +19,8 @@ import HermesView from "./views/HermesView";
 import LoginView from "./views/LoginView";
 import AgentChatView from "./views/AgentChatView";
 import { Toaster } from "./components/Toaster";
+import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
+import { initAgentChatBridge } from "./agentChatStore";
 
 const NAV: { key: ViewKey; icon: string; label: string; section: string }[] = [
   { key: "home", icon: "🏠", label: "工作区", section: "工作区" },
@@ -50,6 +52,7 @@ export default function App() {
   };
 
   useEffect(() => {
+    initAgentChatBridge(); // agent.message 全局桥：按 jobId 归档到项目对话（切视图不丢回复）
     loadSettings();
     loadFfmpeg();
     loadProject();
@@ -217,7 +220,9 @@ export default function App() {
         </nav>
 
         {/* 主区 */}
-        <main className="app-main">{main}</main>
+        <main className="app-main">
+          <ViewErrorBoundary>{main}</ViewErrorBoundary>
+        </main>
       </div>
 
       {/* 底部任务栏 */}

@@ -494,17 +494,13 @@ export default function SettingsView() {
   const [accErr, setAccErr] = useState("");
   const [accBusy, setAccBusy] = useState(false);
 
-  // v2.2 邮件发送设置 + 验证码
+  // v2.2 邮件发送设置（验证码验证暂未启用，SMTP 配置保留用于测试邮件与后续恢复）
   const [mailInfo, setMailInfo] = useState<api.MailConfigInfo | null>(null);
   const [smtpHost, setSmtpHost] = useState("");
   const [smtpPort, setSmtpPort] = useState(465);
   const [useTls, setUseTls] = useState(true);
   const [smtpAuth, setSmtpAuth] = useState("");
   const [mailMsg, setMailMsg] = useState("");
-  const [emailCode, setEmailCode] = useState("");
-  const [codeSent, setCodeSent] = useState<null | { sent: boolean; message: string }>(null);
-  const [countdown, setCountdown] = useState(0);
-  const [codeBusy, setCodeBusy] = useState(false);
 
   // 皮肤不透明度：拖动只改本地（避免每个 tick 写盘+受控回跳），松手才提交
   const [skinOpacityLocal, setSkinOpacityLocal] = useState<number | null>(null);
@@ -566,15 +562,12 @@ export default function SettingsView() {
         newUsername: newUser.trim() || undefined,
         newPassword: newPass || undefined,
         email: email.trim() || undefined,
-        emailCode: emailCode.trim() || undefined,
       });
       toast("账户信息已更新", "ok");
       setCurPass("");
       setNewUser("");
       setNewPass("");
       setEmail("");
-      setEmailCode("");
-      setCodeSent(null);
       refreshAuth();
       // 若改了用户名/密码，退出登录要求重新验证
       if (newPass) {
@@ -799,50 +792,9 @@ export default function SettingsView() {
                   onBlur={() => lookupMail(email)}
                 />
               </div>
-              {email.trim().includes("@") && (
-                <div className="field">
-                  <label>邮箱验证码（已配置邮件发送服务时，修改用户名/密码必须验证）</label>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <input type="text" inputMode="numeric" placeholder="6 位验证码" value={emailCode} onChange={(e) => setEmailCode(e.target.value)} />
-                    <button
-                      className="btn"
-                      disabled={countdown > 0 || codeBusy || !email.trim() || !curPass}
-                      title={!curPass ? "请先填写当前密码" : ""}
-                      onClick={async () => {
-                        setAccErr("");
-                        setCodeBusy(true);
-                        try {
-                          const r = await api.authSendCode("change", email.trim(), curPass);
-                          setCodeSent({ sent: r.sent, message: r.sent ? (r.message ?? "已发送") : (r.reason ?? "无法发送") });
-                          if (r.sent) {
-                            setCountdown(60);
-                            const t = setInterval(() => {
-                              setCountdown((c) => {
-                                if (c <= 1) { clearInterval(t); return 0; }
-                                return c - 1;
-                              });
-                            }, 1000);
-                          }
-                        } catch (e) {
-                          setAccErr(errMsg(e));
-                        } finally {
-                          setCodeBusy(false);
-                        }
-                      }}
-                    >
-                      {countdown > 0 ? `${countdown}s` : codeBusy ? "发送中…" : "发送验证码"}
-                    </button>
-                  </div>
-                  {codeSent && (
-                    <div className={codeSent.sent ? "hint" : "login-err"} style={{ marginTop: 4 }}>
-                      {codeSent.sent ? `✉️ ${codeSent.message}` : `⚠️ ${codeSent.message}`}
-                    </div>
-                  )}
-                </div>
-              )}
               {email.trim().includes("@") && mailInfo && (
                 <div className="field" style={{ background: "var(--panel-2)", borderRadius: 8, padding: 12, border: "1px solid var(--border)" }}>
-                  <label>📧 邮件发送设置（验证码由本机软件经此 SMTP 直发到你的邮箱，无须任何服务器；授权码只存本机钥匙串）</label>
+                  <label>📧 邮件发送设置（本机软件经此 SMTP 直发邮件，无须任何服务器；授权码只存本机钥匙串）</label>
                   <div className="grid-2">
                     <div className="field">
                       <label>SMTP 服务器{mailInfo.preset ? "（已按邮箱自动匹配预设）" : ""}</label>

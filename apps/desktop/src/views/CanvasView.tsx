@@ -886,10 +886,9 @@ function CanvasWorkbench({
       toast("请先选择一个节点", "warn");
       return;
     }
-    // 执行链路现状：画布尚无任务提交入口（Phase 2 接入 Job Queue）。届时组装参数时，
-    // 应把选中节点 config.providerId / config.modelId 写入任务 step.input 的
-    // providerId / model 字段（Rust handlers 优先读取，未设置则走「生成模型设置」默认路由）。
-    toast("节点运行将在 Phase 2 接入 Job Queue", "info");
+    // 执行链路现状：画布级批量运行尚未接入（Phase 2 Job Queue）。
+    // 单节点运行请双击节点打开生成面板（NodeChatPanel → canvas_node_run）。
+    toast("请双击节点打开生成面板运行；画布批量运行将在后续版本接入", "info");
   };
 
   /* ---------- 拖拽创建（从面板拖到画布） ---------- */
@@ -998,7 +997,12 @@ function CanvasWorkbench({
         </button>
 
         <div className="cv-vsep" />
-        <button className="btn sm" disabled={!selectedFlowNode} onClick={runSelected}>
+        <button
+          className="btn sm"
+          disabled={!selectedFlowNode}
+          onClick={runSelected}
+          title="双击节点打开生成面板运行"
+        >
           ▶ 运行选中
         </button>
         <button
