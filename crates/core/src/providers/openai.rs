@@ -23,6 +23,9 @@ impl ChatMessage {
     pub fn user(c: impl Into<String>) -> Self {
         Self { role: "user".into(), content: c.into() }
     }
+    pub fn assistant(c: impl Into<String>) -> Self {
+        Self { role: "assistant".into(), content: c.into() }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -74,6 +77,63 @@ pub async fn chat(
         .ok_or_else(|| GatewayError::Parse(format!("响应缺少 choices[0].message.content: {}", resp)))?
         .to_string();
     Ok(ChatResult { text, usage: resp.get("usage").cloned() })
+}
+
+/// 流式 chat（v2.6.2 SSE）：POST stream=true，逐 delta 回调 on_delta，
+/// 返回拼接后的完整文本。SSE 行格式：`data: {json}` / `data: [DONE]`。
+/// 网络分片可能把一行拆到多个 chunk，这里维护行缓冲后再解析。
+pub async fn chat_stream(
+    gw: &Gateway,
+    profile: &ProviderProfile,
+    model: &str,
+    messages: &[ChatMessage],
+    json_mode: bool,
+    on_delta: &(dyn Fn(&str) + Send + Sync),
+) -> GatewayResult<String> {
+    use futures::StreamExt;
+    if profile.driver == ProviderDriverKind::Mock {
+        return Err(GatewayError::PolicyDenied("mock 驱动请走 mock::chat".into()));
+    }
+    let url = join_url(&profile.base_url, "chat/completions");
+    let mut body = json!({
+        "model": model,
+        "messages": messages,
+        "stream": true,
+    });
+    if json_mode {
+        body["response_format"] = json!({"type": "json_object"});
+    }
+    let egress = json!({
+        "endpoint": url,
+        "data": "text prompt（含系统/用户消息）",
+        "model": model,
+        "sensitive": "prompt 文本将发送给该服务商",
+        "stream": true
+    });
+    let mut byte_stream = gw.send_json_stream(profile, &url, body, egress).await?;
+    let mut buf = String::new();
+    let mut full = String::new();
+    while let Some(chunk) = byte_stream.next().await {
+        let bytes = chunk.map_err(|e| GatewayError::Network(e.to_string()))?;
+        buf.push_str(&String::from_utf8_lossy(&bytes));
+        while let Some(pos) = buf.find('\n') {
+            let line: String = buf[..pos].trim_end_matches('\r').into();
+            buf.drain(..=pos);
+            let Some(data) = line.strip_prefix("data:") else { continue };
+            let data = data.trim();
+            if data == "[DONE]" {
+                return Ok(full);
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else { continue };
+            if let Some(delta) = v.pointer("/choices/0/delta/content").and_then(|c| c.as_str()) {
+                if !delta.is_empty() {
+                    full.push_str(delta);
+                    on_delta(delta);
+                }
+            }
+        }
+    }
+    Ok(full)
 }
 
 pub async fn list_models(gw: &Gateway, profile: &ProviderProfile) -> GatewayResult<Vec<String>> {

@@ -76,12 +76,15 @@ fn refs_json(refs: &[onetv_project::ops::AssetRecord]) -> serde_json::Value {
 }
 
 /// 统一 LLM 对话入口：按 Router 选择 Provider，按驱动分发。返回文本。
+/// on_delta：Some 且驱动支持（OpenAI 兼容）时走 SSE 流式，逐 delta 回调；None 或不支持则一次性返回。
+#[allow(clippy::too_many_arguments)]
 pub async fn llm_chat(
     env: &AgentEnv,
     messages: &[ChatMessage],
     json_mode: bool,
     preferred_provider: Option<&str>,
     preferred_model: Option<&str>,
+    on_delta: Option<&(dyn Fn(&str) + Send + Sync)>,
 ) -> Result<(String, String, String), JobError> {
     let registry = { env.registry.read().clone() };
     let offline = env.offline_mode();
@@ -106,10 +109,16 @@ pub async fn llm_chat(
                 .text
         }
         ProviderDriverKind::OpenaiCompatible => {
-            openai::chat(env.gateway(), &decision.provider, &decision.model_id, messages, json_mode, None, None)
-                .await
-                .map_err(|e| fatal(e.to_string()))?
-                .text
+            if let Some(cb) = on_delta {
+                openai::chat_stream(env.gateway(), &decision.provider, &decision.model_id, messages, json_mode, cb)
+                    .await
+                    .map_err(|e| fatal(e.to_string()))?
+            } else {
+                openai::chat(env.gateway(), &decision.provider, &decision.model_id, messages, json_mode, None, None)
+                    .await
+                    .map_err(|e| fatal(e.to_string()))?
+                    .text
+            }
         }
         ProviderDriverKind::CustomHttp => {
             return Err(fatal("Custom HTTP 驱动暂不支持 chat 能力（请配置 OpenAI 兼容 / Ollama / Mock）"));
@@ -133,7 +142,7 @@ pub fn script_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
             ];
             let (raw, provider_id, model) = {
                 let (pp, pm) = preferred_model(&env, &ctx.params, "chat");
-                llm_chat(&env, &messages, true, pp.as_deref(), pm.as_deref()).await?
+                llm_chat(&env, &messages, true, pp.as_deref(), pm.as_deref(), None).await?
             };
             ctx.set_meta(json!({ "providerId": provider_id, "model": model }));
             ctx.report(0.7, "解析剧本 JSON…");
@@ -150,7 +159,8 @@ pub fn script_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
             ctx.report(1.0, "剧本已保存");
             env.events("agent.message", json!({
                 "text": format!("剧本已生成并保存到第 {episode} 集脚本（Provider: {provider_id} / {model}）。说「生成分钟」或「拆成分镜」可以继续。"),
-                "kind": "script.done"
+                "kind": "script.done",
+                "jobId": ctx.job_id
             }));
             Ok(vec![episode_script_path(&ctx.root, &episode).to_string_lossy().into_owned()])
         })
@@ -164,13 +174,43 @@ pub fn chat_reply_handler(env: Arc<AgentEnv>) -> JobHandler {
         let env = env.clone();
         Box::pin(async move {
             let text = ctx.params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let messages = vec![
-                ChatMessage::system("你是 OneTV 短剧制作台的 AI 助手，熟悉剧本、分镜与生成工作流，回答简洁专业，用中文。"),
-                ChatMessage::user(text),
-            ];
+            // 会话上下文（v2.6.3）：前端随消息附带本会话最近几轮历史，chat 才有连贯记忆
+            let mut messages = vec![ChatMessage::system(
+                "你是 OneTV 短剧制作台的 AI 助手，熟悉剧本、分镜与生成工作流，回答简洁专业，用中文。",
+            )];
+            if let Some(hist) = ctx.params.get("history").and_then(|h| h.as_array()) {
+                for m in hist.iter().take(16) {
+                    let role = m.get("role").and_then(|v| v.as_str()).unwrap_or_default();
+                    let content = m
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .chars()
+                        .take(2000)
+                        .collect::<String>();
+                    if content.trim().is_empty() {
+                        continue;
+                    }
+                    match role {
+                        "user" => messages.push(ChatMessage::user(content)),
+                        "assistant" => messages.push(ChatMessage::assistant(content)),
+                        _ => {}
+                    }
+                }
+            }
+            messages.push(ChatMessage::user(text));
+            // 流式（v2.6.2）：OpenAI 兼容驱动逐 delta 经 ctx.stream_delta 推送；
+            // 其他驱动仍一次性返回（前端只收完整回复，行为不变）。
+            // quiet（节点面板直发）不推流，回复由面板轮询消费
+            let quiet = ctx.params.get("quiet").and_then(|v| v.as_bool()).unwrap_or(false);
+            let on_delta = |d: &str| {
+                if !quiet {
+                    ctx.stream_delta(d);
+                }
+            };
             let (reply, provider_id, model) = {
                 let (pp, pm) = preferred_model(&env, &ctx.params, "chat");
-                llm_chat(&env, &messages, false, pp.as_deref(), pm.as_deref()).await?
+                llm_chat(&env, &messages, false, pp.as_deref(), pm.as_deref(), Some(&on_delta)).await?
             };
             // 回复双通道：实时事件驱动对话流 + result 元数据落库（任务事件可追溯）。
             // 之前只发事件且回写 outputs=[]，任务显示"已完成"但回复既不在对话流也无法追溯。
@@ -178,7 +218,7 @@ pub fn chat_reply_handler(env: Arc<AgentEnv>) -> JobHandler {
             // quiet=true（画布文本节点面板生成）时不推送到 Agent 对话流，回复由面板/节点回填消费
             let quiet = ctx.params.get("quiet").and_then(|v| v.as_bool()).unwrap_or(false);
             if !quiet {
-                env.events("agent.message", json!({ "text": reply, "kind": "chat" }));
+                env.events("agent.message", json!({ "text": reply, "kind": "chat", "jobId": ctx.job_id }));
             }
             Ok(vec![])
         })
@@ -280,19 +320,26 @@ async fn generate_one_image(
             .map_err(|e| transient(e.to_string()))?
         }
         ProviderDriverKind::Comfyui => {
-            // 与 SD 驱动同一逻辑：本地直连、免鉴权、Local-only 可用
-            crate::providers::comfyui::txt2img(
-                env.gateway(),
-                &decision.provider,
-                &decision.model_id,
-                prompt,
-                "低质量, 模糊, 变形, 多余肢体, 文字水印",
-                aspect,
-                20,
-                out_dir,
-                || false,
-            )
-            .await
+            // 与 SD 驱动同一逻辑：本地直连、免鉴权、Local-only 可用；
+            // 配置了工作流模板则走模板（FLUX/自定义工作流），否则内置 SD 工作流
+            if let Some(mut wf) = decision.provider.workflow_template.clone() {
+                crate::providers::comfyui::patch_workflow(&mut wf, prompt, "低质量, 模糊, 变形, 多余肢体, 文字水印");
+                let image = references.iter().find(|a| a.kind == "images").map(|a| PathBuf::from(&a.path));
+                crate::providers::comfyui::run_workflow(env.gateway(), &decision.provider, wf, image.as_deref(), out_dir, || false).await
+            } else {
+                crate::providers::comfyui::txt2img(
+                    env.gateway(),
+                    &decision.provider,
+                    &decision.model_id,
+                    prompt,
+                    "低质量, 模糊, 变形, 多余肢体, 文字水印",
+                    aspect,
+                    20,
+                    out_dir,
+                    || false,
+                )
+                .await
+            }
             .map_err(|e| transient(e.to_string()))?
         }
         other => return Err(fatal(format!("驱动 {other:?} 暂不支持生图；请使用 OpenAI 兼容 / Mock Provider"))),
@@ -366,7 +413,8 @@ pub fn storyboard_image_batch_handler(env: Arc<AgentEnv>) -> JobHandler {
             write_episode_doc(&ctx.root, &episode, "storyboard", &sb_out)?;
             env.events("agent.message", json!({
                 "text": format!("分镜图批量生成完成：{total} 张已入库。可以在「分镜」页逐个审核，或直接说「合成成片」。"),
-                "kind": "storyboard.done"
+                "kind": "storyboard.done",
+                "jobId": ctx.job_id
             }));
             Ok(vec![])
         })
@@ -450,12 +498,30 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
                     } else {
                         None
                     };
+                    // 首帧参考图 → data URI（远程平台图生视频用；无参考图为 null，模板用 ${input.firstFrameBase64?} 可选链）
+                    let first_frame_b64 = first_image_ref(&references).and_then(|p| {
+                        std::fs::read(&p).ok().and_then(|bytes| {
+                            if bytes.len() > 12 * 1024 * 1024 {
+                                tracing::warn!(size = bytes.len(), "首帧参考图超过 12MB，跳过 base64 注入");
+                                return None;
+                            }
+                            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("png").to_lowercase();
+                            let mime = match ext.as_str() {
+                                "jpg" | "jpeg" => "image/jpeg",
+                                "webp" => "image/webp",
+                                _ => "image/png",
+                            };
+                            use base64::Engine as _;
+                            Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)))
+                        })
+                    });
                     let input = json!({
                         "prompt": prompt,
                         "aspectRatio": aspect,
                         "durationSec": duration,
                         "referenceAssetIds": references.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
                         "references": refs_json(&references),
+                        "firstFrameBase64": first_frame_b64,
                     });
                     let out = crate::providers::custom_http::execute(
                         env.gateway(),
@@ -471,9 +537,22 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
                     .map_err(|e| transient(e.to_string()))?;
                     out.result_urls.iter().map(PathBuf::from).collect()
                 }
+                ProviderDriverKind::Comfyui => {
+                    // 本地生视频（v2.7）：Wan2.x 等开源权重经 ComfyUI 工作流，不出网零 API 成本
+                    let Some(mut wf) = decision.provider.workflow_template.clone() else {
+                        return Err(fatal(
+                            "ComfyUI 生视频需要工作流模板：在 Provider 配置中粘贴 ComfyUI「API 格式」导出的工作流 JSON（文本节点用 __prompt__ 占位，seed 填 0 = 随机，首帧图自动上传到 LoadImage 节点）",
+                        ));
+                    };
+                    crate::providers::comfyui::patch_workflow(&mut wf, &prompt, "");
+                    let image = references.iter().find(|a| a.kind == "images").map(|a| PathBuf::from(&a.path));
+                    crate::providers::comfyui::run_workflow(env.gateway(), &decision.provider, wf, image.as_deref(), &out_dir, || ctx.is_cancelled())
+                        .await
+                        .map_err(|e| transient(e.to_string()))?
+                }
                 other => {
                     return Err(fatal(format!(
-                        "驱动 {other:?} 暂不支持生视频：请使用 Mock（离线演示）或配置 Custom HTTP 视频模板"
+                        "驱动 {other:?} 暂不支持生视频：请使用 Mock（离线演示）、Custom HTTP 视频模板或 ComfyUI 工作流（Wan 本地）"
                     )))
                 }
             };
@@ -794,14 +873,15 @@ pub fn timeline_render_handler(env: Arc<AgentEnv>) -> JobHandler {
             let srt_out = out.with_extension("srt");
             let _ = std::fs::copy(&srt_path, &srt_out);
             ctx.report(0.95, "入库…");
-            env_agent_message(&env, &format!("成片初剪已合成（{:.1}s，含硬字幕）。可在「任务」查看，或说「导出竖版」。", t), "timeline.done");
+            env_agent_message(&env, &ctx.job_id, &format!("成片初剪已合成（{:.1}s，含硬字幕）。可在「任务」查看，或说「导出竖版」。", t), "timeline.done");
             Ok(vec![out.to_string_lossy().into_owned()])
         })
     })
 }
 
-fn env_agent_message(env: &AgentEnv, text: &str, kind: &str) {
-    env.events("agent.message", json!({ "text": text, "kind": kind }));
+fn env_agent_message(env: &AgentEnv, job_id: &str, text: &str, kind: &str) {
+    // 带 jobId：前端按任务归属把回复归档到发起对话的项目（切项目/切视图不串流）
+    env.events("agent.message", json!({ "text": text, "kind": kind, "jobId": job_id }));
 }
 
 /* ---------------- export.render ---------------- */
@@ -836,7 +916,7 @@ pub fn export_render_handler(env: Arc<AgentEnv>) -> JobHandler {
                 return Err(fatal("导出转码失败"));
             }
             ctx.report(0.9, "导出完成");
-            env_agent_message(&env, &format!("已导出 {w}×{h} 版本：{}", out.display()), "export.done");
+            env_agent_message(&env, &ctx.job_id, &format!("已导出 {w}×{h} 版本：{}", out.display()), "export.done");
             Ok(vec![out.to_string_lossy().into_owned()])
         })
     })
@@ -939,7 +1019,7 @@ pub fn video_understand_handler(env: Arc<AgentEnv>) -> JobHandler {
             std::fs::create_dir_all(out.parent().unwrap()).map_err(|e| fatal(e.to_string()))?;
             std::fs::write(&out, serde_json::to_string_pretty(&doc).map_err(|e| fatal(e.to_string()))?)
                 .map_err(|e| fatal(e.to_string()))?;
-            env_agent_message(&env, &format!(
+            env_agent_message(&env, &ctx.job_id, &format!(
                 "视频理解完成：检测到 {} 个镜头切分，结构化结果已写入 {}（可在分镜页复刻）",
                 shots.len(),
                 out.display()

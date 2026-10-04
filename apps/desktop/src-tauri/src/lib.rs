@@ -174,6 +174,7 @@ fn apply_patch(s: &mut AppSettings, patch: &serde_json::Value) {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct FfmpegStatus {
     ok: bool,
     ffmpeg_path: Option<String>,
@@ -183,28 +184,33 @@ struct FfmpegStatus {
 }
 
 #[tauri::command]
-fn ffmpeg_status(state: TState) -> FfmpegStatus {
-    match state.media.resolve() {
-        Ok(r) => FfmpegStatus {
+async fn ffmpeg_status(state: tauri::State<'_, Arc<AppState>>) -> Result<FfmpegStatus, CommandError> {
+    // resolve() 会真实执行 ffmpeg -version 子进程（多候选逐个尝试），放阻塞线程池
+    let media = state.media.clone();
+    let r = tokio::task::spawn_blocking(move || {
+        media.resolve().map(|r| FfmpegStatus {
             ok: true,
             ffmpeg_path: Some(r.ffmpeg.to_string_lossy().into_owned()),
             ffprobe_path: Some(r.ffprobe.to_string_lossy().into_owned()),
             ffmpeg_version: r.version,
             message: "FFmpeg 就绪（本地合成可用）".into(),
-        },
-        Err(e) => FfmpegStatus {
+        }).unwrap_or_else(|e| FfmpegStatus {
             ok: false,
             ffmpeg_path: None,
             ffprobe_path: None,
             ffmpeg_version: None,
             message: e.to_string(),
-        },
-    }
+        })
+    })
+    .await
+    .map_err(|e| err(e.to_string()))?;
+    Ok(r)
 }
 
 /* ---------------- 最近项目 ---------------- */
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RecentDto {
     path: String,
     name: String,
@@ -394,6 +400,7 @@ fn project_close(state: TState) {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ProjectInfo {
     manifest: Option<ProjectManifest>,
     root_path: Option<String>,
@@ -411,6 +418,7 @@ fn project_info(state: TState) -> ProjectInfo {
 /* ---------------- 分集 ---------------- */
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct EpisodeDto {
     id: String,
     number: u32,
@@ -465,7 +473,7 @@ fn episode_delete(state: TState, episode_id: String) -> Result<(), CommandError>
 /// 删除 .ytv 工程：磁盘上整个工程文件夹不可恢复地删除，并从最近列表移除。
 /// 若该工程当前处于打开状态则先关闭。安全边界：必须是有效 OneTV 工程目录。
 #[tauri::command]
-fn project_delete(state: TState, project_dir: String) -> Result<(), CommandError> {
+async fn project_delete(state: tauri::State<'_, Arc<AppState>>, project_dir: String) -> Result<(), CommandError> {
     let dir = PathBuf::from(&project_dir);
     // 必须是有效工程（校验 project.json 可解析），防止误删普通文件夹
     let (_, manifest) = ops::open_project(&dir).map_err(err)?;
@@ -487,7 +495,12 @@ fn project_delete(state: TState, project_dir: String) -> Result<(), CommandError
             }
         }
     }
-    std::fs::remove_dir_all(&dir).map_err(err)?;
+    // 大工程（可含数 GB 视频资产）的整目录删除放进阻塞线程池，避免卡住主线程
+    let dir_for_rm = dir.clone();
+    tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&dir_for_rm))
+        .await
+        .map_err(|e| err(e.to_string()))?
+        .map_err(err)?;
     state.settings.update(|s| {
         s.recent_projects.retain(|r| r.path != project_dir);
         if s.last_project.as_deref() == Some(project_dir.as_str()) {
@@ -576,6 +589,7 @@ fn serve_app_file(uri: &tauri::http::Uri) -> tauri::http::Response<Cow<'static, 
 /* ---------------- Agent ---------------- */
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AgentChatResult {
     plan: Plan,
     auto_executed: bool,
@@ -583,12 +597,14 @@ struct AgentChatResult {
 }
 
 #[tauri::command]
+/// history：会话历史（v2.6.3）[{role, content}]，仅 chat 意图注入供 LLM 上下文
 async fn agent_chat(
     state: tauri::State<'_, Arc<AppState>>,
     agent: tauri::State<'_, Arc<AgentState>>,
     text: String,
     provider_id: Option<String>,
     model_id: Option<String>,
+    history: Option<Vec<serde_json::Value>>,
 ) -> Result<AgentChatResult, CommandError> {
     let episode = {
         let p = state.project.read();
@@ -596,6 +612,14 @@ async fn agent_chat(
     };
     let intent = route_intent(&text);
     let mut plan = onetv_core::agent::build_plan(intent, &text, episode.as_deref());
+    if let Some(hist) = &history {
+        // 只注入 chat 意图：剧本/生图等结构化任务的 prompt 不混入对话历史
+        if matches!(intent, onetv_core::agent::Intent::Chat) {
+            for step in &mut plan.steps {
+                step.input["history"] = serde_json::json!(hist);
+            }
+        }
+    }
     // UI 模型选择器：显式指定的模型写入每个步骤输入，handlers 优先使用
     if let Some(pid) = &provider_id {
         for step in &mut plan.steps {
@@ -738,6 +762,7 @@ fn provider_public(p: &onetv_core::providers::ProviderProfile, has_key: bool) ->
         "enabled": p.enabled,
         "hasKey": has_key,
         "httpTemplate": p.http_template,
+        "workflowTemplate": p.workflow_template,
         "createdAt": p.created_at,
     })
 }
@@ -755,7 +780,14 @@ fn validate_driver_capabilities(
     use onetv_core::providers::Capability as Cap;
     let (allowed, label): (&[Cap], &str) = match p.driver {
         ProviderDriverKind::StableDiffusion => (&[Cap::ImageGeneration], "Stable Diffusion（仅生图）"),
-        ProviderDriverKind::Comfyui => (&[Cap::ImageGeneration], "ComfyUI（仅生图）"),
+        ProviderDriverKind::Comfyui => {
+            if p.workflow_template.is_some() {
+                // 配置了工作流模板：图片（FLUX/自定义工作流）+ 视频（Wan 等本地工作流）
+                (&[Cap::ImageGeneration, Cap::VideoGeneration], "ComfyUI（工作流模式：生图 + 生视频）")
+            } else {
+                (&[Cap::ImageGeneration], "ComfyUI（仅生图；配置工作流模板后可开生视频）")
+            }
+        }
         _ => return Ok(()),
     };
     for m in &p.models {
@@ -1013,10 +1045,19 @@ fn save_mail_store(configs: &[onetv_core::mail::MailConfig]) -> Result<(), Comma
     std::fs::write(&path, serde_json::to_string_pretty(configs).map_err(err)?).map_err(err)
 }
 
+/// 钥匙串条目 ID 只允许字母数字和 -_，邮箱中的 @ . 等字符需编码后存储
+fn mail_secret_id(email: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "mail-{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(email.to_lowercase().as_bytes())
+    )
+}
+
 fn mail_config_of(email: &str) -> Option<(onetv_core::mail::MailConfig, String)> {
     let configs = mail_store();
     let cfg = configs.iter().find(|c| c.email == email)?.clone();
-    let secret = onetv_security::SecretStore::get(&format!("mail/{email}")).ok().flatten()?;
+    let secret = onetv_security::SecretStore::get(&mail_secret_id(email)).ok().flatten()?;
     Some((cfg, secret))
 }
 
@@ -1040,7 +1081,7 @@ async fn mail_config_save(
     configs.retain(|c| c.email != email);
     configs.push(cfg.clone());
     save_mail_store(&configs)?;
-    onetv_security::SecretStore::set(&format!("mail/{email}"), &auth_code).map_err(err)?;
+    onetv_security::SecretStore::set(&mail_secret_id(&email), &auth_code).map_err(err)?;
     state.audit.record("mail.config_save", &email, None);
     Ok(serde_json::json!({ "ok": true }))
 }
@@ -1198,18 +1239,9 @@ fn auth_change_credentials(
     email: Option<String>,
     email_code: Option<String>,
 ) -> Result<serde_json::Value, CommandError> {
-    // 已配置 SMTP 的邮箱：必须先通过验证码（v2.2 要求）
-    if let Some(e) = email.as_deref().map(|s| s.to_string()).or_else(|| state.auth.info().and_then(|i| i.email)) {
-        let e = e.to_lowercase();
-        if mail_config_of(&e).is_some() {
-            let Some(code) = &email_code else {
-                return Err(err("该邮箱已启用验证码验证：请先点击「发送验证码」并填入邮件中的 6 位验证码"));
-            };
-            verify_store_named()
-                .verify(&e, "change", code)
-                .map_err(err)?;
-        }
-    }
+    // v2.6：验证码验证暂时下线，邮箱仅做地址格式校验（auth.rs 内 normalize_email）。
+    // SMTP 配置与 auth_send_code 保留，便于后续恢复。
+    let _ = &email_code;
     let info = state
         .auth
         .change_credentials(
@@ -1234,20 +1266,23 @@ fn auth_reset_with_email(
     email_code: Option<String>,
 ) -> Result<serde_json::Value, CommandError> {
     let e = email.trim().to_lowercase();
-    if mail_config_of(&e).is_some() {
-        let Some(code) = &email_code else {
-            return Err(err("该邮箱已启用验证码验证：请先点击「发送验证码」并填入邮件中的 6 位验证码"));
-        };
-        verify_store_named()
-            .verify(&e, "reset", code)
-            .map_err(err)?;
-    }
+    let _ = e; // v2.6：验证码验证暂时下线，仅校验绑定邮箱是否一致（reset_with_email 内部完成）
+    let _ = &email_code;
     state
         .auth
         .reset_with_email(&email, &new_password)
         .map_err(err)?;
     state.audit.record("auth.reset_with_email", "", None);
     Ok(serde_json::json!({ "ok": true }))
+}
+
+/* ---------------- 生成平台预设（v2.6.4） ---------------- */
+
+/// 内置图片/视频平台预设（Nano Banana/Seedream/FLUX/MJ-proxy；海螺 H3/可灵/即梦/万相/Pika/Runway）：
+/// 前端「新增 Provider」一键填充 Custom HTTP 模板，用户只填 API Key。
+#[tauri::command]
+fn provider_preset_list() -> Vec<serde_json::Value> {
+    onetv_core::providers::presets::gen_presets_json()
 }
 
 /* ---------------- Skills ---------------- */
@@ -1410,13 +1445,17 @@ async fn agent_attach(
 }
 
 /// 拖拽/粘贴路径版附件导入（Codex 式输入框：文件拖入或 ⌘V 粘贴）。
+/// 导入含 SHA-256 全量哈希 + 复制（上限 50MB），放阻塞线程池避免卡主线程。
 #[tauri::command]
-fn agent_attach_path(state: TState, path: String) -> Result<serde_json::Value, CommandError> {
+async fn agent_attach_path(state: tauri::State<'_, Arc<AppState>>, path: String) -> Result<serde_json::Value, CommandError> {
     let p = PathBuf::from(&path);
     if !p.exists() {
         return Err(err(format!("文件不存在: {path}")));
     }
-    agent_attach_import(&state, &p)
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || agent_attach_import(&st, &p))
+        .await
+        .map_err(|e| err(e.to_string()))?
 }
 
 fn agent_attach_import(state: &Arc<AppState>, path: &std::path::Path) -> Result<serde_json::Value, CommandError> {
@@ -1455,33 +1494,38 @@ fn agent_attach_import(state: &Arc<AppState>, path: &std::path::Path) -> Result<
 /// 粘贴板附件导入：前端读不到粘贴文件的磁盘路径（WKWebView 限制），
 /// 由前端读出内容（base64）传此命令落盘后走统一导入。上限 50MB。
 #[tauri::command]
-fn agent_attach_data(
-    state: TState,
+async fn agent_attach_data(
+    state: tauri::State<'_, Arc<AppState>>,
     name: String,
     data_b64: String,
 ) -> Result<serde_json::Value, CommandError> {
-    use base64::Engine as _;
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(err("附件名为空"));
-    }
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data_b64.as_bytes())
-        .map_err(|e| err(format!("附件数据解码失败: {e}")))?;
-    if bytes.len() > 50 * 1024 * 1024 {
-        return Err(err("粘贴的附件超过 50MB 上限"));
-    }
-    let tmp_dir = std::env::temp_dir().join(format!("onetv-paste-{}", uuid::Uuid::new_v4().simple()));
-    std::fs::create_dir_all(&tmp_dir).map_err(err)?;
-    let safe_name: String = name
-        .chars()
-        .map(|c| if c == '/' || c == ':' { '_' } else { c })
-        .collect();
-    let tmp_path = tmp_dir.join(&safe_name);
-    std::fs::write(&tmp_path, &bytes).map_err(err)?;
-    let result = agent_attach_import(&state, &tmp_path);
-    let _ = std::fs::remove_dir_all(&tmp_dir); // 导入即复制进工程，临时文件即删
-    result
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        use base64::Engine as _;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(err("附件名为空"));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data_b64.as_bytes())
+            .map_err(|e| err(format!("附件数据解码失败: {e}")))?;
+        if bytes.len() > 50 * 1024 * 1024 {
+            return Err(err("粘贴的附件超过 50MB 上限"));
+        }
+        let tmp_dir = std::env::temp_dir().join(format!("onetv-paste-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&tmp_dir).map_err(err)?;
+        let safe_name: String = name
+            .chars()
+            .map(|c| if c == '/' || c == ':' { '_' } else { c })
+            .collect();
+        let tmp_path = tmp_dir.join(&safe_name);
+        std::fs::write(&tmp_path, &bytes).map_err(err)?;
+        let result = agent_attach_import(&st, &tmp_path);
+        let _ = std::fs::remove_dir_all(&tmp_dir); // 导入即复制进工程，临时文件即删
+        result
+    })
+    .await
+    .map_err(|e| err(e.to_string()))?
 }
 
 /// 用系统默认应用打开文件（附件"打开/编辑"）。
@@ -2697,6 +2741,7 @@ pub fn run() {
             debug_session_status,
             agent_attach,
             canvas_node_run,
+            provider_preset_list,
             agent_attach_path,
             agent_attach_data,
             asset_open,

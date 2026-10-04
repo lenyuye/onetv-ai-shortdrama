@@ -21,6 +21,7 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 base64 = { workspace = true }
 futures = { workspace = true }
+bytes = "1"
 rusqlite = { workspace = true }
 zip = { workspace = true }
 sha2 = { workspace = true }

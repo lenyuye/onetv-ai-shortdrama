@@ -8,6 +8,7 @@ pub mod gateway;
 pub mod mock;
 pub mod ollama;
 pub mod openai;
+pub mod presets;
 pub mod sd;
 pub mod router;
 
@@ -116,6 +117,10 @@ pub struct ProviderProfile {
     /// Custom HTTP 驱动的请求模板（规格 §22.4；不含密钥，secret 以 keyRef 引用）
     #[serde(default)]
     pub http_template: Option<serde_json::Value>,
+    /// ComfyUI 工作流模板（v2.7：API 格式导出的 workflow JSON）。
+    /// 存在时图片走工作流（FLUX 等）、视频走工作流（Wan 等），替代内置 SD 工作流。
+    #[serde(default)]
+    pub workflow_template: Option<serde_json::Value>,
 }
 
 fn default_timeout() -> u64 {
@@ -143,6 +148,7 @@ impl ProviderProfile {
             network_policy_id: "default".into(),
             created_at: chrono::Utc::now().to_rfc3339(),
             http_template: None,
+            workflow_template: None,
         }
     }
 

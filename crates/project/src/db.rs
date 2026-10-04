@@ -39,11 +39,24 @@ fn migrate(conn: &Connection) -> ProjectResult<()> {
             continue;
         }
         tracing::info!("applying migration {name}");
-        conn.execute_batch(sql)?;
-        conn.execute(
+        // DDL 也在事务内执行：若 ALTER 成功后、版本号写入前崩溃，
+        // 下次启动整体回滚重放，不会因 "duplicate column" 导致工程库永久打不开
+        let txn = conn.unchecked_transaction()?;
+        if let Err(e) = txn.execute_batch(sql) {
+            // 兼容修复前的残留库：ALTER 已生效但 schema_info 未记录版本。
+            // 此时列已存在，重复执行必然报 duplicate column，记录版本号即可自愈
+            let msg = e.to_string();
+            if msg.contains("duplicate column name") {
+                tracing::warn!("migration {name} already partially applied, recording version {v}");
+            } else {
+                return Err(e.into());
+            }
+        }
+        txn.execute(
             "INSERT INTO schema_info(version, applied_at) VALUES (?1, ?2)",
             rusqlite::params![v, chrono::Utc::now().to_rfc3339()],
         )?;
+        txn.commit()?;
     }
     Ok(())
 }

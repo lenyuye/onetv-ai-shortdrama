@@ -134,6 +134,8 @@ pub struct JobContext {
     progress: Arc<dyn Fn(f64, &str) + Send + Sync>,
     /// 处理器回写结果元数据（providerId/model/reply），立即持久化到 jobs 表。
     set_meta: Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+    /// 流式输出回调（v2.6.2）：chat 处理器逐 token 上报，事件名 agent.message.delta
+    stream: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 impl JobContext {
@@ -142,6 +144,10 @@ impl JobContext {
     }
     pub fn set_meta(&self, meta: serde_json::Value) {
         (self.set_meta)(meta);
+    }
+    /// 流式增量上报（仅支持流式的驱动会调用；前端按 jobId 归到对应项目对话气泡）
+    pub fn stream_delta(&self, delta: &str) {
+        (self.stream)(delta);
     }
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
@@ -163,6 +169,7 @@ impl JobContext {
             cancel: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(|_, _| {}),
             set_meta: Arc::new(|_| {}),
+            stream: Arc::new(|_| {}),
         }
     }
 }
@@ -614,6 +621,16 @@ impl JobManager {
             mgr.emit("job.progress", job_public(&job));
         }
 
+        // 流式增量事件：把 chat 的逐 token 输出实时推给前端（jobId 归档由前端处理）
+        let stream_mgr = mgr.clone();
+        let stream_job_id = job_id.clone();
+        let stream_cb: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |delta: &str| {
+            stream_mgr.emit(
+                "agent.message.delta",
+                serde_json::json!({ "jobId": stream_job_id, "delta": delta }),
+            );
+        });
+
         let ctx = JobContext {
             job_id: job_id.clone(),
             params: job.params.clone(),
@@ -622,6 +639,7 @@ impl JobManager {
             cancel,
             progress: persist_progress,
             set_meta,
+            stream: stream_cb,
         };
 
         let cancel_for_check = ctx.cancel.clone();
@@ -629,6 +647,15 @@ impl JobManager {
 
         match result {
             Ok(outputs) => {
+                // 用户已取消：即使处理器返回 Ok（远程可能已完成/扣费），
+                // 也不把已落库的 CANCELED 翻转为成功，结果不采纳
+                if cancel_for_check.load(Ordering::Relaxed) {
+                    job.state = JobState::Canceled;
+                    job.updated_at = now();
+                    mgr.persist(&job);
+                    mgr.emit("job.progress", job_public(&job));
+                    return;
+                }
                 job.state = JobState::PostProcessing;
                 job.updated_at = now();
                 mgr.persist(&job);
@@ -645,13 +672,21 @@ impl JobManager {
                         }
                     }
                 }
+                // set_meta 在运行期已把 provider/model/reply 增量落库；
+                // 以 DB 最新记录为准合并，避免用调度时的旧快照覆盖（否则成功后 Provider/Model 列丢失）
+                match mgr.load(&job_id) {
+                    Some(latest) => {
+                        job.provider_id = latest.provider_id;
+                        job.model = latest.model;
+                        job.result = latest.result;
+                    }
+                    None => job.result = meta_snapshot.read().clone(),
+                }
                 job.state = JobState::Succeeded;
                 job.progress = 1.0;
                 job.outputs = asset_ids;
                 job.error = None;
                 job.updated_at = now();
-                // 非文件产出（如对话回复）随成功状态落库
-                job.result = meta_snapshot.read().clone();
                 // 产物资产 id 一并持久化进 result_json：query_job 重建时据此还原 outputs，
                 // 否则 job_list / job 事件里的 outputs 恒为空（节点生成面板无法回填 outputAssetId）
                 job.result["outputs"] = serde_json::json!(job.outputs);

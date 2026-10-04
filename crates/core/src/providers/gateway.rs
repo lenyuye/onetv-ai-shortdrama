@@ -105,6 +105,40 @@ impl Gateway {
         serde_json::from_str(&text).map_err(|e| GatewayError::Parse(format!("{e}; body: {}", onetv_security::redact::redact_text(&text).chars().take(300).collect::<String>())))
     }
 
+    /// 流式 JSON 请求（v2.6.2 SSE）：策略校验/审计与 send_json 一致，
+    /// 返回字节流由调用方解析。流式响应不设总超时（连接超时仍生效），
+    /// 调用方需自行处理中断（如任务取消）。
+    pub async fn send_json_stream(
+        &self,
+        profile: &ProviderProfile,
+        url: &str,
+        body: serde_json::Value,
+        egress_note: serde_json::Value,
+    ) -> GatewayResult<impl futures::Stream<Item = reqwest::Result<bytes::Bytes>>> {
+        if profile.driver == ProviderDriverKind::Mock {
+            return Err(GatewayError::PolicyDenied("mock 驱动不出网".into()));
+        }
+        self.check(url)?;
+        self.audit.record("egress.sent", &profile.id, Some(egress_note));
+
+        let req = self.client.post(url);
+        let req = self.apply_auth(req, profile)?;
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Network(onetv_security::redact::redact_text(&e.to_string())))?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(GatewayError::Http {
+                status,
+                body: onetv_security::redact::redact_text(&text).chars().take(600).collect(),
+            });
+        }
+        Ok(resp.bytes_stream())
+    }
+
     /// 下载二进制结果到本地路径（校验 URL 策略）。
     pub async fn download(
         &self,

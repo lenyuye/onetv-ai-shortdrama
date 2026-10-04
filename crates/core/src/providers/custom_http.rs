@@ -298,6 +298,25 @@ pub async fn execute(
     // 下载结果
     std::fs::create_dir_all(out_dir).map_err(|e| GatewayError::Network(e.to_string()))?;
     let mut downloaded = Vec::new();
+
+    // base64 结果（v2.6.4）：部分平台（如 Gemini 系图片模型）直接返回内联 base64，
+    // 按 response.result_b64 映射解码落盘
+    if downloaded.is_empty() {
+        if let Some(p) = &mapping.result_b64 {
+            if let Some(v) = json_path(&resp, p) {
+                if let Value::String(b64) = v {
+                    use base64::Engine as _;
+                    let clean = b64.split(',').next_back().unwrap_or(&b64); // 兼容 data URI
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(clean.trim())
+                        .map_err(|e| GatewayError::Parse(format!("base64 结果解码失败: {e}")))?;
+                    let dest = out_dir.join(format!("custom_{}.png", chrono::Utc::now().timestamp_millis()));
+                    std::fs::write(&dest, &bytes).map_err(|e| GatewayError::Network(e.to_string()))?;
+                    downloaded.push(dest.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
     for (i, u) in result_urls.iter().enumerate() {
         if cancel() {
             return Err(GatewayError::Network("任务已取消".into()));

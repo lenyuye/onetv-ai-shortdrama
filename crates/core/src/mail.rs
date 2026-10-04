@@ -192,8 +192,9 @@ pub fn send_code_mail(
     let to = validate_email(to_email)?;
     let from = validate_email(&config.email)?;
     let subject = "OneTV 验证码";
+    let ttl_mins = CODE_TTL_SECS / 60;
     let body = format!(
-        "你正在 OneTV 中进行邮箱验证。\n\n验证码：{code}\n\n{CODE_TTL_SECS} 分钟内有效。如非本人操作，请忽略本邮件。\n\n—— OneTV（本机发送，无需回复）"
+        "你正在 OneTV 中进行邮箱验证。\n\n验证码：{code}\n\n{ttl_mins} 分钟内有效。如非本人操作，请忽略本邮件。\n\n—— OneTV（本机发送，无需回复）"
     );
 
     use lettre::message::{header::ContentType, Mailbox, SinglePart};
