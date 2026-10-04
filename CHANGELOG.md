@@ -2,6 +2,97 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.7.1] — v2.7.1：修复 Agent 对话打开白屏 + 会话操作全部静默失效（同一根因）
+
+### 修复
+- **⭐ 根因：后端出站 DTO 序列化为 snake_case、前端按 camelCase 读取**。`ProjectInfo.root_path` → 前端 `rootPath` 恒为 undefined → Agent 对话的 `chatKey`（项目 root）为空：
+  - v2.6.1-2.6.3 表现为「对话选择器快照不稳定 → 无限重渲染 → **打开即白屏**」（用户报告的问题）；
+  - 2.7.1 第一版修掉白屏后，进一步真机验证发现**新建会话/发送消息/清空对话全部静默无效**——所有动作都被 `!chatKey` 守卫拦下。真机 UI 驱动 + node 直测 store 定位到该根因。
+  - 一并修复同类的 `FfmpegStatus.ffmpeg_path`（设置页 FFmpeg 路径显示空白）、`RecentDto.last_opened_at`；`AgentChatResult`/`EpisodeDto` 加 rename 对齐（此前前端靠 snake_case 回退兜底）。AppInfo/HermesConfig 此前已有 rename 不受影响。
+- **Agent 对话选择器不稳定引用（白屏直接原因）**：zustand v5 选择器 `?? []` 每次返回新数组 → 快照永不相等 → 无限重渲染。改为模块级稳定空数组常量。
+- **新增视图级错误边界（ViewErrorBoundary）**：任何视图渲染崩溃时显示可读错误卡（错误信息 + 重试/重新加载）并记录控制台，不再整窗白屏。
+
+### 变更
+- 版本号升至 2.7.1。
+
+## [2.7.0] — v2.7.0：ComfyUI 本地链路（FLUX 出图 + Wan 生视频，零 API 成本）
+
+### 追加
+- **ComfyUI 通用工作流运行器**：在 ComfyUI 排好工作流 →「Save (API Format)」导出 JSON 粘贴进 Provider 配置，OneTV 自动完成：占位符替换（`__prompt__` / `__negative__`）→ seed/noise_seed=0 自动随机 → 首帧参考图上传（自动填入所有 LoadImage 类节点）→ 提交 `/prompt` → 轮询 `/history` → 收集全部节点产物（images/gifs/videos，兼容 SaveImage / SaveAnimatedWEBP / VHS_VideoCombine）→ `/view` 下载入库。全程本机直连、不出公网。
+- **FLUX 出图**：ComfyUI Provider 配置工作流模板后，生图走模板工作流（FLUX/SDXL/任意自定义），未配置保持内置 SD 工作流。
+- **Wan2.x 本地生视频**：视频任务新增 ComfyUI 驱动分支——配置工作流模板（Wan 图生视频工作流）即可本地出视频，图生视频的首帧来自分镜参考图（自动上传）。
+- **能力校验放宽**：ComfyUI 驱动配置工作流模板后允许勾选「生视频」（保存时校验：无模板勾生视频会被拒绝并给出指引）；前端能力白名单与模型行同步放开。
+
+### 变更
+- reqwest 启用 multipart（首帧图上传用）。
+- 版本号升至 2.7.0（v2.6 体验线收束，进入 v2.7 生产硬能力线；下一刀：可灵 JWT 签名内置）。
+
+## [2.6.4] — v2.6.4：生成平台预设模板库（图片 + 视频，一键接入）
+
+### 追加
+- **平台预设一键填充**（依据用户提供的短剧团队常用平台清单）：「新增 Provider」弹窗新增预设选择器，选平台 → 套用 → 填 API Key → 保存即用，Custom HTTP 模板按各平台 API 结构预排好。
+  - 🖼️ **图片**：Nano Banana（Google Gemini，base64 响应自动入库）、Seedream（火山方舟）、FLUX（BFL 官方 API，x-key 头鉴权）、Midjourney（经 midjourney-proxy 自建/第三方服务）。
+  - 🎬 **视频**：海螺 H3（MiniMax Hailuo-02）、可灵 Kling（⚠️ 官方要求 AK/SK 签发短期 JWT，模板已排好、待内置签名）、即梦 Seedance（火山方舟）、通义万相 Wan（阿里百炼，异步轮询）、Pika（经 fal.ai 队列）、Runway（Gen-4）。
+- **图生视频首帧注入**：视频任务把首帧参考图读为 data URI 注入模板变量 `input.firstFrameBase64`（≤12MB），各预设通过 `${input.firstFrameBase64?}` 可选链自动携带——分镜图 → 视频 → 口型/动作的主流工作流打通。
+- **Custom HTTP 结果落盘增强**：`response.result_b64` 映射此前只声明未实现，现已支持（Gemini 式内联 base64 解码保存为 PNG）；预设映射键统一为 serde 实际字段名（job_id/result_url/result_b64），并新增测试守住「键名写错被静默忽略 → 轮询失效」这一类隐患。
+
+### 说明
+- 预设是「可用基线」：各平台 API 会演进，套用后可按官方文档微调模板（白名单变量不变）；预设详情内附官方文档直达链接与注意事项。
+- Wan2.x / 混元等本地开源权重的 ComfyUI 视频工作流支持在后续版本（当前 ComfyUI 驱动仅生图）。
+- 版本号升至 2.6.4（按顺序推进第 5 刀）。
+
+## [2.6.3] — v2.6.3：Agent 会话列表体系 + 会话上下文记忆
+
+### 追加
+- **多会话支持（对标 Codex 会话列表）**：Agent 对话页新增左侧会话侧栏——「＋ 新会话」、会话切换、双击重命名、悬停删除（删除当前会话自动落到最近一个会话，全删后自动新建）；每个项目独立维护最多 30 个会话，会话标题自动取首条用户消息（可改）。
+- **会话上下文记忆**：发送时自动携带本会话最近 8 轮 user/assistant 文本（`history` 参数），后端 chat 意图将其拼入 LLM 消息上下文（单条截断 2000 字、总量上限 16 条）——同一个会话里追问「再改短一点」能接住上下文了；仅 chat 意图注入，剧本/生图等结构化任务不受历史污染。
+- **事件按会话归档**：jobId 归档表升级为 jobId → 项目+会话；流式打字气泡与完整回复都会精确落入发起会话，切会话/切项目期间到达的回复不丢不错位。
+
+### 变更
+- 对话持久化格式升级 v2（项目 → 会话列表 + 当前会话指针），v2.6.1 的旧消息自动迁移为每项目一个「默认会话」。
+- 版本号升至 2.6.3（按顺序推进第 4 刀；下一刀：视频生成预设模板库）。
+
+## [2.6.2] — v2.6.2：Agent 对话流式输出（打字机效果）
+
+### 追加
+- **对话流式输出**：OpenAI 兼容 Provider 的对话回复逐 token 实时渲染——后端 Gateway 新增 `send_json_stream`（策略校验/审计与普通请求完全一致），OpenAI 驱动新增 `chat_stream`（SSE 解析、跨 chunk 行缓冲、`[DONE]` 终止），JobContext 新增 `stream_delta` 回调，以 `agent.message.delta` 事件推送（带 jobId）。
+- **打字机气泡**：前端事件桥收 delta 增量渲染「正在输入…」气泡（光标闪烁），完整回复（`agent.message`）到达后自动替换为正式 Markdown 气泡；未支持流式的驱动（Mock/Ollama/CustomHTTP）行为不变，只显示完整回复。
+- **quiet 任务不推流**：画布节点面板直发（quiet）的流式增量不进入 Agent 对话流，回复仍由面板轮询消费，避免串流。
+
+### 说明
+- 流式仅在对话意图（chat）生效；剧本 JSON 生成等结构化任务仍整体返回（需要完整 JSON 校验，不适合流式）。
+- 版本号升至 2.6.2（按顺序推进第 3 刀；下一刀：会话列表体系）。
+
+## [2.6.1] — v2.6.1：Agent 对话持久化 / 停止生成 / Markdown 渲染
+
+### 追加
+- **Agent 对话持久化（切视图/重启不丢）**：消息与忙碌态从组件 useState 提升到模块级 store（`agentChatStore.ts`，zustand）——切换视图不再丢失对话与待批准计划卡；消息按项目落 localStorage（每项目上限 400 条，超容量自动截半重试），重启后恢复；「清空对话」按钮同步清理。
+- **回复按 jobId 归档（不串项目/不丢回复）**：后端所有 `agent.message` 事件补发 `jobId` 字段（chat/剧本/分镜/合成/导出/视频理解六个发射点）；前端在 App 生命周期注册一次全局事件桥，按 jobId → 发起项目归档，未知 jobId 落当前项目——切换视图甚至切换项目期间到达的回复都会进入正确项目的对话流。
+- **停止生成**：发送后 busy 期间显示「⏹ 停止」按钮，取消当前对话创建的任务（job_cancel），并写入系统提示条。
+- **助手消息 Markdown 渲染**：接入 react-markdown + remark-gfm——标题/列表/表格/引用/代码块，代码块右上角「复制」按钮，链接新窗打开；每条消息悬停出现「复制原文」；用户/系统消息保持纯文本 pre-wrap。
+
+### 修复
+- store.ts 头注释「业务数据走 TanStack Query」与实际不符（仓库无此依赖的任何使用），改为如实描述。
+
+### 变更
+- 版本号升至 2.6.1（v2.6 线第 2 刀；按顺序推进：对话体验 → 流式 → 会话列表 → 视频驱动模板库 → Story Bible → 测试/CI）。
+
+## [2.6.0] — v2.6.0：健壮性修复批次（全库审查后第一轮）
+
+### 修复（重要）
+- **邮箱验证码功能下线（按用户决策简化）**：修改账户 / 忘记密码不再要求邮箱验证码，仅校验邮箱地址（与 auth.rs 规格注释一致）；SMTP 邮件发送设置与 auth_send_code 命令保留，便于后续恢复。登录页与设置页的验证码输入/发送 UI 同步移除。
+- **SMTP 邮箱配置 100% 保存失败的隐藏 Bug**：钥匙串条目 ID 只允许字母数字和 `-_`，而 `mail/<email>` 含 `@ . /` 全部被拒——所有邮箱配置保存必然报「providerId 不合法」。改为 URL-safe Base64 编码邮箱后存储（此前从未保存成功过，无旧数据迁移问题）。
+- **任务「取消后仍翻转为成功」**：处理器返回 Ok 时未检查取消标志，用户已取消（远程可能已扣费）的任务会被无条件写成 Succeeded。现在 Ok 分支先检查取消标志，已取消则不采纳结果。
+- **任务成功后 Provider/Model 列丢失**：成功落库使用调度时的旧快照，`ON CONFLICT` 会把 set_meta 刚写入的 provider/model 覆盖回空。现在以 DB 最新记录合并后再落库。
+- **数据库迁移非原子**：migration 的 DDL 与版本号写入不在事务内，若中途崩溃工程库会因 "duplicate column" 永久打不开。现在每个 migration 在事务内执行，并对修复前的残留库自愈（识别 duplicate column 后补记版本号）。
+- **HermesView 事件监听泄漏**：`hermes.inbound` 监听未处理「卸载早于 listen promise resolve」竞态（其余 5 处均已处理），组件提前卸载后监听器永久泄漏并对已卸载组件 setState。补齐 cancelled 标志。
+- **邮件文案单位错误**：验证码邮件写「300 分钟内有效」（CODE_TTL_SECS=300 为秒），改按分钟计算输出「5 分钟内有效」。
+- **同步命令阻塞主线程（历史同类问题的残余）**：`project_delete`（整工程目录删除，可含数 GB 资产）、`agent_attach_path` / `agent_attach_data`（≤50MB 文件 SHA-256 全量哈希 + 复制）、`ffmpeg_status`（真实执行 `ffmpeg -version` 子进程）全部改为 async + `spawn_blocking`，UI 不再卡死。
+
+### 变更
+- 画布工具栏「运行选中」按钮不再弹「Phase 2」占位提示，改为引导双击节点打开生成面板运行（面板链路已实装）；tooltip 同步说明。
+- 版本号升至 2.6.0。
+
 ## [2.5.0] — v2.5.0：设置页布局整齐化（上下左右全对齐）
 
 ### 修复

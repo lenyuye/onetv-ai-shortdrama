@@ -1,6 +1,6 @@
 {
   "name": "onetv-desktop",
-  "version": "2.5.0",
+  "version": "2.7.1",
   "private": true,
   "description": "OneTV 桌面端（Tauri 2 + React）",
   "type": "module",
@@ -21,6 +21,8 @@
     "@xyflow/react": "^12",
     "react": "^19",
     "react-dom": "^19",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "zustand": "^5"
   },
   "devDependencies": {
