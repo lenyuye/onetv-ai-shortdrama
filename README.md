@@ -46,10 +46,14 @@ crates/project    # .ytv 工程文件、SQLite schema、资产去重
 packages/*        # TS 共享类型 / Node SDK / Provider SDK / Agent 协议 / Skill SDK
 providers/        # Provider 预设与示例（openai-compatible / ollama / comfyui / custom-http）
 skills/           # 内置 Skill 包（短剧 / 分镜 / 视频复刻 / TVC）
-migrations/       # SQLite 迁移
-tests/            # fixtures / e2e / security / golden
+tests/            # 预留目录（fixtures / e2e / security / golden 子目录当前为空）
 docs/             # 设计文档
 ```
+
+## 测试
+
+- Rust 侧：各 crate 内 `#[cfg(test)]` 单元测试 + `crates/core/tests/golden_pipeline.rs` 集成测试（`cargo test --workspace`）。
+- 前端：`apps/desktop/src/*.test.ts`（vitest，`pnpm --filter onetv-desktop test`）。
 
 ## 安全与隐私（硬承诺）
 

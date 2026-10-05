@@ -1,6 +1,6 @@
 {
   "name": "onetv-desktop",
-  "version": "2.7.1",
+  "version": "2.16.0",
   "private": true,
   "description": "OneTV 桌面端（Tauri 2 + React）",
   "type": "module",
@@ -9,6 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -17,7 +18,6 @@
     "@onetv/provider-sdk": "workspace:*",
     "@onetv/shared-types": "workspace:*",
     "@onetv/skill-sdk": "workspace:*",
-    "@tanstack/react-query": "^5",
     "@xyflow/react": "^12",
     "react": "^19",
     "react-dom": "^19",
@@ -32,6 +32,7 @@
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^5",
     "typescript": "^5",
-    "vite": "^7"
+    "vite": "^7",
+    "vitest": "^5.0.3"
   }
 }

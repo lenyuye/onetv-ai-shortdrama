@@ -2,6 +2,151 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.16.0] — v2.16.0：i18n 字典层（第一二类清单：项 35）
+
+### 追加
+- **🌐 i18n 字典层**：以「中文原文为键」的轻量方案——`src/i18n.ts` 提供 `t(text, vars)` 与 `useT()`（useSyncExternalStore 订阅语言切换触发重渲染）；缺译自动回退中文原文，永不白屏。翻译按视图分片存 `src/i18n/en/*.ts`（9 个片段、1000+ 键，与视图一一对应避免合并冲突）。
+- **全量替换**：24 个前端文件（全部视图/画布组件/命令面板/api 层）的用户可见中文 UI 字符串收敛为 t() 调用（约 900+ 处）；持久化/比较耦合的字符串（画幅枚举、节点类型、默认标题、后端错误匹配等）严格保持原值不动，仅在显示侧翻译。
+- **语言切换**：设置 → 外观设置 → 界面语言（中文 / English），偏好存 localStorage('onetv-lang')；命令面板过滤同时匹配原文与译文。
+- **字典完整性测试**（src/i18n.test.ts）：无空译文、跨分片同键不同译必须经 OVERRIDES 裁决、OVERRIDES 无过期键三重守护；本轮裁决 24 处风格级冲突。
+
+### 边界说明
+- 日期/时间格式化（toLocaleString("zh-CN")）、LLM 指令 payload、导出文件内容保持现状；画布连线兼容性报错（node-sdk 动态文案）暂未接入。
+
+## [2.15.0] — v2.15.0：视频理解 VLM 自动探测 + Webhook 入向 + Plugin SDK 框架
+
+### 追加（第一二类清单：项 20/26）
+- **🧠 视频理解 VLM 语义分析（项20）**：自动探测已配置 Vision 能力的 Provider（走能力路由 + 离线模式约束），对前 4 个关键帧逐帧多模态分析（OpenAI 兼容 chat：text+image_url），严格 JSON 回填景别/运镜/场景/角色/动作/色调字段；单帧失败自动跳过；未配置 Vision 时保持原确定性管线（notes 动态标注分析结果）。
+- **🔗 Webhook 入向（项26，规格 §22.5 最小版）**：本机回环 HTTP 监听（默认关闭，端口/token 独立配置）——POST /webhook?token=…：token 未配置 403 拒绝（与 Hermes 同安全策略）、不匹配 401；白名单动作 create_image 直建生图任务，其余事件转发为 app 事件（webhook.event/received）供前端/技能订阅，全程审计。
+- **🧩 Plugin SDK 框架（项26）**：plugin_list 命令 + 插件清单（app_data/plugins/*/plugin.json）——与 Skill 相同安全模型（提示词包，不加载任意代码），为后续插件生态铺底。
+- 版本号升至 2.15.0（第一二类 6/9 完成；35/30/19 见续传点）。
+
+## [2.14.0] — v2.14.0：画布批量运行引擎 + 预算金额化 + 记忆语义搜索
+
+### 追加（第一二类清单：项 25/16/18/28）
+- **▶ 画布批量运行引擎（项25，规格 §7 condition/review 语义落地）**：工具栏「▶ 运行全图」按拓扑顺序执行——text 节点标记完成；image/video/audio 节点创建生成任务并等待完成后产物回填节点（单任务 20 分钟上限）；**condition 节点求值 `contains:关键词`**（对照上游文本，未命中自动裁剪 fail 分支下游）；**review 节点暂停批次**等待人工批准（检查器内「✓ 批准并继续运行」→「↻ 恢复运行」自动跳过已完成节点）；失败中止并保留已完成进度。生成节点缺提示词自动跳过并标注原因。
+- **节点禁用/锁定（项25）**：检查器新增 ⏸ 禁用（批量运行跳过）与 🔒 锁定（禁删除/禁编辑）开关；节点卡片显示徽标；面板直发与删除均受保护。
+- **💰 预算守卫金额化（项16）**：模型页每个模型可配「单价 ¥/次」→ 任务成功后按 `{providerId}/{modelId}` 累计金额；守卫新增「每日金额上限 / 累计金额上限（¥，0=不限）」；超限拦截文案带金额；看板瓷贴显示今日/累计花费。未配置单价的模型只计次数不受影响。
+- **video.extend 路由参数（项18，最小版）**：生视频任务 input 增加 mode（extend/generate）——Mock extend 走参考图延续，Custom HTTP 模板可用 `${input.mode}` 区分续写端点。
+- **记忆语义搜索（项28）**：意识模块搜索升级——字符二元组 TF 向量 + 余弦相似度排序（纯本地、无外部 embedding 依赖、中文友好），含 includes 兜底；新增 `memory_search` 命令。
+- 版本号升至 2.14.0。
+
+## [2.13.0] — v2.13.0：规格缺口落地批 + 体验批（审查清单二/三/四可执行项）
+
+### 追加（规格缺口）
+- **L4 Reviewer（轻量版）**：执行计划生成后自动启发式复核——离线模式与远程调用冲突、生图/生视频缺提示词、远程调用 ≥10 次的成本提示；备注显示在计划卡（🔎 前缀）。
+- **Continuity Validator（最小版）**：拆分镜时校验镜头角色是否在 Story Bible 登记，未登记写入分镜表 continuityWarnings（生成参考图无法绑定的前瞻提示）。
+- **多版本导出生效**：export 真正消费 burnSubtitle/includeSrt——烧录字幕（ffmpeg subtitles 滤镜，缺 SRT 侧车时报可读错误）与 SRT 随导出复制。
+- **自动 QC 扩展**：新增音轨存在性检测（无音轨在任务页 QC 徽标中标出）。
+- **Recreate Planner（最小版）**：新增「从视频重建画布」——把视频理解的镜头结果一键重建为画布文本节点（网格布局，旧画布自动备份），项目页入口。
+- **Provider 配置导入/导出（API-11）**：模型页「📤 导出配置 / 📥 导入配置」——JSON 含全部 Provider 结构（不含 API Key，导入后需重填；导入走驱动-能力校验）。
+- **Skill Git 安装**：Skills 页输入仓库地址（可选 tag/branch）→ git clone --depth 1 → 同一 manifest 校验安装链路。
+- **Custom HTTP Mock Server E2E（API-03）**：集成测试实测 submit→poll（jobId 注入校验）→ 产物下载全链路。
+
+### 改进（体验批，含 v2.11.0 后遗留）
+- **轮询统一**：删除 App 5s 全量轮询（纯事件驱动），任务页兜底轮询 2s→15s。
+- **CanvasView job.succeeded 闭包过期修复**（ref 镜像模式）。
+- **useTauriEvent hook**：统一「卸载早于 listen resolve」竞态处理，HermesView/App 全部事件接入。
+- **window.confirm 全部替换为自定义对话框**（3 处，删除工程带红色确认按钮）。
+- **视图状态持久化**：记住上次页面与右栏折叠态。
+- **文档纠偏**：ARCHITECTURE.md 状态描述、README tests/ 描述、删除空 migrations/ 目录。
+
+### 工程化
+- CI 新增 cargo clippy 报告步骤；前端测试扩面（17 项）。
+
+### 说明（诚实延期项，见 44 项清单）
+- 16 Cost Guard 金额化（需模型定价 UX）、18 video.extend 平台级路由、19 可视化时间线编辑器、20 OCR/ASR/VLM、25 condition/review 执行引擎、26 Webhook 与 Plugin SDK、28 sqlite-vec、30 巨型组件拆分、35 i18n、37 更新发布源、39 Windows、40 git 仓库、43/44 真机实测（外部条件）。
+- 版本号升至 2.13.0。
+
+## [2.12.0] — v2.12.0：安全与稳定性尾巴清零（审查清单一 1-14）
+
+### 修复
+- **Gateway 重定向防护**：携带鉴权头的请求不再自动跟随 302（此前白名单 Provider 可把密钥转投任意域名）——手动逐跳跟随（≤3 跳），每一跳重新过策略引擎 + 重新挂鉴权；download 场景保持允许重定向（无鉴权头）。
+- **is_local_base 前缀绕过修复**：`http://localhost.evil.com` 此前被误判为本机（Hermes token 可泄露）——改为精确解析 host 比对，新增仿冒域名测试。
+- **Hermes 反向控制鉴权**：未设置 token 时 `/invoke` 从无鉴权放行改为 403 拒绝（仅 /health 放行）。
+- **测试时钟钩子加门禁**：release 构建调用 `debug_set_time_offset` 直接报错。
+- **Job 落库失败不再静默**：persist/add_event 失败写 error 日志（此前 `let _ =` 吞掉，状态机退化为纯内存无告警）。
+- **错误重试分类**：新增 `From<GatewayError> for JobError`——密钥缺失/策略拒绝/解析失败/4xx 一律不重试；网络错误/超时/5xx/429 才退避重试（此前 401 也重试 3 次白扣费），生成链路 8 个调用点接入。
+- **未打开项目时 Chat 不再静默丢失**：直接返回可读错误（此前回退 temp 目录 → job 永不执行）。
+- **onetv-asset 协议异步化 + Range 支持**：视频播放走 206 分段（单段 ≤8MB），不再主线程整文件读入内存。
+- **阻塞调用包 spawn_blocking**：成片合成（分钟级）、导出转码、视频理解场景检测、工程包导出导入——不再饿死 tokio worker。
+- **关键文档原子写**：project.json / episodes/*.json（剧本/分镜/画布/时间线）/ doc_save 全部 tmp+rename，防崩溃半截 JSON。
+- **Skill 安装校验修复**：version semver 校验从恒 false 死代码变为真实校验；copy_dir 跳过符号链接（防自引用无限递归）。
+- **JobKind 未知值留痕**：不再静默按 Chat 兜底，写 warn 日志。
+- **杂项**：concat_list.txt 单引号转义（路径含引号不再断）、ComfyUI /view 查询参数 percent-encode、zip 解压 2GB 上限（zip bomb 防护）。
+- **日志轮转**：audit.jsonl >10MB / hermes_log.jsonl >5MB 自动轮转为 .old，不再无限增长。
+
+## [2.11.1] — v2.11.1：预算守卫卡片填充（实时用量看板）
+
+### 改进
+- **预算守卫卡片下半空白填充**（用户反馈）：复用隐私卡同款瓷贴风格，加入四块实时数据看板——📊 今日已用 X 次（含每日上限与守卫状态）、💰 项目累计 X 次（含累计上限）、🛒 超限自动拦截说明、🏠 本地任务不计数说明；新增 `costs_get` 命令读取当前项目 costs.json 真实用量，打开设置页自动刷新。卡片尺寸不变，内容随高度铺满。
+
+## [2.11.0] — v2.11.0：体验打磨（窗口记忆 / ⌘K / 无障碍 / 死代码清理）
+
+### 追加
+- **窗口状态记忆**：接入 tauri-plugin-window-state——窗口大小/位置/全屏态关闭时自动保存、下次启动恢复（此前每次固定 1440×900 居中）。
+- **⌘K 命令面板（Codex 式快速跳转）**：全局 ⌘K（Windows Ctrl+K）呼出，输入过滤页面名，↑↓ 选择 / Enter 跳转 / Esc 关闭。
+- **导航键盘可达**：左侧导航项从 div 改为原生 button（Tab 聚焦 + aria-current + focus-visible 轮廓）——纯键盘用户此前完全无法切换模块。
+- **浅色模式原生控件修复**：index.html 写死 color-scheme: dark 导致浅色模式下原生滚动条/表单控件仍按深色渲染，改为随主题动态设置。
+- Agent 对话输入框占位符注明「Enter 发送 / Shift+Enter 换行」。
+
+### 清理（审查遗留死代码/死依赖）
+- 移除未使用的 `@tanstack/react-query` 依赖（全仓零使用）。
+- 移除不可达的 PLACEHOLDER_VIEWS / PlaceholderView 占位分支。
+- 移除大＋菜单中永久 disabled 的「插件（暂无可用插件）」入口。
+- 隐藏无发布源的假「检查更新」按钮（待接入 tauri-plugin-updater 后恢复）。
+
+### 变更
+- 版本号升至 2.11.0。巨型组件拆分与 i18n 收敛仍为待办（工程量大，未在本轮）。
+
+## [2.10.0] — v2.10.0：Cost Guard 预算守卫 + 自动 QC（规格 §11/§14 P0）
+
+### 追加
+- **💰 Cost Guard 预算守卫**：设置页新增「预算守卫」卡片——按项目限制远程生成（生图/生视频/配音）调用次数（每日上限 + 项目累计上限，默认 100/1000，可关）。执行前检查额度，超限任务以可读文案拦截（不执行、不计费）；任务成功后计数写入项目 `costs.json`（本机）。本地 Mock/ComfyUI/Ollama 不计数，只护钱包不碍本地创作。配置随 settings 实时同步到任务引擎。
+- **🔍 自动 QC（§14.1 最小集）**：视频类任务（生视频/合成成片/导出）产出后自动执行 FFmpeg blackdetect（黑帧 ≥0.5s）+ silencedetect（静音 ≥2s @-40dB）+ 时长探测，结果随任务落库（result_json.qc）并写 job_events（qc.report）；任务页标题下显示「🔍 QC 通过」或「⚠️ QC：黑帧 X.Xs · 静音 Y.Ys」徽标。检测纯本地、失败不拦截任务（advisory）。
+- 新增 `crates/core/src/qc.rs`（含 stderr 解析单测）；jobs 引擎新增媒体定位器与预算配置同步接口。
+- 版本号升至 2.10.0。
+
+### 测试
+- 新增：预算拦截端到端单测（预算 0 → 任务失败且处理器不执行）、blackdetect/silencedetect 解析单测、QC 阈值判断单测。
+
+## [2.9.1] — v2.9.1：ComfyUI Wan 工作流实测调优
+
+### 追加
+- **Mock ComfyUI 端到端集成测试**（本机无 ComfyUI/Wan 权重、Intel Mac 无法跑视频生成，采用内嵌 HTTP Mock 实测驱动管线）：真实走 ComfyUI 协议全链路——首帧图 multipart 上传 → /prompt 提交（断言：__prompt__/__negative__ 已替换、seed=0 已随机化、__width__/__height__/__frames__ 已变数字、LoadImage 收到上传文件名）→ /history 轮询（running→completed 状态迁移）→ images/gifs 双产物收集 → /view 下载内容校验 → 进度回调触发。CI 可跑（无 GPU 依赖）。
+- **数值占位符 patch_workflow_vars**：`__width__` / `__height__` / `__frames__` 由画幅（9:16→480×832、16:9→832×480、1:1→624×624，480p 档）与时长（16fps，帧数=时长×16+1，33~121）自动推导，Wan 工作流无须手填。
+- **生成进度上报**：ComfyUI 轮询期间按超时预算上报 job progress（15%~85%），任务页进度条不再恒定。
+- **内置 Wan2.1 图生视频示例工作流**：模型页 ComfyUI 模板区「📥 载入 Wan 图生视频示例」一键填入（原生节点 UNETLoader/CLIPLoader/VAELoader/CLIPVisionEncode/WanImageToVideo/KSampler/SaveWEBM；480p fp8 权重名按本机实际下载修改）。
+- 版本号升至 2.9.1。
+
+## [2.9.0] — v2.9.0：前端测试体系 + CI（测试抓到并修复 2 个真 Bug）
+
+### 追加
+- **前端 vitest 测试（16 项，此前前端 11k 行零测试）**：agentChatStore 全量（多会话 CRUD / localStorage 持久化与 v1 迁移 / 流式增量收尾 / jobId 归档）+ api-story 归一化纯函数（normalizeScript 的 snake/camel 容错）+ normalizeBible + errMsg。`pnpm test`（root 聚合）可跑。
+- **GitHub Actions CI**（.github/workflows/ci.yml）：前端 typecheck+vitest、Rust 全 workspace 测试（含 Tauri Linux 系统依赖与 golden pipeline E2E），push/PR 触发。
+- vitest 配置显式绑 127.0.0.1（本机 /etc/hosts 的 localhost 映射损坏，历史遗留）。
+
+### 修复（由新测试抓出）
+- **appendTo 兜底创建会话用了新随机 id 而非目标 id**：jobId 归档表过期后到达的回复会被写进一条永远匹配不上的会话。
+- **api-story.errMsg 不识别 Tauri CommandError 对象**：Agent 对话/任务报错在界面上显示为「[object Object]」——现在正确提取 message（与 LoginView 本地实现对齐）。
+- 版本号升至 2.9.0。
+
+## [2.8.0] — v2.8.0：Story Bible 编辑器 + AI 生成（角色一致性上游）
+
+### 追加
+- **Story Bible 编辑器**：「项目」页 Bible 卡片新增「✏️ 编辑设定 / AI 生成」——结构化编辑 剧名/题材/时代/地域/主题/平台/视觉风格 + 角色（人设 + 外形 appearance）+ 场景 + 道具 + 连续性规则四张表；保存原子写（tmp+rename）至 `bible/story.json`，与剧本生成的风格注入、分镜角色参考绑定（name → refAssetId）链路完全兼容。
+- **AI 一键生成**：填一句话需求 → 单次 LLM 调用（chat 能力，走 Gateway/审计）产出完整圣经 JSON（剥代码围栏容错解析），回填表单可任意修改后保存；画幅/时长/平台等本地设置在生成时保留。
+- 后端新增 `bible_get` / `bible_save` / `bible_generate` 三命令（v2.6 审查发现的「bible.generate 已注册无 handler」以独立命令落地）。
+- 版本号升至 2.8.0。
+
+## [2.7.2] — v2.7.2：可灵 JWT 签名内置（官方 API 直连打通）
+
+### 追加
+- **可灵开放平台鉴权内置**：Gateway 新增 `kling-jwt` 鉴权类型——密钥以「AK:SK」格式存钥匙串，每次请求现场签发 30 分钟有效 JWT（HS256，payload iss/exp/nbf，base64url），走既有 Gateway/审计链路。此前可灵预设因官方强制短期 JWT 而需要自建代理，现已直连（签名纯本地计算，离线单测覆盖结构与签名验证）。
+- 可灵预设更新：鉴权类型切换为 kling-jwt，说明改为「AK:SK 拼接填入即用」。
+- core 新增 hmac 依赖（JWT 签名用）。
+- 版本号升至 2.7.2（v2.7 生产硬能力线第 2 刀）。
+
 ## [2.7.1] — v2.7.1：修复 Agent 对话打开白屏 + 会话操作全部静默失效（同一根因）
 
 ### 修复

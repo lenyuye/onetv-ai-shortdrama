@@ -816,6 +816,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -1607,6 +1608,15 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "html5ever"
@@ -2638,7 +2648,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "onetv-core"
-version = "2.7.1"
+version = "2.16.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2646,6 +2656,7 @@ dependencies = [
  "dirs 6.0.0",
  "futures",
  "hex",
+ "hmac",
  "lettre",
  "onetv-media",
  "onetv-project",
@@ -2667,7 +2678,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-desktop"
-version = "2.7.1"
+version = "2.16.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2683,6 +2694,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "tauri-plugin-window-state",
  "tokio",
  "tracing",
  "uuid",
@@ -2690,7 +2702,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-media"
-version = "2.7.1"
+version = "2.16.0"
 dependencies = [
  "parking_lot",
  "serde",
@@ -2703,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-project"
-version = "2.7.1"
+version = "2.16.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -2722,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-security"
-version = "2.7.1"
+version = "2.16.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -4197,6 +4209,21 @@ dependencies = [
  "url",
  "windows",
  "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-window-state"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d6815cab7b212f9cfe16a9d79d8d22f9e14159e4a9460f7dec1467167a008e3"
+dependencies = [
+ "bitflags 2.13.2",
+ "log",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
