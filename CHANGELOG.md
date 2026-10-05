@@ -2,6 +2,20 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.17.0] — v2.17.0：五大千行组件拆分（第一二类清单：项 30）
+
+### 重构（行为零变化）
+- **五个千行视图全部拆为「组合根 + hooks + 子组件」**，主文件合计 6449 行 → 2108 行：
+  - CanvasView 1341→495（7 个 hooks：文档/撤销重做/批量运行/右键菜单/剪贴板/节点面板/快捷键 + 4 个画布子组件）；
+  - AgentChatView 1319→426（会话侧栏/消息列表/计划卡/大+菜单/附件 chips 等 10 个子组件 + 4 个 hooks）；
+  - SettingsView 1294→131（9 张卡片子组件 + 测试时钟钩子 useTimeHook）；
+  - ModelsView 1256→530（Provider 编辑器 hook + 4 个子组件）；
+  - ScriptView 1239→526（版本 hook + 场景操作 hook + 6 个子组件；PlanPanel 保持从原文件 re-export 供 StoryboardView 复用）。
+- 所有 t() 中文键、DOM/className、交互时序、持久化数据结构逐字保留（子智能体做了字符串 multiset diff 与 CSS 逐字 diff 验证）；typecheck 0 错误、vitest 23 项全绿。
+
+### 重构中记录未改的疑似问题（ backlog ）
+- 剧本页场景右键菜单为死代码（未接线）；会话删除无确认弹窗；refreshDoc 闭包捕获旧 t（切语言后 toast 文案滞后）；ScriptView 无防抖保存（显式保存 + 实体操作立即落盘）。
+
 ## [2.16.0] — v2.16.0：i18n 字典层（第一二类清单：项 35）
 
 ### 追加
