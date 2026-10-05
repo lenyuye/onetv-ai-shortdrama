@@ -97,20 +97,41 @@ impl ModelRouter {
 }
 
 pub fn is_local_base(base_url: &str) -> bool {
-    base_url.starts_with("mock://")
-        || base_url.starts_with("http://127.0.0.1")
-        || base_url.starts_with("http://localhost")
-        || base_url.starts_with("http://[::1]")
-        || base_url.starts_with("http://192.168.")
-        || base_url.starts_with("http://10.")
-        || base_url.starts_with("https://192.168.")
-        || base_url.starts_with("https://10.")
+    if base_url.starts_with("mock://") {
+        return true;
+    }
+    // 精确解析 host 再比对：前缀匹配会把 http://localhost.evil.com 误判为本机（v2.12.0 修复）
+    let Some((_, rest)) = base_url.split_once("://") else {
+        return false;
+    };
+    let host_port = rest.split('/').next().unwrap_or_default();
+    let host = if let Some(inner) = host_port.strip_prefix('[') {
+        inner.split(']').next().unwrap_or_default()
+    } else {
+        host_port.split(':').next().unwrap_or_default()
+    };
+    let host = host.to_ascii_lowercase();
+    matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "0.0.0.0")
+        || host.starts_with("192.168.")
+        || host.starts_with("10.")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::ProviderDriverKind;
+
+    #[test]
+    fn local_base_rejects_lookalike_hosts() {
+        assert!(is_local_base("http://localhost:11434"));
+        assert!(is_local_base("http://127.0.0.1:8188"));
+        assert!(is_local_base("http://[::1]:8766"));
+        assert!(is_local_base("http://192.168.1.5/v1"));
+        assert!(!is_local_base("http://localhost.evil.com"));
+        assert!(!is_local_base("http://127.0.0.1.evil.com"));
+        assert!(!is_local_base("https://api.example.com"));
+    }
+
 
     fn reg_with(ps: Vec<ProviderProfile>) -> ProviderRegistry {
         let dir = tempfile::tempdir().unwrap();

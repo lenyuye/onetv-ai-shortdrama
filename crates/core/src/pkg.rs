@@ -109,11 +109,17 @@ pub fn import_project(zip_path: &Path, parent: &Path) -> Result<PathBuf, PkgErro
     if !top.ends_with(".ytv") {
         return Err(PkgError::Invalid("工程包根目录必须是 <名称>.ytv".into()));
     }
-    // 防 zip 路径穿越
+    // 防 zip 路径穿越 + 解压体积上限（zip bomb 防护，v2.12.0）
+    const MAX_UNCOMPRESSED: u64 = 2 * 1024 * 1024 * 1024; // 2GB
+    let mut total: u64 = 0;
     for i in 0..archive.len() {
         let name = archive.by_index(i)?.name().to_string();
         if name.contains("..") {
             return Err(PkgError::Invalid("工程包包含可疑路径（..）".into()));
+        }
+        total = total.saturating_add(archive.by_index(i)?.size());
+        if total > MAX_UNCOMPRESSED {
+            return Err(PkgError::Invalid("工程包解压体积超过 2GB 上限".into()));
         }
     }
 

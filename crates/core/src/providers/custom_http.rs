@@ -338,6 +338,129 @@ pub async fn execute(
 mod tests {
     use super::*;
 
+    /// Mock 自定义平台：submit → poll（2 轮 queued）→ 返回结果 URL → /file 下载。
+    /// 实测 execute 全链路（规格 API-03 Mock Server E2E，v2.13）。
+    fn spawn_mock_platform() -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let addr_for_server = addr.clone();
+        std::thread::spawn(move || {
+            let addr = addr_for_server;
+            let polls = std::sync::atomic::AtomicUsize::new(0);
+            let last_job = std::sync::Mutex::new(String::new());
+            for stream in listener.incoming() {
+                let mut stream = match stream {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                let mut buf: Vec<u8> = Vec::new();
+                let mut byte = [0u8; 1];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    if stream.read(&mut byte).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    buf.push(byte[0]);
+                }
+                let head = String::from_utf8_lossy(&buf).to_string();
+                let first_line = head.lines().next().unwrap_or_default().to_string();
+                let content_length = head
+                    .to_lowercase()
+                    .lines()
+                    .find(|l| l.starts_with("content-length:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if content_length > 0 {
+                    let mut body = vec![0u8; content_length];
+                    let _ = stream.read_exact(&mut body);
+                }
+                let respond = |stream: &mut std::net::TcpStream, body: String| {
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                };
+                if first_line.starts_with("POST /submit") {
+                    respond(&mut stream, json!({"data": {"taskId": "t-1"}}).to_string());
+                } else if first_line.starts_with("GET /poll") {
+                    // 校验 jobId 已注入轮询 URL
+                    assert!(first_line.contains("job=t-1"), "轮询 URL 应带 jobId: {first_line}");
+                    let n = polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if n < 2 {
+                        respond(&mut stream, json!({"data": {"status": "queued"}}).to_string());
+                    } else {
+                        respond(
+                            &mut stream,
+                            json!({"data": {"status": "succeeded", "videoUrl": format!("http://{addr}/file.bin")}}).to_string(),
+                        );
+                    }
+                } else if first_line.starts_with("GET /file.bin") {
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nFILEDATA"
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                } else {
+                    respond(&mut stream, "{}".to_string());
+                }
+                let _ = last_job;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn execute_end_to_end_against_mock_platform() {
+        use crate::providers::{ProviderDriverKind, ProviderProfile};
+        let addr = spawn_mock_platform();
+        let dir = tempfile::tempdir().unwrap();
+        let audit = std::sync::Arc::new(onetv_security::audit::AuditLog::new(dir.path()).unwrap());
+        let gw = Gateway::new(
+            std::sync::Arc::new(parking_lot::RwLock::new(onetv_security::NetworkPolicy::new(false))),
+            audit,
+        );
+        let mut profile = ProviderProfile::new("custom-mock", ProviderDriverKind::CustomHttp, &format!("http://{addr}"));
+        // 鉴权头直接走模板 ${secret.apiKey}（测试环境无钥匙串）
+        profile.auth.auth_type = "none".into();
+
+        let tmpl: HttpTemplate = serde_json::from_value(json!({
+            "method": "POST",
+            "url": format!("http://{addr}/submit"),
+            "headers": { "Authorization": "Bearer ${secret.apiKey}" },
+            "body": { "prompt": "${input.prompt}" },
+            "response": { "job_id": "$.data.taskId", "result_url": "$.data.videoUrl" },
+            "poll": {
+                "method": "GET",
+                "url": format!("http://{addr}/poll?job=${{jobId}}"),
+                "success_when": "$.data.status == \"succeeded\"",
+                "failure_when": "$.data.status == \"failed\"",
+                "interval_ms": 10,
+                "timeout_ms": 10_000
+            }
+        }))
+        .unwrap();
+
+        let out_dir = dir.path().join("out");
+        let out = execute(
+            &gw,
+            &profile,
+            "m1",
+            &tmpl,
+            &json!({ "prompt": "少女在雨中奔跑" }),
+            Some("test-key".into()),
+            &out_dir,
+            || false,
+        )
+        .await
+        .expect("execute 应成功");
+        assert_eq!(out.remote_job_id.as_deref(), Some("t-1"));
+        assert_eq!(out.result_urls.len(), 1);
+        let content = std::fs::read(&out.result_urls[0]).unwrap();
+        assert_eq!(content, b"FILEDATA");
+    }
+
     #[test]
     fn template_whitelist() {
         let ctx = json!({"input": {"prompt": "hi"}, "model": {"id": "m1"}, "secret": {"apiKey": "k"}});

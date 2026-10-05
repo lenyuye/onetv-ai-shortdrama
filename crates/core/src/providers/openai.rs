@@ -136,6 +136,45 @@ pub async fn chat_stream(
     Ok(full)
 }
 
+/// 视觉理解（v2.14，项20）：OpenAI 兼容 chat/completions 多模态内容
+/// （text + image_url data URI）。返回模型文本回复。
+pub async fn vision_describe(
+    gw: &Gateway,
+    profile: &ProviderProfile,
+    model: &str,
+    prompt: &str,
+    image_data_url: &str,
+) -> GatewayResult<String> {
+    if profile.driver == ProviderDriverKind::Mock {
+        return Err(GatewayError::PolicyDenied("mock 驱动请走 mock::chat".into()));
+    }
+    let url = join_url(&profile.base_url, "chat/completions");
+    let body = json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": prompt },
+                { "type": "image_url", "image_url": { "url": image_data_url } }
+            ]
+        }],
+        "max_tokens": 500,
+    });
+    let egress = json!({
+        "endpoint": url,
+        "data": "关键帧图片 + 分析指令",
+        "model": model,
+        "sensitive": "视频关键帧将发送给该服务商"
+    });
+    let resp = gw
+        .send_json(profile, reqwest::Method::POST, &url, vec![], Some(body), egress)
+        .await?;
+    resp.pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| GatewayError::Parse(format!("视觉响应缺少 choices[0].message.content: {resp}")))
+}
+
 pub async fn list_models(gw: &Gateway, profile: &ProviderProfile) -> GatewayResult<Vec<String>> {
     let url = join_url(&profile.base_url, "models");
     let resp = gw

@@ -95,7 +95,11 @@ impl JobKind {
             "timeline_render" => JobKind::TimelineRender,
             "export" => JobKind::Export,
             "video_understand" => JobKind::VideoUnderstand,
-            _ => JobKind::Chat,
+            other => {
+                // v2.12.0：未知类型不再静默当作 Chat——留痕便于排查脏数据
+                tracing::warn!("未知 JobKind: {other}，按 Chat 兜底");
+                JobKind::Chat
+            }
         }
     }
 }
@@ -193,6 +197,21 @@ impl JobError {
     }
 }
 
+/// Gateway 错误分类（v2.12.0）：密钥缺失/策略拒绝/解析失败/4xx 一律不重试；
+/// 网络错误、超时、5xx/429 才重试——此前 401 也会退避重试 3 次白扣费。
+impl From<crate::providers::gateway::GatewayError> for JobError {
+    fn from(e: crate::providers::gateway::GatewayError) -> Self {
+        use crate::providers::gateway::GatewayError as G;
+        let msg = onetv_security::redact::redact_text(&e.to_string());
+        match &e {
+            G::PolicyDenied(_) | G::MissingSecret(_) | G::Parse(_) => Self::fatal(msg),
+            G::Http { status, .. } if *status == 429 || *status == 408 || *status >= 500 => Self::transient(msg),
+            G::Http { .. } => Self::fatal(msg),
+            G::Network(_) => Self::transient(msg),
+        }
+    }
+}
+
 /* ---------------- 引擎 ---------------- */
 
 struct Runtime {
@@ -200,6 +219,75 @@ struct Runtime {
     cancel_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
     concurrency: AtomicU32,
     active: AtomicU32,
+    /// 预算守卫配置（v2.10，settings 同步）
+    cost_guard: RwLock<CostGuardConfig>,
+    /// 媒体工具定位（v2.10 自动 QC 用 ffmpeg/ffprobe）
+    media: RwLock<Option<onetv_media::MediaLocator>>,
+    /// 模型单价表（v2.14 金额化守卫）：key = "{providerId}/{modelId}"
+    pricing: RwLock<PricingMap>,
+}
+
+/// 预算守卫配置：远程生成（生图/生视频/配音）调用额度
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CostGuardConfig {
+    pub enabled: bool,
+    pub daily_remote_limit: u32,
+    pub project_total_limit: u32,
+    /// 单项目每日金额上限（元，可选：0 = 不限；按模型「单价/次」累计，v2.14）
+    pub daily_cost_limit: f64,
+    /// 单项目累计金额上限（元，可选）
+    pub project_cost_limit: f64,
+}
+
+impl Default for CostGuardConfig {
+    fn default() -> Self {
+        Self { enabled: false, daily_remote_limit: 100, project_total_limit: 1000, daily_cost_limit: 0.0, project_cost_limit: 0.0 }
+    }
+}
+
+/// Provider/模型 → 单价（元/次）表（settings/registry 同步，v2.14）
+pub type PricingMap = std::collections::HashMap<String, f64>;
+
+/// 计入预算的高成本任务类型
+fn is_cost_heavy(kind: &JobKind) -> bool {
+    matches!(kind, JobKind::ImageGeneration | JobKind::VideoGeneration | JobKind::Tts)
+}
+
+/* ---------------- 项目费用计数（costs.json） ---------------- */
+
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase", default)]
+struct ProjectCosts {
+    total_calls: u32,
+    /// 金额累计（元，按模型单价/次；v2.14）
+    total_cost: f64,
+    /// 日期（UTC yyyy-mm-dd）→ 当日次数
+    daily: HashMap<String, u32>,
+    /// 日期 → 当日金额（元）
+    daily_cost: HashMap<String, f64>,
+}
+
+fn costs_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("costs.json")
+}
+
+fn read_costs(root: &std::path::Path) -> ProjectCosts {
+    std::fs::read_to_string(costs_path(root))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn write_costs(root: &std::path::Path, costs: &ProjectCosts) {
+    let tmp = costs_path(root).with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::to_string_pretty(costs).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, costs_path(root));
+    }
+}
+
+fn today_key() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
 }
 
 pub struct JobManager {
@@ -227,6 +315,9 @@ impl JobManager {
                 cancel_flags: Mutex::new(HashMap::new()),
                 concurrency: AtomicU32::new(2),
                 active: AtomicU32::new(0),
+                cost_guard: RwLock::new(CostGuardConfig::default()),
+                media: RwLock::new(None),
+                pricing: RwLock::new(PricingMap::new()),
             }),
             root: RwLock::new(None),
             events,
@@ -255,6 +346,21 @@ impl JobManager {
         *self.root.write() = root;
     }
 
+    /// 同步预算守卫配置（settings 变更时调用）
+    pub fn set_cost_guard(&self, cfg: CostGuardConfig) {
+        *self.rt.cost_guard.write() = cfg;
+    }
+
+    /// 提供媒体定位器（自动 QC 用）
+    pub fn set_media(&self, media: onetv_media::MediaLocator) {
+        *self.rt.media.write() = Some(media);
+    }
+
+    /// 同步模型单价表（v2.14 金额化守卫）
+    pub fn set_pricing(&self, map: PricingMap) {
+        *self.rt.pricing.write() = map;
+    }
+
     pub fn set_concurrency(&self, n: u32) {
         self.rt.concurrency.store(n.clamp(1, 8), Ordering::Relaxed);
     }
@@ -272,7 +378,7 @@ impl JobManager {
 
     fn persist(&self, job: &JobRecord) {
         if let Some(conn) = self.db() {
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "INSERT INTO jobs(id, node_id, episode_id, kind, provider_id, model, params_json, state, progress, title, cost_json, error, remote_job_id, idempotency_key, attempts, result_json, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
                  ON CONFLICT(id) DO UPDATE SET state=?8, progress=?9, error=?12, remote_job_id=?13, attempts=?15, result_json=?16, provider_id=?5, model=?6, updated_at=?18",
@@ -284,17 +390,21 @@ impl JobManager {
                     job.attempts, serde_json::to_string(&job.result).unwrap_or_default(),
                     job.created_at, job.updated_at
                 ],
-            );
+            ) {
+                tracing::error!(job_id = %job.id, "任务落库失败（任务状态将不可跨重启恢复）: {e}");
+            }
         }
     }
 
     fn add_event(&self, job_id: &str, event_type: &str, payload: serde_json::Value) {
         if let Some(conn) = self.db() {
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "INSERT INTO job_events(job_id, seq, event_type, payload_json, time)
                  VALUES (?1, COALESCE((SELECT MAX(seq)+1 FROM job_events WHERE job_id=?1), 0), ?2, ?3, ?4)",
                 rusqlite::params![job_id, event_type, payload.to_string(), chrono::Utc::now().to_rfc3339()],
-            );
+            ) {
+                tracing::error!(job_id, event_type, "任务事件落库失败: {e}");
+            }
         }
     }
 
@@ -612,6 +722,66 @@ impl JobManager {
             })
         };
 
+        // 预算守卫（v2.10）：高成本远程任务执行前检查额度
+        if is_cost_heavy(&job.kind) {
+            let guard = self.rt.cost_guard.read().clone();
+            if guard.enabled {
+                let costs = read_costs(&root);
+                let today = costs.daily.get(&today_key()).copied().unwrap_or(0);
+                if today >= guard.daily_remote_limit {
+                    self.finish_failed(
+                        &mut job,
+                        format!(
+                            "预算守卫：本项目今日远程生成已 {} 次（每日上限 {}）。可在「设置 → 预算守卫」调高额度或明日再试",
+                            today, guard.daily_remote_limit
+                        ),
+                        true,
+                    )
+                    .await;
+                    return;
+                }
+                if costs.total_calls >= guard.project_total_limit {
+                    self.finish_failed(
+                        &mut job,
+                        format!(
+                            "预算守卫：本项目远程生成累计已 {} 次（总上限 {}）。可在「设置 → 预算守卫」调高额度",
+                            costs.total_calls, guard.project_total_limit
+                        ),
+                        true,
+                    )
+                    .await;
+                    return;
+                }
+                if guard.daily_cost_limit > 0.0 {
+                    let today_cost = costs.daily_cost.get(&today_key()).copied().unwrap_or(0.0);
+                    if today_cost >= guard.daily_cost_limit {
+                        self.finish_failed(
+                            &mut job,
+                            format!(
+                                "预算守卫：本项目今日生成已花费 ¥{:.2}（每日金额上限 ¥{:.2}）",
+                                today_cost, guard.daily_cost_limit
+                            ),
+                            true,
+                        )
+                        .await;
+                        return;
+                    }
+                }
+                if guard.project_cost_limit > 0.0 && costs.total_cost >= guard.project_cost_limit {
+                    self.finish_failed(
+                        &mut job,
+                        format!(
+                            "预算守卫：本项目累计已花费 ¥{:.2}（金额上限 ¥{:.2}）",
+                            costs.total_cost, guard.project_cost_limit
+                        ),
+                        true,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+
         // 状态推进：VALIDATING → RUNNING
         for st in [JobState::Submitting, JobState::Running] {
             job.state = st;
@@ -634,7 +804,7 @@ impl JobManager {
         let ctx = JobContext {
             job_id: job_id.clone(),
             params: job.params.clone(),
-            root,
+            root: root.clone(),
             episode_id: job.episode_id.clone(),
             cancel,
             progress: persist_progress,
@@ -687,6 +857,62 @@ impl JobManager {
                 job.outputs = asset_ids;
                 job.error = None;
                 job.updated_at = now();
+                // 预算计数（v2.10/金额化 v2.14）：高成本任务成功后计入项目费用
+                if is_cost_heavy(&job.kind) {
+                    let mut costs = read_costs(&root);
+                    costs.total_calls = costs.total_calls.saturating_add(1);
+                    *costs.daily.entry(today_key()).or_insert(0) += 1;
+                    // 金额：按 "{providerId}/{modelId}" 查单价表
+                    let price = job
+                        .provider_id
+                        .as_deref()
+                        .zip(job.model.as_deref())
+                        .and_then(|(p, m)| self.rt.pricing.read().get(&format!("{p}/{m}")).copied())
+                        .unwrap_or(0.0);
+                    if price > 0.0 {
+                        costs.total_cost += price;
+                        *costs.daily_cost.entry(today_key()).or_insert(0.0) += price;
+                    }
+                    write_costs(&root, &costs);
+                }
+                // 自动 QC（v2.10）：视频产物黑帧/静音/时长检测，结果随任务落库
+                if matches!(
+                    job.kind,
+                    JobKind::VideoGeneration | JobKind::TimelineRender | JobKind::Export
+                ) {
+                    let media_opt = self.rt.media.read().clone();
+                    if let Some(media) = media_opt {
+                        let mut reports = Vec::new();
+                        for out in &job.outputs {
+                            let p = PathBuf::from(out);
+                            let is_video = matches!(
+                                p.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref(),
+                                Some("mp4" | "webm" | "mov" | "mkv" | "avi")
+                            );
+                            if !is_video {
+                                continue;
+                            }
+                            let media2 = media.clone();
+                            let p2 = p.clone();
+                            let qc = tokio::task::spawn_blocking(move || {
+                                crate::qc::qc_video(&media2, &p2)
+                            })
+                            .await;
+                            match qc {
+                                Ok(Ok(report)) => {
+                                    tracing::info!(file = %report.file, black = report.black.len(), silence = report.silence.len(), "QC 完成");
+                                    reports.push(report);
+                                }
+                                Ok(Err(e)) => tracing::warn!(file = %p.display(), "QC 执行失败: {e}"),
+                                Err(e) => tracing::warn!("QC 任务 panic: {e}"),
+                            }
+                        }
+                        if !reports.is_empty() {
+                            job.result["qc"] = serde_json::json!(reports);
+                            self.add_event(&job_id, "qc.report", serde_json::json!({ "qc": reports }));
+                        }
+                    }
+                }
                 // 产物资产 id 一并持久化进 result_json：query_job 重建时据此还原 outputs，
                 // 否则 job_list / job 事件里的 outputs 恒为空（节点生成面板无法回填 outputAssetId）
                 job.result["outputs"] = serde_json::json!(job.outputs);
@@ -839,6 +1065,7 @@ fn job_public(job: &JobRecord) -> serde_json::Value {
         "attempts": job.attempts,
         "outputs": job.outputs,
         "reply": job.result.get("reply").cloned().unwrap_or(serde_json::Value::Null),
+        "qc": job.result.get("qc").cloned().unwrap_or(serde_json::Value::Null),
         "createdAt": job.created_at,
         "updatedAt": job.updated_at,
     })
@@ -847,6 +1074,55 @@ fn job_public(job: &JobRecord) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cost_guard_blocks_when_budget_exhausted() {
+        use crate::providers::ProviderDriverKind;
+        let dir = tempfile::tempdir().unwrap();
+        let (_tx, _rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let mgr = JobManager::with_handle(tokio::runtime::Handle::current(), Arc::new(move |_: &str, _: serde_json::Value| {}));
+        mgr.set_project_root(Some(dir.path().to_path_buf()));
+        mgr.set_cost_guard(CostGuardConfig { enabled: true, daily_remote_limit: 0, project_total_limit: 0 });
+
+        // ImageGeneration 属于高成本类型：预算 0 → 执行前即被拦截
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called2 = called.clone();
+        mgr.register_handler(
+            crate::jobs::JobKind::ImageGeneration,
+            Arc::new(move |_ctx: JobContext| {
+                called2.store(true, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move { Ok(vec![]) }) as crate::jobs::BoxFuture<Result<Vec<String>, crate::jobs::JobError>>
+            }),
+        );
+        let job = mgr.create_job(
+            crate::jobs::JobKind::ImageGeneration,
+            "生图测试",
+            None,
+            None,
+            serde_json::json!({}),
+            None,
+            None,
+            false,
+            None,
+        );
+        // create_job 会触发调度；等待任务被拦截失败
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if let Some(j) = mgr.load(&job.id) {
+                if j.state == JobState::Failed {
+                    break;
+                }
+            }
+        }
+        let j = mgr.load(&job.id).unwrap();
+        assert_eq!(j.state, JobState::Failed);
+        let err_text = j.error.clone().unwrap_or_default();
+        assert!(err_text.contains("预算守卫"), "错误应提示预算守卫: {err_text}");
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst), "处理器不应被执行");
+        // 标记未用，避免编译警告
+        let _ = ProviderDriverKind::Mock;
+    }
+
 
     #[test]
     fn backoff_is_exponential() {

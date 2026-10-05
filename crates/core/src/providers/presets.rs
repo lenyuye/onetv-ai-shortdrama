@@ -175,10 +175,10 @@ pub fn gen_presets() -> Vec<GenPreset> {
             name: "可灵 Kling（快手）",
             vendor: "快手",
             docs_url: "https://app.klingai.com/cn/dev/document-api",
-            auth_type: "bearer",
+            auth_type: "kling-jwt",
             header_name: None,
             default_model: ("kling-v1", "Kling V1（图生视频）"),
-            notes: "动作自然、口型强，竖屏短剧常用。⚠️ 可灵官方要求 AK/SK 每次签发短期 JWT（HMAC-SHA256），当前 Custom HTTP 驱动仅支持静态 Key：请先用自建代理/网关换取长期令牌填入，JWT 签名将在后续版本内置。模板结构已按官方 v1 image2video 排好，签名打通后无需再改。",
+            notes: "动作自然、口型强，竖屏短剧常用。在可灵开放平台获取 API Key（AK）与 Secret Key（SK），填入 API Key 框时用「AK:SK」格式（冒号拼接）——OneTV 为每次请求自动签发 30 分钟有效 JWT（v2.7.2 已内置签名，无须代理）。认证域（新加坡/北京）不同时改模板 URL 即可。",
             template: json!({
                 "method": "POST",
                 "url": "https://api-singapore.klingai.com/v1/videos/image2video",

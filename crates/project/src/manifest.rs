@@ -97,7 +97,13 @@ impl ProjectManifest {
         let mut m = self.clone();
         m.project.updated_at = chrono::Utc::now().to_rfc3339();
         let json = serde_json::to_string_pretty(&m)?;
-        std::fs::write(path, json)?;
+        // 原子写：临时文件 + rename，防崩溃产生半截 project.json（v2.12.0）
+        let tmp = path.with_extension(format!(
+            "json.tmp-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 }

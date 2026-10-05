@@ -1,6 +1,7 @@
 //! 项目操作：创建/打开 .ytv 工程、分集 CRUD、资产导入（SHA-256 去重）。
 
 use std::io::Read;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -499,6 +500,55 @@ pub struct MemoryRecord {
     pub scope: String,
     pub text: String,
     pub created_at: String,
+}
+
+/// 记忆语义搜索（v2.14）：字符二元组 TF 向量 + 余弦相似度，纯本地无外部依赖。
+/// 对中文友好（不需要分词），优于简单 includes 匹配（错别字/语序宽容）。
+pub fn search_memories(root: &Path, query: &str, limit: usize) -> ProjectResult<Vec<(MemoryRecord, f64)>> {
+    let all = list_memories(root)?;
+    let qv = ngram_vector(&query.to_lowercase());
+    if qv.is_empty() {
+        return Ok(all.into_iter().map(|m| (m, 0.0)).take(limit).collect());
+    }
+    let mut scored: Vec<(MemoryRecord, f64)> = all
+        .into_iter()
+        .map(|m| {
+            let text = format!("{} {}", m.text, m.scope).to_lowercase();
+            let score = cosine(&qv, &ngram_vector(&text));
+            (m, score)
+        })
+        .filter(|(_, score)| *score > 0.05)
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
+    Ok(scored)
+}
+
+fn ngram_vector(text: &str) -> HashMap<String, u32> {
+    let mut v: HashMap<String, u32> = HashMap::new();
+    let chars: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    if chars.len() == 1 {
+        *v.entry(chars[0].to_string()).or_insert(0) += 1;
+    }
+    for w in chars.windows(2) {
+        *v.entry(w.iter().collect()).or_insert(0) += 1;
+    }
+    v
+}
+
+fn cosine(a: &HashMap<String, u32>, b: &HashMap<String, u32>) -> f64 {
+    let (small, large) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    let mut dot = 0.0f64;
+    for (k, va) in small {
+        if let Some(vb) = large.get(k) {
+            dot += (*va as f64) * (*vb as f64);
+        }
+    }
+    let norm = |m: &HashMap<String, u32>| -> f64 {
+        m.values().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt()
+    };
+    let (na, nb) = (norm(a), norm(b));
+    if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
 }
 
 pub fn list_memories(root: &Path) -> ProjectResult<Vec<MemoryRecord>> {

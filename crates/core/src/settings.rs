@@ -8,9 +8,35 @@ use serde::{Deserialize, Serialize};
 
 pub const SETTINGS_SCHEMA_VERSION: &str = "1.0";
 
+/// 预算守卫（v2.10）：远程生成（生图/生视频/配音）调用额度
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostGuardSettings {
+    pub enabled: bool,
+    /// 单项目每日远程生成次数上限
+    pub daily_remote_limit: u32,
+    /// 单项目累计远程生成次数上限
+    pub project_total_limit: u32,
+    /// 单项目每日金额上限（元，0 = 不限；按模型单价/次累计，v2.14）
+    #[serde(default)]
+    pub daily_cost_limit: f64,
+    /// 单项目累计金额上限（元，0 = 不限）
+    #[serde(default)]
+    pub project_cost_limit: f64,
+}
+
+impl Default for CostGuardSettings {
+    fn default() -> Self {
+        Self { enabled: false, daily_remote_limit: 100, project_total_limit: 1000, daily_cost_limit: 0.0, project_cost_limit: 0.0 }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
+    /// 预算守卫（v2.10）
+    #[serde(default)]
+    pub cost_guard: CostGuardSettings,
     #[serde(alias = "schema_version")]
     pub schema_version: String,
     pub theme: String,
@@ -88,6 +114,7 @@ pub struct RecentEntry {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            cost_guard: CostGuardSettings::default(),
             schema_version: SETTINGS_SCHEMA_VERSION.into(),
             theme: "dark".into(),
             language: "zh-CN".into(),

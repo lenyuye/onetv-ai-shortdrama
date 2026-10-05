@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  frontend:
+    name: 前端 typecheck + 测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: 单元测试（vitest）
+        run: pnpm test
+
+  backend:
+    name: Rust 测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # onetv-desktop（Tauri）在 Linux 编译需要 webkit/gtk 系统库
+      - name: 安装 Tauri Linux 依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libayatana-appindicator3-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy（警告不阻塞，仅报告）
+        run: cargo clippy --workspace --all-targets 2>&1 | tail -40
+      - name: cargo test（全 workspace，含 golden pipeline E2E）
+        run: cargo test --workspace

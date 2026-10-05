@@ -534,6 +534,8 @@ export interface AppSettings {
   skinOpacity?: number;
   /** v2.3.5 各能力默认生成模型；缺省 key = 自动路由 */
   modelDefaults?: ModelDefaults;
+  /** v2.10 预算守卫：远程生成（生图/生视频/配音）调用额度 */
+  costGuard?: { enabled: boolean; dailyRemoteLimit: number; projectTotalLimit: number };
 }
 
 /* ------------------------------------------------------------------ */

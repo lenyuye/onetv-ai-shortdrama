@@ -25,6 +25,7 @@ bytes = "1"
 rusqlite = { workspace = true }
 zip = { workspace = true }
 sha2 = { workspace = true }
+hmac = "0.12"
 hex = { workspace = true }
 lettre = { workspace = true }
 

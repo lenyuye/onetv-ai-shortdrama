@@ -90,7 +90,9 @@ pub fn concat_clips(locator: &MediaLocator, clips: &[PathBuf], out: &Path) -> Re
     let list_path = dir.join("concat_list.txt");
     let mut list = String::new();
     for c in clips {
-        list.push_str(&format!("file '{}'\n", c.display()));
+        // ffmpeg concat 转义：路径里的单引号写成 '\''（v2.12.0 修复）
+        let escaped = c.display().to_string().replace('\'', "'\\''");
+        list.push_str(&format!("file '{escaped}'\n"));
     }
     std::fs::write(&list_path, list).map_err(MediaError::Io)?;
     run(

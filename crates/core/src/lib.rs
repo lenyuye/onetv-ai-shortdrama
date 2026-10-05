@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod auth;
 pub mod jobs;
+pub mod qc;
 pub mod mail;
 pub mod pkg;
 pub mod skills;
@@ -19,9 +20,13 @@ use tracing_subscriber::fmt::time::FormatTime;
 
 /// 应用数据目录：~/Library/Application Support/OneTV (macOS)
 pub fn app_data_dir() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("OneTV")
+    match dirs::data_dir() {
+        Some(d) => d.join("OneTV"),
+        None => {
+            tracing::warn!("无法定位系统数据目录，回退到当前目录 ./OneTV（数据可能不可持久）");
+            PathBuf::from(".").join("OneTV")
+        }
+    }
 }
 
 /// 日志时间戳使用本地时间，与日志文件名（Local 命名）保持一致。

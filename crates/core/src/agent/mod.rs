@@ -160,6 +160,34 @@ pub struct Plan {
     pub created_at: String,
     #[serde(default)]
     pub status: String, // draft | approved | executing | done | rejected
+    /// L4 Reviewer（v2.13）：执行前启发式复核备注（风险/参数完整性/一致性）
+    #[serde(default)]
+    pub review_notes: Vec<String>,
+}
+
+/// L4 Reviewer（轻量版）：不发请求，纯规则复核——给出执行前提示。
+pub fn review_plan(plan: &mut Plan, offline_mode: bool) {
+    let mut notes = Vec::new();
+    if plan.estimated.remote_calls > 0 && offline_mode {
+        notes.push("⚠️ 当前为 Local-only 离线模式，远程调用将被策略引擎拒绝".into());
+    }
+    for step in &plan.steps {
+        if matches!(step.tool.as_str(), "image.generate" | "video.generate")
+            && step.input.get("prompt").and_then(|p| p.as_str()).unwrap_or_default().trim().is_empty()
+        {
+            notes.push(format!("⚠️ 步骤 {}（{}）缺少提示词，执行可能失败", step.id, step.tool));
+        }
+    }
+    if plan.estimated.remote_calls >= 10 {
+        notes.push(format!(
+            "💡 本计划包含 {} 次远程调用，注意成本（可在设置开启预算守卫）",
+            plan.estimated.remote_calls
+        ));
+    }
+    if notes.is_empty() {
+        notes.push("✅ 复核通过：参数完整，成本与模式无冲突".into());
+    }
+    plan.review_notes = notes;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,7 +203,7 @@ const REMOTE_TOOLS: &[&str] = &[
     "storyboard.image_batch",
     "video.generate",
     "audio.tts",
-    "bible.generate",
+    // bible.generate 无 handler（功能由 bible_generate 命令独立实现，v2.12 清理）
 ];
 
 pub fn is_remote_tool(tool: &str) -> bool {
@@ -322,6 +350,7 @@ pub fn build_plan(intent: Intent, text: &str, episode_id: Option<&str>) -> Plan 
         estimated: Estimated { jobs: steps.len() as u32, remote_calls, risk: risk.into() },
         steps,
         created_at: chrono::Utc::now().to_rfc3339(),
+        review_notes: Vec::new(),
         status: "draft".into(),
     }
 }

@@ -99,6 +99,21 @@ fn app_info() -> AppInfo {
     }
 }
 
+/// registry → 单价表：模型 pricing.perCall（元/次）
+fn pricing_map(registry: &onetv_core::providers::ProviderRegistry) -> onetv_core::jobs::PricingMap {
+    let mut m = onetv_core::jobs::PricingMap::new();
+    for p in registry.list() {
+        for mdl in &p.models {
+            if let Some(price) = mdl.pricing.as_ref().and_then(|v| v.get("perCall")).and_then(|v| v.as_f64()) {
+                if price > 0.0 {
+                    m.insert(format!("{}/{}", p.id, mdl.model_id), price);
+                }
+            }
+        }
+    }
+    m
+}
+
 #[tauri::command]
 fn settings_update(state: TState, patch: serde_json::Value) -> Result<AppSettings, CommandError> {
     let out = state.settings.update(|s| apply_patch(s, &patch));
@@ -107,6 +122,14 @@ fn settings_update(state: TState, patch: serde_json::Value) -> Result<AppSetting
         agent.env.set_offline(out.offline_mode);
         agent.jobs.set_concurrency(out.max_concurrent_jobs);
         agent.env.set_model_defaults(model_defaults_map(&out));
+        agent.jobs.set_cost_guard(onetv_core::jobs::CostGuardConfig {
+            enabled: out.cost_guard.enabled,
+            daily_remote_limit: out.cost_guard.daily_remote_limit,
+            project_total_limit: out.cost_guard.project_total_limit,
+            daily_cost_limit: out.cost_guard.daily_cost_limit,
+            project_cost_limit: out.cost_guard.project_cost_limit,
+        });
+        agent.jobs.set_pricing(pricing_map(&agent.registry.read()));
     }
     Ok(out)
 }
@@ -612,6 +635,8 @@ async fn agent_chat(
     };
     let intent = route_intent(&text);
     let mut plan = onetv_core::agent::build_plan(intent, &text, episode.as_deref());
+    // L4 Reviewer（v2.13）：执行前启发式复核（离线冲突/缺参/成本提示）
+    onetv_core::agent::review_plan(&mut plan, agent.env.offline_mode());
     if let Some(hist) = &history {
         // 只注入 chat 意图：剧本/生图等结构化任务的 prompt 不混入对话历史
         if matches!(intent, onetv_core::agent::Intent::Chat) {
@@ -638,10 +663,11 @@ async fn agent_chat(
         let executor = Executor { env: agent.env.clone(), jobs: agent.jobs.clone() };
         let root = {
             let p = state.project.read();
-            p.handle
-                .as_ref()
-                .map(|h| h.root().clone())
-                .unwrap_or_else(std::env::temp_dir)
+            match p.handle.as_ref().map(|h| h.root().clone()) {
+                Some(r) => r,
+                // v2.12.0：此前回退 temp 目录 → job 不落库、永不执行，表现为"发了消息没反应"
+                None => return Err(err("未打开项目：请先在「工作区」打开项目后再对话")),
+            }
         };
         let ids = executor.execute(&plan, &root, None).await.map_err(err)?;
         plan.status = "executing".into();
@@ -755,7 +781,8 @@ fn provider_public(p: &onetv_core::providers::ProviderProfile, has_key: bool) ->
         "authType": p.auth.auth_type,
         "models": p.models.iter().map(|m| serde_json::json!({
             "modelId": m.model_id, "displayName": m.display_name,
-            "capabilities": m.capabilities.iter().map(|c| c.as_str()).collect::<Vec<_>>()
+            "capabilities": m.capabilities.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
+            "pricing": m.pricing,
         })).collect::<Vec<_>>(),
         "timeoutMs": p.timeout_ms,
         "concurrency": p.concurrency,
@@ -1276,6 +1303,206 @@ fn auth_reset_with_email(
     Ok(serde_json::json!({ "ok": true }))
 }
 
+/* ---------------- Story Bible（v2.8.0） ---------------- */
+
+fn bible_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("bible").join("story.json")
+}
+
+#[tauri::command]
+fn bible_get(state: TState) -> Result<serde_json::Value, CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    match std::fs::read_to_string(bible_path(&root)) {
+        Ok(raw) => serde_json::from_str(&raw).map_err(err),
+        Err(_) => Ok(serde_json::json!({
+            "story": { "title": "", "genre": "", "era": "", "location": "", "theme": "",
+                       "targetDurationSec": 120, "targetPlatform": "抖音",
+                       "aspectRatio": "9:16", "visualStyle": "" },
+            "characters": [], "locations": [], "props": [], "continuity": []
+        })),
+    }
+}
+
+#[tauri::command]
+fn bible_save(state: TState, doc: serde_json::Value) -> Result<(), CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    let path = bible_path(&root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(err)?;
+    }
+    // 原子写：临时文件 + rename，防崩溃产生半截 JSON
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&doc).map_err(err)?).map_err(err)?;
+    std::fs::rename(&tmp, &path).map_err(err)?;
+    state.audit.record("bible.save", "", None);
+    Ok(())
+}
+
+/// AI 生成 Story Bible：单次 LLM 调用（chat 能力），产出结构化 JSON 并落盘。
+#[tauri::command]
+async fn bible_generate(
+    state: tauri::State<'_, Arc<AppState>>,
+    agent: tauri::State<'_, Arc<AgentState>>,
+    brief: String,
+) -> Result<serde_json::Value, CommandError> {
+    let (root, manifest) = open_ctx(&state)?;
+    let title = manifest.project.title.clone();
+    if brief.trim().is_empty() {
+        return Err(err("请先填写一句话需求（这部剧讲什么）"));
+    }
+    let system = "你是短剧编剧总监。根据用户的一句话需求，为这部剧输出完整的 Story Bible（故事圣经）JSON。\
+只输出 JSON，不要任何解释文字或代码围栏。JSON 结构：\
+{\"story\":{\"title\",\"genre\",\"era\",\"location\",\"theme\",\"visualStyle\"},\
+\"characters\":[{\"name\",\"desc\",\"appearance\"}],\"locations\":[{\"name\",\"desc\"}],\
+\"props\":[{\"name\",\"desc\"}],\"continuity\":[\"连续性规则字符串\"]}。\
+要求：3-6 个角色（appearance 写可生成参考图的外形描述）；2-5 个主要场景；\
+visualStyle 是给文生图用的英文风格描述（30-60 词，含镜头/光影/色调）；continuity 3-6 条。全部中文（visualStyle 除外）。";
+    let messages = vec![
+        onetv_core::providers::openai::ChatMessage::system(system),
+        onetv_core::providers::openai::ChatMessage::user(format!("剧名：{title}
+一句话需求：{}", brief.trim())),
+    ];
+    let (raw, provider_id, model) = onetv_core::agent::handlers::llm_chat(
+        &agent.env,
+        &messages,
+        true,
+        None,
+        None,
+        None,
+    )
+    .await
+    .map_err(|e| err(e.message))?;
+    // 容错解析：剥代码围栏，取首个 { 到末个 }
+    let trimmed = raw.trim();
+    let json_str = match (trimmed.find('{'), trimmed.rfind('}')) {
+        (Some(a), Some(b)) if b > a => &trimmed[a..=b],
+        _ => trimmed,
+    };
+    let mut doc: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| err(format!("AI 返回的不是合法 JSON：{e}")))?;
+    // 补齐结构 + 保留画幅/时长等既有设置（AI 不产出这些字段）
+    let obj = doc.as_object_mut().ok_or_else(|| err("AI 返回的 JSON 不是对象"))?;
+    for (k, v) in [
+        ("characters", serde_json::json!([])),
+        ("locations", serde_json::json!([])),
+        ("props", serde_json::json!([])),
+        ("continuity", serde_json::json!([])),
+    ] {
+        obj.entry(k).or_insert(v);
+    }
+    let story = obj.entry("story").or_insert_with(|| serde_json::json!({}));
+    if let Some(story_obj) = story.as_object_mut() {
+        story_obj
+            .entry("title".to_string())
+            .or_insert(serde_json::json!(title));
+        for (k, v) in [
+            ("targetDurationSec", serde_json::json!(120)),
+            ("targetPlatform", serde_json::json!("抖音")),
+            ("aspectRatio", serde_json::json!("9:16")),
+        ] {
+            story_obj.entry(k.to_string()).or_insert(v);
+        }
+    }
+    let path = bible_path(&root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(err)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&doc).map_err(err)?).map_err(err)?;
+    std::fs::rename(&tmp, &path).map_err(err)?;
+    state.audit.record(
+        "bible.generate",
+        &format!("provider={provider_id} model={model}"),
+        None,
+    );
+    Ok(doc)
+}
+
+/* ---------------- 项目费用计数（v2.11.1） ---------------- */
+
+/// 当前项目远程生成用量（预算守卫卡片看板数据）
+#[tauri::command]
+fn costs_get(state: TState) -> Result<serde_json::Value, CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    let raw = std::fs::read_to_string(root.join("costs.json")).unwrap_or_default();
+    let costs: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::json!({}));
+    let today_key = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let total = costs.get("totalCalls").and_then(|v| v.as_u64()).unwrap_or(0);
+    let today = costs
+        .get("daily")
+        .and_then(|d| d.get(&today_key))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let total_cost = costs.get("totalCost").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let today_cost = costs
+        .get("dailyCost")
+        .and_then(|d| d.get(&today_key))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    Ok(serde_json::json!({ "today": today, "total": total, "totalCost": total_cost, "todayCost": today_cost, "date": today_key }))
+}
+
+/* ---------------- 画布重建（v2.13，规格 §13 Recreate Planner 最小版） ---------------- */
+
+/// 从视频理解结果（understanding.json 的 shots）重建画布：
+/// 每个镜头生成一个文本节点（含时长/复刻提示），旧画布自动备份。
+#[tauri::command]
+fn recreate_canvas(state: TState, episode_id: String) -> Result<serde_json::Value, CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    let ep_dir = root.join("episodes").join(&episode_id);
+    let upath = ep_dir.join("understanding.json");
+    let raw = std::fs::read_to_string(&upath)
+        .map_err(|_| err("该分集尚无视频理解结果：请先在资产页对视频执行「视频理解」"))?;
+    let doc: serde_json::Value = serde_json::from_str(&raw).map_err(err)?;
+    let shots = doc
+        .get("shots")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| err("understanding.json 缺少 shots"))?;
+    if shots.is_empty() {
+        return Err(err("视频理解结果为空"));
+    }
+    let mut nodes = Vec::new();
+    for (i, shot) in shots.iter().enumerate() {
+        let dur = shot
+            .get("end")
+            .and_then(|v| v.as_f64())
+            .zip(shot.get("start").and_then(|v| v.as_f64()))
+            .map(|(e, st)| e - st)
+            .unwrap_or(0.0);
+        let text = format!(
+            "镜头 {}（{:.1}s，{}）\n{}",
+            i + 1,
+            dur,
+            shot.get("shotSize").and_then(|v| v.as_str()).unwrap_or(""),
+            shot.get("recreationPrompt").and_then(|v| v.as_str()).unwrap_or("")
+        );
+        nodes.push(serde_json::json!({
+            "id": format!("shot-{}", i + 1),
+            "type": "text",
+            "title": format!("镜头 {}", i + 1),
+            "position": { "x": 80 + (i % 4) * 280, "y": 80 + (i / 4) * 240 },
+            "config": { "text": text, "status": "ready" }
+        }));
+    }
+    let canvas = serde_json::json!({
+        "schemaVersion": "1.0",
+        "episodeId": episode_id,
+        "nodes": nodes,
+        "edges": [],
+        "updatedAt": chrono::Utc::now().to_rfc3339()
+    });
+    let cpath = ep_dir.join("canvas.json");
+    if cpath.exists() {
+        let bak = ep_dir.join(format!("canvas.bak-{}.json", chrono::Utc::now().timestamp()));
+        std::fs::rename(&cpath, &bak).map_err(err)?;
+    }
+    let tmp = cpath.with_extension(format!("json.tmp-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()));
+    std::fs::write(&tmp, serde_json::to_string_pretty(&canvas).map_err(err)?).map_err(err)?;
+    std::fs::rename(&tmp, &cpath).map_err(err)?;
+    state.audit.record("canvas.recreate", &episode_id, None);
+    Ok(serde_json::json!({ "ok": true, "created": nodes.len() }))
+}
+
 /* ---------------- 生成平台预设（v2.6.4） ---------------- */
 
 /// 内置图片/视频平台预设（Nano Banana/Seedream/FLUX/MJ-proxy；海螺 H3/可灵/即梦/万相/Pika/Runway）：
@@ -1324,6 +1551,129 @@ fn skill_uninstall(state: TState, id: String) -> Result<(), CommandError> {
     Ok(())
 }
 
+/// 从 Git 仓库安装 Skill（v2.13）：clone --depth 1（可指定 tag/branch）后走同一校验安装链路。
+#[tauri::command]
+async fn skill_install_git(
+    state: tauri::State<'_, Arc<AppState>>,
+    url: String,
+    tag: Option<String>,
+) -> Result<serde_json::Value, CommandError> {
+    let url = url.trim().to_string();
+    if !url.starts_with("https://") && !url.starts_with("http://") && !url.starts_with("git@") {
+        return Err(err("URL 必须以 https:// / http:// / git@ 开头"));
+    }
+    // git 可用性
+    let git_ok = tokio::task::spawn_blocking(|| std::process::Command::new("git").arg("--version").output())
+        .await
+        .map_err(|e| err(e.to_string()))?
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !git_ok {
+        return Err(err("未检测到 git 命令行工具（请先安装 Xcode Command Line Tools 或 git）"));
+    }
+    let tmp = std::env::temp_dir().join(format!("onetv-skill-{}", uuid::Uuid::new_v4().simple()));
+    let url2 = url.clone();
+    let tag2 = tag.clone();
+    let tmp2 = tmp.clone();
+    let clone = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["clone", "--depth", "1"]);
+        if let Some(t) = &tag2 {
+            cmd.args(["--branch", t]);
+        }
+        cmd.arg(&url2).arg(&tmp2).output()
+    })
+    .await
+    .map_err(|e| err(e.to_string()))?;
+    match clone {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            let msg = String::from_utf8_lossy(&o.stderr).chars().take(300).collect::<String>();
+            return Err(err(format!("git clone 失败: {msg}")));
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(err(e.to_string()));
+        }
+    }
+    let info = state.skills.install_from(&tmp).map_err(|e| {
+        let _ = std::fs::remove_dir_all(&tmp);
+        err(e)
+    })?;
+    let _ = std::fs::remove_dir_all(&tmp);
+    state.audit.record("skill.install_git", &format!("{url} (tag={})", tag.unwrap_or_default()), None);
+    Ok(serde_json::json!({
+        "ok": true,
+        "message": format!("已从 Git 安装 {} v{}（信任等级 L{}）", info.name, info.version, info.trust_level),
+        "skill": info,
+    }))
+}
+
+/* ---------------- Provider 配置导入导出（v2.13，API-11） ---------------- */
+
+/// 导出全部 Provider 配置（不含密钥——密钥只在钥匙串，导入后需重新填写）
+#[tauri::command]
+async fn provider_export(
+    state: tauri::State<'_, Arc<AppState>>,
+    agent: tauri::State<'_, Arc<AgentState>>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, CommandError> {
+    let Some(dest) = save_path(&app, "导出 Provider 配置".into(), "onetv-providers.json".into()).await else {
+        return Err(err("已取消"));
+    };
+    let profiles = agent.registry.read().list().clone();
+    let payload = serde_json::json!({
+        "kind": "onetv-providers",
+        "version": 1,
+        "exportedAt": chrono::Utc::now().to_rfc3339(),
+        "providers": profiles,
+    });
+    let tmp = dest.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&payload).map_err(err)?).map_err(err)?;
+    std::fs::rename(&tmp, &dest).map_err(err)?;
+    state.audit.record("provider.export", &profiles.len().to_string(), None);
+    Ok(serde_json::json!({ "ok": true, "path": dest.to_string_lossy(), "count": profiles.len() }))
+}
+
+/// 导入 Provider 配置（不含密钥；导入后需在「模型」页重新填写 API Key）
+#[tauri::command]
+async fn provider_import(
+    state: tauri::State<'_, Arc<AppState>>,
+    agent: tauri::State<'_, Arc<AgentState>>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, CommandError> {
+    let Some(path) = pick_path(&app, "选择 onetv-providers.json".into(), false).await else {
+        return Err(err("已取消"));
+    };
+    let raw = tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
+        .await
+        .map_err(|e| err(e.to_string()))?
+        .map_err(err)?;
+    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| err(format!("不是合法 JSON: {e}")))?;
+    let list = v
+        .get("providers")
+        .and_then(|p| p.as_array())
+        .ok_or_else(|| err("文件缺少 providers 数组（确认是 OneTV 导出的配置文件）"))?;
+    let mut imported = 0usize;
+    for pv in list {
+        let mut p = profile_from_json(pv.clone())?;
+        if p.id.is_empty() {
+            p.id = format!("provider-{}", uuid::Uuid::new_v4().simple());
+        }
+        validate_driver_capabilities(&p)?;
+        // 导入的 Provider 密钥必然不在本机——标记未配置，前端展示「未配置 Key」
+        p.auth.key_ref = None;
+        agent.registry.write().upsert(p);
+    if let Some(agent) = AGENT.get() {
+        agent.jobs.set_pricing(pricing_map(&agent.registry.read()));
+    }
+        imported += 1;
+    }
+    state.audit.record("provider.import", &imported.to_string(), None);
+    Ok(serde_json::json!({ "ok": true, "imported": imported }))
+}
+
 /* ---------------- 视频理解 ---------------- */
 
 #[tauri::command]
@@ -1361,7 +1711,11 @@ async fn project_export_pkg(
     let Some(dest) = save_path(&app, "导出工程包".into(), default_name).await else {
         return Err(err("已取消"));
     };
-    let path = onetv_core::pkg::export_project(&root, &dest).map_err(err)?;
+    // zip 打包为重 IO：放阻塞线程池（v2.12.0）
+    let path = tokio::task::spawn_blocking(move || onetv_core::pkg::export_project(&root, &dest))
+        .await
+        .map_err(|e| err(e.to_string()))?
+        .map_err(err)?;
     state.audit.record("project.export_pkg", &path.to_string_lossy(), None);
     Ok(serde_json::json!({ "ok": true, "path": path.to_string_lossy() }))
 }
@@ -1377,7 +1731,13 @@ async fn project_import_pkg(
     let Some(parent) = pick_path(&app, "选择导入位置".into(), true).await else {
         return Err(err("已取消"));
     };
-    let path = onetv_core::pkg::import_project(&zip_path, &parent).map_err(err)?;
+    // zip 解压为重 IO：放阻塞线程池（v2.12.0）
+    let zip2 = zip_path.clone();
+    let parent2 = parent.clone();
+    let path = tokio::task::spawn_blocking(move || onetv_core::pkg::import_project(&zip2, &parent2))
+        .await
+        .map_err(|e| err(e.to_string()))?
+        .map_err(err)?;
     state.audit.record("project.import_pkg", &path.to_string_lossy(), None);
     // 自动打开导入的工程
     let (handle, manifest) = ops::open_project(&path).map_err(err)?;
@@ -1399,6 +1759,10 @@ async fn project_import_pkg(
 /// 自动化入口：环境变量 ONETV_TEST_TIME_OFFSET_SEC（仅启动时读取）。
 #[tauri::command]
 fn debug_set_time_offset(seconds: i64) -> Result<serde_json::Value, CommandError> {
+    // v2.12.0：仅开发构建可用——否则可把会话时钟拨到永不过期
+    if !cfg!(debug_assertions) {
+        return Err(err("测试时钟钩子仅在开发构建中可用"));
+    }
     onetv_core::auth::set_time_offset(seconds);
     Ok(serde_json::json!({ "ok": true, "offsetSecs": seconds }))
 }
@@ -1576,6 +1940,9 @@ fn canvas_node_run(
 ) -> Result<serde_json::Value, CommandError> {
     let (root, _) = open_ctx(&state)?;
     let node = read_canvas_node(&root, &episode_id, &node_id)?;
+    if node.pointer("/config/disabled").and_then(|v| v.as_bool()) == Some(true) {
+        return Err(err("节点已禁用：请在检查器中取消「禁用」后再运行"));
+    }
     let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let title = node
         .get("title")
@@ -1658,12 +2025,549 @@ fn canvas_node_run(
     Ok(serde_json::json!({ "jobId": job.id, "state": job.state.as_str() }))
 }
 
+/* ---------------- Webhook 入向（v2.15，规格 §22.5 最小版） ---------------- */
+
+/// Webhook 监听：本机回环 HTTP（默认关闭；端口/token 独立于 Hermes）。
+/// POST /webhook?token=… body {"event": "...", "data": {...}} → 转发为 app 事件
+/// "webhook.received"（前端/技能可订阅），并写审计。动作执行走白名单：
+/// create_image / agent_chat（复用 hermes_invoke 白名单语义）。
+#[tauri::command]
+async fn webhook_listen_start(
+    state: tauri::State<'_, Arc<AppState>>,
+    agent: tauri::State<'_, Arc<AgentState>>,
+    port: u16,
+    token: Option<String>,
+) -> Result<serde_json::Value, CommandError> {
+    if WEBHOOK_STOP.lock().unwrap().is_some() {
+        return Ok(serde_json::json!({ "ok": true, "already": true }));
+    }
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    *WEBHOOK_STOP.lock().unwrap() = Some(tx);
+    let env = agent.env.clone();
+    let jobs = agent.jobs.clone();
+    let state2 = state.inner().clone();
+    let token = token.filter(|t| !t.trim().is_empty());
+    tauri::async_runtime::handle().spawn(async move {
+        webhook_listen_loop(port, token, rx, state2, env, jobs).await;
+    });
+    tracing::info!(port, "webhook listener starting");
+    state.audit.record("webhook.listen_start", &port.to_string(), None);
+    Ok(serde_json::json!({ "ok": true, "port": port }))
+}
+
+#[tauri::command]
+fn webhook_listen_stop(state: TState) -> Result<(), CommandError> {
+    if let Some(tx) = WEBHOOK_STOP.lock().unwrap().take() {
+        let _ = tx.send(true);
+    }
+    state.audit.record("webhook.listen_stop", "", None);
+    Ok(())
+}
+
+static WEBHOOK_STOP: std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>> = std::sync::Mutex::new(None);
+
+async fn webhook_listen_loop(
+    port: u16,
+    token: Option<String>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    state: Arc<AppState>,
+    env: Arc<onetv_core::agent::AgentEnv>,
+    jobs: Arc<onetv_core::jobs::JobManager>,
+) {
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(port, error = %e, "webhook listener bind failed");
+            env.events("webhook.error", serde_json::json!({ "error": format!("Webhook 监听 {port} 失败: {e}") }));
+            return;
+        }
+    };
+    tracing::info!(port, "webhook listener ready");
+    loop {
+        tokio::select! {
+            _ = stop.changed() => break,
+            acc = listener.accept() => {
+                let Ok((stream, _)) = acc else { continue };
+                let token = token.clone();
+                let state = state.clone();
+                let env = env.clone();
+                let jobs = jobs.clone();
+                tokio::spawn(async move {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(20),
+                        webhook_handle_conn(stream, token, state, env, jobs),
+                    ).await;
+                });
+            }
+        }
+    }
+    tracing::info!("webhook listener stopped");
+}
+
+async fn webhook_handle_conn(
+    mut stream: tokio::net::TcpStream,
+    token: Option<String>,
+    state: Arc<AppState>,
+    env: Arc<onetv_core::agent::AgentEnv>,
+    jobs: Arc<onetv_core::jobs::JobManager>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = vec![0u8; 262_144];
+    let n = match stream.read(&mut buf).await {
+        Ok(n) if n > 0 => n,
+        _ => return,
+    };
+    let raw = String::from_utf8_lossy(&buf[..n]).into_owned();
+    let request_line = raw.lines().next().unwrap_or_default().to_string();
+    let url = request_line.split_whitespace().nth(1).unwrap_or_default().to_string();
+    // query token 校验（?token=…）；未配置 token 时拒绝（与 Hermes 同策略）
+    let query = url.split_once('?').map(|(_, q)| q).unwrap_or_default();
+    let got_token = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("token="))
+        .unwrap_or_default()
+        .to_string();
+    let body = raw.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+
+    let (status, resp_json) = match (request_line.split_whitespace().next().unwrap_or(""), url.split('?').next().unwrap_or("")) {
+        ("POST", "/webhook") => match (&token, ) {
+            _ if token.is_none() => (403, serde_json::json!({ "error": "Webhook 未设置 token，已拒绝。请在启动监听时提供 token" })),
+            _ if got_token != token.clone().unwrap_or_default() => (401, serde_json::json!({ "error": "token 不匹配" })),
+            _ => webhook_dispatch(&state, &env, &jobs, &body).await,
+        },
+        _ => (404, serde_json::json!({ "error": "未知端点，可用：POST /webhook?token=…" })),
+    };
+    let payload = serde_json::to_string(&resp_json).unwrap_or_default();
+    let resp = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        if status == 200 { "OK" } else if status == 401 || status == 403 { "Denied" } else { "Bad Request" },
+        payload.len()
+    );
+    let _ = stream.write_all(resp.as_bytes()).await;
+    let _ = stream.shutdown().await;
+    env.events("webhook.received", serde_json::json!({ "status": status, "response": resp_json }));
+}
+
+async fn webhook_dispatch(
+    state: &Arc<AppState>,
+    env: &Arc<onetv_core::agent::AgentEnv>,
+    jobs: &Arc<onetv_core::jobs::JobManager>,
+    body: &str,
+) -> (u16, serde_json::Value) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return (400, serde_json::json!({ "error": "请求体必须是 JSON：{event, data}" }));
+    };
+    let event = v.get("event").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let data = v.get("data").cloned().unwrap_or(serde_json::json!({}));
+    if event.is_empty() {
+        return (400, serde_json::json!({ "error": "缺少 event 字段" }));
+    }
+    state.audit.record("webhook.event", &event, Some(data.clone()));
+    // 白名单动作：create_image → 直接建生图任务；其余事件转发给前端/技能
+    match event.as_str() {
+        "create_image" => {
+            let prompt = data.get("prompt").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            if prompt.is_empty() {
+                return (400, serde_json::json!({ "error": "create_image 需要 data.prompt" }));
+            }
+            let job = jobs.create_job(
+                onetv_core::jobs::JobKind::ImageGeneration,
+                format!("Webhook 生图：{}", prompt.chars().take(20).collect::<String>()),
+                None,
+                None,
+                serde_json::json!({ "prompt": prompt }),
+                None,
+                None,
+                false,
+                Some(serde_json::json!({ "destination": "Model Provider", "data": "webhook 提示词", "via": "webhook" })),
+            );
+            (200, serde_json::json!({ "ok": true, "jobId": job.id }))
+        }
+        other => {
+            env.events("webhook.event", serde_json::json!({ "event": other, "data": data }));
+            (200, serde_json::json!({ "ok": true, "forwarded": other }))
+        }
+    }
+}
+
+/* ---------------- Plugin SDK 框架（v2.15，规格 §22 占位→最小实现） ---------------- */
+
+/// 插件清单（plugin.json）：plugin-id + 入口（workflows/ 提示词包，与 Skill 同安全模型）。
+/// v2.15 框架版：注册/列举/调用（提示词包拼接），不加载任意代码（安全边界与 Skill 一致）。
+#[tauri::command]
+fn plugin_list(state: TState) -> Vec<serde_json::Value> {
+    let dir = onetv_core::app_data_dir().join("plugins");
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let mf = e.path().join("plugin.json");
+            if let Ok(raw) = std::fs::read_to_string(&mf) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    out.push(serde_json::json!({
+                        "id": v.get("id").and_then(|x| x.as_str()).unwrap_or_default(),
+                        "name": v.get("name").and_then(|x| x.as_str()).unwrap_or_default(),
+                        "version": v.get("version").and_then(|x| x.as_str()).unwrap_or_default(),
+                        "description": v.get("description").and_then(|x| x.as_str()).unwrap_or_default(),
+                        "dir": e.path().to_string_lossy(),
+                    }));
+                }
+            }
+        }
+    }
+    out
+}
+
+/* ---------------- 画布批量运行（v2.14，规格 §7：condition/review 语义 + 禁用） ---------------- */
+
+fn read_canvas_doc(root: &std::path::Path, episode_id: &str) -> Result<serde_json::Value, CommandError> {
+    let raw = std::fs::read_to_string(root.join("episodes").join(episode_id).join("canvas.json"))
+        .map_err(|_| err("画布为空：请先在「画布」页创建节点"))?;
+    serde_json::from_str(&raw).map_err(err)
+}
+
+fn write_canvas_doc(root: &std::path::Path, episode_id: &str, doc: &serde_json::Value) -> Result<(), CommandError> {
+    let p = root.join("episodes").join(episode_id).join("canvas.json");
+    let tmp = p.with_extension(format!("json.tmp-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()));
+    std::fs::write(&tmp, serde_json::to_string_pretty(doc).map_err(err)?).map_err(err)?;
+    std::fs::rename(&tmp, &p).map_err(err)
+}
+
+fn sync_nodes(doc: &mut serde_json::Value, nodes: &[serde_json::Value]) {
+    if let Some(arr) = doc.get_mut("nodes") {
+        *arr = serde_json::Value::Array(nodes.to_vec());
+    }
+}
+
+fn node_disabled(n: &serde_json::Value) -> bool {
+    n.pointer("/config/disabled").and_then(|v| v.as_bool()) == Some(true)
+}
+
+/// 画布批量运行（拓扑序执行）：
+/// - 禁用节点跳过；已完成的节点（batchStatus=done）在 resume 时跳过；
+/// - text 节点视为内容（直接标记完成）；
+/// - image/video/audio 节点创建生成任务并等待完成（产物回填 outputAssetId）；
+/// - condition 节点求值 `contains:关键词`（对照上游文本节点内容），不满足时跳过 fail 分支下游；
+/// - review 节点暂停批次等待人工批准（前端批准后 resume 继续）。
+#[tauri::command]
+async fn canvas_run_batch(
+    state: tauri::State<'_, Arc<AppState>>,
+    agent: tauri::State<'_, Arc<AgentState>>,
+    episode_id: String,
+    resume: Option<bool>,
+) -> Result<serde_json::Value, CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    let mut doc = read_canvas_doc(&root, &episode_id)?;
+    let edges: Vec<(String, String, String)> = doc
+        .get("edges")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|e| {
+                    (
+                        e.get("source").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                        e.get("target").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                        e.get("sourcePort").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut nodes_arr: Vec<serde_json::Value> = doc
+        .get("nodes")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .ok_or_else(|| err("画布没有节点"))?;
+    if nodes_arr.is_empty() {
+        return Err(err("画布没有节点"));
+    }
+    // 拓扑序（Kahn）
+    let ids: Vec<String> = nodes_arr
+        .iter()
+        .map(|n| n.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string())
+        .collect();
+    let mut indegree: std::collections::HashMap<String, usize> = ids.iter().map(|i| (i.clone(), 0)).collect();
+    for (src, tgt, _) in &edges {
+        if indegree.contains_key(tgt) {
+            *indegree.get_mut(tgt).unwrap() += 1;
+            let _ = src;
+        }
+    }
+    let mut queue: std::collections::VecDeque<String> =
+        ids.iter().filter(|i| indegree[*i] == 0).cloned().collect();
+    let mut order: Vec<String> = Vec::new();
+    while let Some(id) = queue.pop_front() {
+        order.push(id.clone());
+        for (src, tgt, _) in &edges {
+            if src == &id {
+                let d = indegree.get_mut(tgt).unwrap();
+                *d -= 1;
+                if *d == 0 {
+                    queue.push_back(tgt.clone());
+                }
+            }
+        }
+    }
+    if order.len() != ids.len() {
+        return Err(err("画布存在环：请检查连线后重试"));
+    }
+
+    let resume = resume.unwrap_or(false);
+    let mut completed = 0usize;
+    let mut skipped = 0usize;
+    let mut recomputed = false; // condition 分支裁剪后需重算顺序
+
+    // 拓扑执行（condition 裁剪分支时把下游标记 skipped 并继续按序处理）
+    for nid in &order {
+        let idx = nodes_arr
+            .iter()
+            .position(|n| n.get("id").and_then(|v| v.as_str()) == Some(nid.as_str()))
+            .unwrap();
+        let mut node = nodes_arr[idx].clone();
+        if node_disabled(&node) {
+            if let Some(cfg) = node.get_mut("config").and_then(|v| v.as_object_mut()) {
+                cfg.insert("batchStatus".into(), serde_json::json!("skipped"));
+                cfg.insert("batchNote".into(), serde_json::json!("节点已禁用"));
+            }
+            skipped += 1;
+            continue;
+        }
+        if resume && node.pointer("/config/batchStatus").and_then(|v| v.as_str()) == Some("done") {
+            skipped += 1;
+            continue;
+        }
+        let ntype = node.get("type").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let nid_str = nid.clone();
+
+        match ntype.as_str() {
+            "text" => {
+                if let Some(cfg) = node.get_mut("config").and_then(|v| v.as_object_mut()) {
+                    cfg.insert("batchStatus".into(), serde_json::json!("done"));
+                }
+                nodes_arr[idx] = node;
+                completed += 1;
+            }
+            "condition" => {
+                // contains:关键词 —— 对照第一个上游文本节点内容
+                let keyword = node
+                    .pointer("/config/expression")
+                    .and_then(|v| v.as_str())
+                    .and_then(|e| e.strip_prefix("contains:"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let mut pass = keyword.is_empty();
+                if !keyword.is_empty() {
+                    if let Some((_, src_id, _)) = edges.iter().find(|(_, t, _)| t == &nid_str) {
+                        if let Some(src_node) = nodes_arr
+                            .iter()
+                            .find(|n| n.get("id").and_then(|v| v.as_str()) == Some(src_id.as_str()))
+                        {
+                            let upstream_text = src_node
+                                .pointer("/config/text")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default();
+                            pass = upstream_text.contains(&keyword);
+                        }
+                    }
+                }
+                if !pass {
+                    // 裁剪 fail 分支下游（BFS 标记 skipped；按 fail 端口连线）
+                    let mut stack: Vec<String> = edges
+                        .iter()
+                        .filter(|(src, _, port)| src == &nid_str && port == "fail")
+                        .map(|(_, tgt, _)| tgt.clone())
+                        .collect();
+                    let mut seen = std::collections::HashSet::new();
+                    while let Some(t) = stack.pop() {
+                        if !seen.insert(t.clone()) {
+                            continue;
+                        }
+                        if let Some(ti) = nodes_arr
+                            .iter()
+                            .position(|n| n.get("id").and_then(|v| v.as_str()) == Some(t.as_str()))
+                        {
+                            if let Some(cfg) = nodes_arr[ti].get_mut("config").and_then(|v| v.as_object_mut()) {
+                                cfg.insert("batchStatus".into(), serde_json::json!("skipped"));
+                                cfg.insert("batchNote".into(), serde_json::json!("条件分支未命中"));
+                            }
+                            skipped += 1;
+                        }
+                        for (src, tgt, _) in &edges {
+                            if src == &t {
+                                stack.push(tgt.clone());
+                            }
+                        }
+                    }
+                    recomputed = true;
+                }
+                if let Some(cfg) = node.get_mut("config").and_then(|v| v.as_object_mut()) {
+                    cfg.insert("batchStatus".into(), serde_json::json!("done"));
+                    cfg.insert("batchNote".into(), serde_json::json!(if pass { "条件命中（pass）" } else { "条件未命中（裁剪 fail 分支）" }));
+                }
+                nodes_arr[idx] = node;
+                completed += 1;
+            }
+            "review" => {
+                if let Some(cfg) = node.get_mut("config").and_then(|v| v.as_object_mut()) {
+                    cfg.insert("status".into(), serde_json::json!("awaiting_review"));
+                    cfg.insert("batchStatus".into(), serde_json::json!("awaiting_review"));
+                }
+                nodes_arr[idx] = node;
+                sync_nodes(&mut doc, &nodes_arr);
+                write_canvas_doc(&root, &episode_id, &doc)?;
+                state.audit.record("canvas.batch_pause_review", &nid_str, None);
+                return Ok(serde_json::json!({
+                    "ok": true, "paused": true, "reviewNodeId": nid_str,
+                    "completed": completed, "skipped": skipped, "total": order.len(),
+                    "message": "批次暂停：等待人工审核节点批准",
+                }));
+            }
+            "image" | "video" | "video-clip" | "audio" => {
+                // 生成节点：组装任务并等待完成
+                let prompt = node
+                    .pointer("/config/prompt")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .or_else(|| {
+                        if ntype == "audio" {
+                            node.pointer("/config/text").and_then(|v| v.as_str()).map(|s| s.trim().to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                if prompt.is_empty() {
+                    if let Some(cfg) = node.get_mut("config").and_then(|v| v.as_object_mut()) {
+                        cfg.insert("batchStatus".into(), serde_json::json!("skipped"));
+                        cfg.insert("batchNote".into(), serde_json::json!("缺少提示词"));
+                    }
+                    nodes_arr[idx] = node;
+                    skipped += 1;
+                    continue;
+                }
+                let aspect = node
+                    .pointer("/config/aspect")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("9:16")
+                    .to_string();
+                let provider_id = node.pointer("/config/providerId").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let model_id = node.pointer("/config/modelId").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let refs: Vec<String> = node
+                    .pointer("/config/referenceAssetIds")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+                    .unwrap_or_default();
+                let (kind, params, title_full) = match ntype.as_str() {
+                    "image" => (
+                        onetv_core::jobs::JobKind::ImageGeneration,
+                        serde_json::json!({ "prompt": prompt, "aspect": aspect, "providerId": provider_id, "model": model_id, "referenceAssetIds": refs, "nodeId": nid_str }),
+                        format!("批量生图（节点 {}）", node.get("title").and_then(|v| v.as_str()).unwrap_or(&nid_str)),
+                    ),
+                    "video" | "video-clip" => (
+                        onetv_core::jobs::JobKind::VideoGeneration,
+                        serde_json::json!({ "prompt": prompt, "aspect": aspect, "providerId": provider_id, "model": model_id, "referenceAssetIds": refs, "nodeId": nid_str }),
+                        format!("批量生视频（节点 {}）", node.get("title").and_then(|v| v.as_str()).unwrap_or(&nid_str)),
+                    ),
+                    _ => (
+                        onetv_core::jobs::JobKind::Tts,
+                        serde_json::json!({ "text": prompt, "providerId": provider_id, "model": model_id, "nodeId": nid_str }),
+                        format!("批量配音（节点 {}）", node.get("title").and_then(|v| v.as_str()).unwrap_or(&nid_str)),
+                    ),
+                };
+                let job = agent.jobs.create_job(
+                    kind,
+                    title_full,
+                    None,
+                    None,
+                    params,
+                    Some(nid_str.clone()),
+                    Some(episode_id.clone()),
+                    false,
+                    Some(serde_json::json!({
+                        "destination": "Model Provider（由模型选择/生成模型设置决定）",
+                        "data": "节点提示词与参考素材",
+                        "via": "canvas-batch",
+                    })),
+                );
+                state.audit.record("canvas.batch_run", &format!("{nid_str} → {}", job.id), None);
+                // 等待完成（单任务上限 20 分钟）
+                let mut final_state = String::new();
+                for _ in 0..2400 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if let Some(j) = agent.jobs.load(&job.id) {
+                        if j.state.is_terminal() {
+                            final_state = j.state.as_str().to_string();
+                            if let Some(oid) = j.result.get("outputs").and_then(|o| o.as_array()).and_then(|a| a.first()).and_then(|x| x.as_str()) {
+                                if let Some(cfg) = node.get_mut("config").and_then(|v| v.as_object_mut()) {
+                                    cfg.insert("outputAssetId".into(), serde_json::json!(oid));
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                if final_state != "SUCCEEDED" {
+                    if let Some(cfg) = node.get_mut("config").and_then(|v| v.as_object_mut()) {
+                        cfg.insert("batchStatus".into(), serde_json::json!("failed"));
+                    }
+                    nodes_arr[idx] = node;
+                    sync_nodes(&mut doc, &nodes_arr);
+                    write_canvas_doc(&root, &episode_id, &doc)?;
+                    return Err(err(format!(
+                        "节点 {nid_str} 生成失败（{final_state}），批次已中止；已完成的节点保留，可修复后用「恢复运行」继续"
+                    )));
+                }
+                if let Some(cfg) = node.get_mut("config").and_then(|v| v.as_object_mut()) {
+                    cfg.insert("batchStatus".into(), serde_json::json!("done"));
+                    cfg.insert("status".into(), serde_json::json!("ready"));
+                }
+                nodes_arr[idx] = node;
+                completed += 1;
+                let _ = recomputed;
+            }
+            "script" | "storyboard" | "export" => {
+                if let Some(cfg) = node.get_mut("config").and_then(|v| v.as_object_mut()) {
+                    cfg.insert("batchStatus".into(), serde_json::json!("skipped"));
+                    cfg.insert("batchNote".into(), serde_json::json!("批量运行暂不支持该类型，请用面板/对话生成"));
+                }
+                nodes_arr[idx] = node;
+                skipped += 1;
+            }
+            other => {
+                if let Some(cfg) = node.get_mut("config").and_then(|v| v.as_object_mut()) {
+                    cfg.insert("batchStatus".into(), serde_json::json!("skipped"));
+                    cfg.insert("batchNote".into(), serde_json::json!(format!("未知类型 {other}")));
+                }
+                nodes_arr[idx] = node;
+                skipped += 1;
+            }
+        }
+        sync_nodes(&mut doc, &nodes_arr);
+        write_canvas_doc(&root, &episode_id, &doc)?;
+    }
+    Ok(serde_json::json!({
+        "ok": true, "paused": false,
+        "completed": completed, "skipped": skipped, "total": order.len(),
+    }))
+}
+
 /* ---------------- 意识模块：记忆（v2.3.5+） ---------------- */
 
 #[tauri::command]
 fn memory_list(state: TState) -> Result<Vec<onetv_project::ops::MemoryRecord>, CommandError> {
     let (root, _) = open_ctx(&state)?;
     onetv_project::ops::list_memories(&root).map_err(err)
+}
+
+/// 记忆语义搜索（v2.14）：余弦相似度排序，返回带分数的记录
+#[tauri::command]
+fn memory_search(state: TState, query: String, limit: Option<u32>) -> Result<Vec<serde_json::Value>, CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    let scored = onetv_project::ops::search_memories(&root, &query, (limit.unwrap_or(20)) as usize).map_err(err)?;
+    Ok(scored
+        .into_iter()
+        .map(|(m, score)| serde_json::json!({ "record": m, "score": (score * 1000.0).round() / 1000.0 }))
+        .collect())
 }
 
 #[tauri::command]
@@ -1710,6 +2614,13 @@ fn hermes_log(kind: &str, payload: serde_json::Value) {
         "kind": kind,
         "payload": payload,
     });
+    // v2.12.0：超过 5MB 轮转为 .old，防止无限增长
+    let hlp = hermes_log_path();
+    if let Ok(meta) = std::fs::metadata(&hlp) {
+        if meta.len() > 5 * 1024 * 1024 {
+            let _ = std::fs::rename(&hlp, hlp.with_extension("old.jsonl"));
+        }
+    }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1977,14 +2888,17 @@ async fn hermes_handle_conn(
             serde_json::json!({ "ok": true, "app": "onetv", "version": env!("CARGO_PKG_VERSION") }),
         ),
         ("POST", u) if u.starts_with("/invoke") => {
-            if let Some(t) = &token {
-                if token_header.as_deref() != Some(t.as_str()) {
-                    (401, serde_json::json!({ "error": "token 不匹配" }))
-                } else {
+            // v2.12.0：未设置 token 时拒绝 /invoke（仅放行 /health）——
+            // 否则本机任意进程都能调用 agent_approve/create_image 消耗用户 API 配额
+            match (&token, token_header.as_deref()) {
+                (Some(t), Some(header)) if header == t.as_str() => {
                     hermes_invoke(&state, &env, &jobs, &body).await
                 }
-            } else {
-                hermes_invoke(&state, &env, &jobs, &body).await
+                (Some(_), _) => (401, serde_json::json!({ "error": "token 不匹配或缺失" })),
+                (None, _) => (
+                    403,
+                    serde_json::json!({ "error": "本机未设置 Hermes token，反向控制已禁用。请在 OneTV「Hermes 连接」中设置 token" }),
+                ),
             }
         }
         _ => (
@@ -2208,8 +3122,14 @@ fn doc_save(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(err)?;
     }
+    // 原子写：临时文件 + rename，防崩溃产生半截 JSON（v2.12.0）
     let json = serde_json::to_string_pretty(&doc).map_err(err)?;
-    std::fs::write(path, json).map_err(err)?;
+    let tmp = path.with_extension(format!(
+        "tmp-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    std::fs::write(&tmp, json).map_err(err)?;
+    std::fs::rename(&tmp, &path).map_err(err)?;
 
     // 画布镜像到 SQLite（规格 §4.2：SQLite 负责查询，JSON 负责 diff/备份）
     if kind == "canvas" {
@@ -2319,7 +3239,11 @@ fn mime_of(path: &std::path::Path) -> &'static str {
     }
 }
 
-fn serve_asset(state: &AppState, uri: &tauri::http::Uri) -> tauri::http::Response<Cow<'static, [u8]>> {
+fn serve_asset_range(
+    state: &AppState,
+    uri: &tauri::http::Uri,
+    range: Option<&str>,
+) -> tauri::http::Response<Cow<'static, [u8]>> {
     let not_found = || {
         tauri::http::Response::builder()
             .status(404)
@@ -2344,13 +3268,59 @@ fn serve_asset(state: &AppState, uri: &tauri::http::Uri) -> tauri::http::Respons
         tracing::warn!(path = %canon.display(), "asset request outside project root denied");
         return not_found();
     }
+    drop(guard);
+    // v2.12.0：支持 Range 请求（视频播放走 206 分段），避免主线程整文件读入内存
+    let file_len = match std::fs::metadata(&canon) {
+        Ok(m) => m.len(),
+        Err(_) => return not_found(),
+    };
+    let mime = mime_of(&canon);
+
+    if let Some(spec) = range.filter(|r| r.starts_with("bytes=")) {
+        let spec = spec.trim_start_matches("bytes=");
+        let (start_s, end_s) = spec.split_once('-').unwrap_or((spec, ""));
+        let Ok(start) = start_s.parse::<u64>() else { return not_found() };
+        if start >= file_len {
+            return tauri::http::Response::builder()
+                .status(416)
+                .header("Content-Range", format!("bytes */{file_len}"))
+                .body(Cow::Borrowed(&b"range not satisfiable"[..]))
+                .unwrap();
+        }
+        // 单次响应上限 8MB（浏览器会自动续段），限定内存占用
+        const MAX_CHUNK: u64 = 8 * 1024 * 1024;
+        let end_req = end_s.parse::<u64>().unwrap_or(file_len.saturating_sub(1)).min(file_len - 1);
+        let end = start.saturating_add(MAX_CHUNK - 1).min(end_req);
+        let take = (end - start + 1) as usize;
+        let mut bytes = vec![0u8; take];
+        let ok = std::fs::File::open(&canon)
+            .and_then(|mut f| {
+                use std::io::{Read, Seek, SeekFrom};
+                f.seek(SeekFrom::Start(start))?;
+                f.read_exact(&mut bytes)?;
+                Ok(())
+            })
+            .is_ok();
+        if !ok {
+            return not_found();
+        }
+        return tauri::http::Response::builder()
+            .status(206)
+            .header("Content-Type", mime)
+            .header("Cache-Control", "no-store")
+            .header("Accept-Ranges", "bytes")
+            .header("Content-Range", format!("bytes {start}-{end}/{file_len}"))
+            .body(Cow::Owned(bytes))
+            .unwrap();
+    }
+
     let Ok(bytes) = std::fs::read(&canon) else {
         return not_found();
     };
-    drop(guard);
     tauri::http::Response::builder()
-        .header("Content-Type", mime_of(&canon))
+        .header("Content-Type", mime)
         .header("Cache-Control", "no-store")
+        .header("Accept-Ranges", "bytes")
         .body(Cow::Owned(bytes))
         .unwrap()
 }
@@ -2562,10 +3532,31 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // 窗口大小/位置/全屏态记忆（v2.11.0），关闭时自动保存
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(state.clone())
-        .register_uri_scheme_protocol("onetv-asset", |ctx, request| {
-            let st = ctx.app_handle().state::<Arc<AppState>>();
-            serve_asset(&st, request.uri())
+        // v2.12.0：异步协议 + Range 支持（视频播放不再整文件读入主线程内存）
+        .register_asynchronous_uri_scheme_protocol("onetv-asset", |ctx, request, responder| {
+            let state = ctx.app_handle().state::<Arc<AppState>>().inner().clone();
+            let uri = request.uri().clone();
+            let range = request
+                .headers()
+                .get(reqwest::header::RANGE)
+                .and_then(|v| v.to_str().ok())
+                .map(|r| r.to_string());
+            tauri::async_runtime::spawn(async move {
+                let resp = tauri::async_runtime::spawn_blocking(move || {
+                    serve_asset_range(&state, &uri, range.as_deref())
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    tauri::http::Response::builder()
+                        .status(500)
+                        .body(Cow::Borrowed(&b"internal error"[..]))
+                        .unwrap()
+                });
+                responder.respond(resp);
+            });
         })
         .register_uri_scheme_protocol("onetv-app", |ctx, request| {
             serve_app_file(request.uri())
@@ -2625,11 +3616,20 @@ pub fn run() {
             // 注册全部 Agent 处理器
             onetv_core::agent::executor::register_all_handlers(env.clone(), &jobs);
 
-            // 设置同步：离线模式 / 并发 / 生成模型默认
+            // 设置同步：离线模式 / 并发 / 生成模型默认 / 预算守卫 / QC 媒体定位
             let s = state.settings.get();
             env.set_offline(s.offline_mode);
             jobs.set_concurrency(s.max_concurrent_jobs);
             env.set_model_defaults(model_defaults_map(&s));
+            jobs.set_media(state.media.clone());
+            jobs.set_cost_guard(onetv_core::jobs::CostGuardConfig {
+                enabled: s.cost_guard.enabled,
+                daily_remote_limit: s.cost_guard.daily_remote_limit,
+                project_total_limit: s.cost_guard.project_total_limit,
+                daily_cost_limit: s.cost_guard.daily_cost_limit,
+                project_cost_limit: s.cost_guard.project_cost_limit,
+            });
+            jobs.set_pricing(pricing_map(&registry.read()));
 
             let agent_state = Arc::new(AgentState {
                 env,
@@ -2742,6 +3742,19 @@ pub fn run() {
             agent_attach,
             canvas_node_run,
             provider_preset_list,
+            bible_get,
+            costs_get,
+            skill_install_git,
+            recreate_canvas,
+            canvas_run_batch,
+            memory_search,
+            webhook_listen_start,
+            webhook_listen_stop,
+            plugin_list,
+            provider_export,
+            provider_import,
+            bible_save,
+            bible_generate,
             agent_attach_path,
             agent_attach_data,
             asset_open,

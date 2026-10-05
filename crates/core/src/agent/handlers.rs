@@ -292,7 +292,7 @@ async fn generate_one_image(
                 || false,
             )
             .await
-            .map_err(|e| transient(e.to_string()))?;
+            .map_err(crate::jobs::JobError::from)?;
             out.result_urls.iter().map(PathBuf::from).collect()
         }
         ProviderDriverKind::OpenaiCompatible => {
@@ -303,7 +303,7 @@ async fn generate_one_image(
             };
             openai::generate_image(env.gateway(), &decision.provider, &decision.model_id, prompt, size, 1, out_dir)
                 .await
-                .map_err(|e| transient(e.to_string()))?
+                .map_err(crate::jobs::JobError::from)?
         }
         ProviderDriverKind::StableDiffusion => {
             crate::providers::sd::txt2img(
@@ -317,7 +317,7 @@ async fn generate_one_image(
                 out_dir,
             )
             .await
-            .map_err(|e| transient(e.to_string()))?
+            .map_err(crate::jobs::JobError::from)?
         }
         ProviderDriverKind::Comfyui => {
             // 与 SD 驱动同一逻辑：本地直连、免鉴权、Local-only 可用；
@@ -325,7 +325,7 @@ async fn generate_one_image(
             if let Some(mut wf) = decision.provider.workflow_template.clone() {
                 crate::providers::comfyui::patch_workflow(&mut wf, prompt, "低质量, 模糊, 变形, 多余肢体, 文字水印");
                 let image = references.iter().find(|a| a.kind == "images").map(|a| PathBuf::from(&a.path));
-                crate::providers::comfyui::run_workflow(env.gateway(), &decision.provider, wf, image.as_deref(), out_dir, || false).await
+                crate::providers::comfyui::run_workflow(env.gateway(), &decision.provider, wf, image.as_deref(), out_dir, || false, |_p| {}).await
             } else {
                 crate::providers::comfyui::txt2img(
                     env.gateway(),
@@ -340,7 +340,7 @@ async fn generate_one_image(
                 )
                 .await
             }
-            .map_err(|e| transient(e.to_string()))?
+            .map_err(crate::jobs::JobError::from)?
         }
         other => return Err(fatal(format!("驱动 {other:?} 暂不支持生图；请使用 OpenAI 兼容 / Mock Provider"))),
     };
@@ -515,10 +515,14 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
                             Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)))
                         })
                     });
+                    // mode（v2.14）："extend" = 续写（以参考图/尾帧延续）；"generate" = 新生成。
+                    // Mock：extend 走参考图生视频；CustomHttp 模板可用 ${input.mode} 区分端点。
+                    let mode = ctx.params.get("mode").and_then(|v| v.as_str()).unwrap_or("generate").to_string();
                     let input = json!({
                         "prompt": prompt,
                         "aspectRatio": aspect,
                         "durationSec": duration,
+                        "mode": mode,
                         "referenceAssetIds": references.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
                         "references": refs_json(&references),
                         "firstFrameBase64": first_frame_b64,
@@ -534,7 +538,7 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
                         || ctx.is_cancelled(),
                     )
                     .await
-                    .map_err(|e| transient(e.to_string()))?;
+                    .map_err(crate::jobs::JobError::from)?;
                     out.result_urls.iter().map(PathBuf::from).collect()
                 }
                 ProviderDriverKind::Comfyui => {
@@ -545,10 +549,27 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
                         ));
                     };
                     crate::providers::comfyui::patch_workflow(&mut wf, &prompt, "");
+                    // 画幅/时长 → Wan 常用数值占位（480p 档；16fps，帧数 = 时长×16+1）
+                    let (width, height) = match aspect.as_str() {
+                        "16:9" => (832, 480),
+                        "1:1" => (624, 624),
+                        _ => (480, 832),
+                    };
+                    let frames = (duration.saturating_mul(16)).saturating_add(1).clamp(33, 121);
+                    crate::providers::comfyui::patch_workflow_vars(
+                        &mut wf,
+                        &[
+                            ("width", serde_json::json!(width)),
+                            ("height", serde_json::json!(height)),
+                            ("frames", serde_json::json!(frames)),
+                        ],
+                    );
                     let image = references.iter().find(|a| a.kind == "images").map(|a| PathBuf::from(&a.path));
-                    crate::providers::comfyui::run_workflow(env.gateway(), &decision.provider, wf, image.as_deref(), &out_dir, || ctx.is_cancelled())
-                        .await
-                        .map_err(|e| transient(e.to_string()))?
+                    crate::providers::comfyui::run_workflow(env.gateway(), &decision.provider, wf, image.as_deref(), &out_dir, || ctx.is_cancelled(), |p| {
+                        ctx.report(0.15 + p * 0.7, "ComfyUI 生成中（本地工作流）…");
+                    })
+                    .await
+                    .map_err(crate::jobs::JobError::from)?
                 }
                 other => {
                     return Err(fatal(format!(
@@ -582,12 +603,12 @@ pub fn tts_handler(env: Arc<AgentEnv>) -> JobHandler {
             ctx.report(0.3, "调用 TTS Provider…");
             match decision.provider.driver {
                 ProviderDriverKind::Mock => {
-                    mock::tts(env.media(), &text, &dest).await.map_err(|e| transient(e.to_string()))?;
+                    mock::tts(env.media(), &text, &dest).await.map_err(crate::jobs::JobError::from)?;
                 }
                 ProviderDriverKind::OpenaiCompatible => {
                     openai::tts(env.gateway(), &decision.provider, &decision.model_id, &text, "alloy", &dest)
                         .await
-                        .map_err(|e| transient(e.to_string()))?;
+                        .map_err(crate::jobs::JobError::from)?;
                 }
                 other => return Err(fatal(format!("驱动 {other:?} 暂不支持 TTS"))),
             }
@@ -674,10 +695,34 @@ pub fn storyboard_build_handler(_env: Arc<AgentEnv>) -> JobHandler {
             let shots = split_shots_of_script(&script);
             ctx.report(0.8, "绑定角色参考…");
             let shots = bind_characters(&ctx.root, shots);
+            // 连续性校验（v2.13）：镜头角色须在 Story Bible 中登记（一致性上游）
+            let bible_chars: Vec<String> = std::fs::read_to_string(ctx.root.join("bible").join("story.json"))
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .and_then(|v| v.get("characters").and_then(|c| c.as_array()).cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                .collect();
+            let mut continuity_warnings = Vec::new();
+            for (i, shot) in shots.iter().enumerate() {
+                if let Some(chars) = shot.get("characters").and_then(|c| c.as_array()) {
+                    for name in chars.iter().filter_map(|c| c.as_str()) {
+                        if !bible_chars.iter().any(|b| b == name) {
+                            continuity_warnings.push(format!(
+                                "镜头 {} 出现角色「{}」但 Story Bible 未登记（生成参考图时无法绑定参考）",
+                                i + 1,
+                                name
+                            ));
+                        }
+                    }
+                }
+            }
             let sb = json!({
                 "schemaVersion": "1.0",
                 "episodeId": episode,
                 "shots": shots,
+                "continuityWarnings": continuity_warnings,
                 "updatedAt": chrono::Utc::now().to_rfc3339()
             });
             write_episode_doc(&ctx.root, &episode, "storyboard", &sb)?;
@@ -760,7 +805,17 @@ pub fn write_episode_doc(
         other => return Err(fatal(format!("未知文档类型 {other}"))),
     });
     let json = serde_json::to_string_pretty(doc).map_err(|e| fatal(e.to_string()))?;
-    std::fs::write(p, json).map_err(|e| fatal(e.to_string()))
+    write_bytes_atomic(&p, json.as_bytes())
+}
+
+/// 原子写：临时文件 + rename，防崩溃产生半截 JSON（v2.12.0）
+pub fn write_bytes_atomic(p: &Path, bytes: &[u8]) -> Result<(), JobError> {
+    let tmp = p.with_extension(format!(
+        "tmp-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    std::fs::write(&tmp, bytes).map_err(|e| fatal(e.to_string()))?;
+    std::fs::rename(&tmp, p).map_err(|e| fatal(e.to_string()))
 }
 
 pub fn cancel_flag(_ctx: &JobContext) -> Arc<AtomicBool> {
@@ -868,7 +923,14 @@ pub fn timeline_render_handler(env: Arc<AgentEnv>) -> JobHandler {
             };
             let out = ctx.root.join("renders").join(format!("{episode}_draft_{}.mp4", chrono::Utc::now().timestamp()));
             ctx.report(0.4, "FFmpeg 本地合成中（不出网）…");
-            compose(env.media(), &spec, &out, &work).map_err(|e| fatal(e.to_string()))?;
+            // compose 是分钟级阻塞调用：放阻塞线程池，避免饿死 tokio worker（v2.12.0）
+            let media_for_compose = env.media().clone();
+            let out2 = out.clone();
+            let work2 = work.clone();
+            tokio::task::spawn_blocking(move || compose(&media_for_compose, &spec, &out2, &work2))
+                .await
+                .map_err(|e| fatal(e.to_string()))?
+                .map_err(|e| fatal(e.to_string()))?;
             // SRT 侧车始终输出（无论是否硬字幕）
             let srt_out = out.with_extension("srt");
             let _ = std::fs::copy(&srt_path, &srt_out);
@@ -893,9 +955,18 @@ pub fn export_render_handler(env: Arc<AgentEnv>) -> JobHandler {
             use onetv_media::render::preset_size;
             let preset = ctx.params.get("preset").and_then(|v| v.as_str()).unwrap_or("douyin_vertical").to_string();
             let (w, h) = preset_size(&preset);
+            // 多版本导出（v2.13）：真正消费 burnSubtitle/includeSrt 参数
+            let burn_subtitle = ctx.params.get("burnSubtitle").and_then(|v| v.as_bool()).unwrap_or(false);
+            let include_srt = ctx.params.get("includeSrt").and_then(|v| v.as_bool()).unwrap_or(false);
             let Some((_, src)) = latest_asset_of_kind(&ctx.root, "videos") else {
                 return Err(fatal("没有可导出的成片。请先「合成成片」"));
             };
+            // 字幕源：成片旁的 SRT 侧车（合成成片时始终输出）
+            let srt_src = src.with_extension("srt");
+            let has_srt = srt_src.exists();
+            if burn_subtitle && !has_srt {
+                return Err(fatal("未找到字幕文件（成片缺少 SRT 侧车），无法烧录字幕；可用 includeSrt 仅导出字幕文件"));
+            }
             ctx.report(0.2, "本地转码导出（不出网）…");
             let locator = env.media().clone();
             let resolved = locator.resolve().map_err(|e| fatal(e.to_string()))?;
@@ -904,20 +975,46 @@ pub fn export_render_handler(env: Arc<AgentEnv>) -> JobHandler {
                 preset,
                 chrono::Utc::now().timestamp()
             ));
-            let status = std::process::Command::new(&resolved.ffmpeg)
-                .args(["-y", "-v", "error", "-i"])
-                .arg(&src)
-                .args(["-vf", &format!("scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2")])
-                .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "21", "-c:a", "aac"])
-                .arg(&out)
-                .status()
-                .map_err(|e| fatal(e.to_string()))?;
+            // 转码为分钟级阻塞调用：放阻塞线程池（v2.12.0）
+            let ffmpeg_bin = resolved.ffmpeg.clone();
+            let src2 = src.clone();
+            let out2 = out.clone();
+            let mut vf = format!("scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2");
+            if burn_subtitle {
+                // 烧录字幕：subtitles 滤镜（机器无 libass 时 ffmpeg 会失败并给出可读错误）
+                let srt_escaped = srt_src
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .replace(':', "\\:")
+                    .replace('\'', "'\\\''");
+                vf.push_str(&format!(",subtitles='{srt_escaped}'"));
+            }
+            let status = tokio::task::spawn_blocking(move || {
+                std::process::Command::new(&ffmpeg_bin)
+                    .args(["-y", "-v", "error", "-i"])
+                    .arg(&src2)
+                    .args(["-vf", &vf])
+                    .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "21", "-c:a", "aac"])
+                    .arg(&out2)
+                    .status()
+            })
+            .await
+            .map_err(|e| fatal(e.to_string()))?
+            .map_err(|e| fatal(e.to_string()))?;
             if !status.success() {
                 return Err(fatal("导出转码失败"));
             }
+            // includeSrt：SRT 侧车随导出复制
+            let mut outputs = vec![out.to_string_lossy().into_owned()];
+            if include_srt && has_srt {
+                let srt_out = out.with_extension("srt");
+                std::fs::copy(&srt_src, &srt_out).map_err(|e| fatal(e.to_string()))?;
+                outputs.push(srt_out.to_string_lossy().into_owned());
+            }
             ctx.report(0.9, "导出完成");
-            env_agent_message(&env, &ctx.job_id, &format!("已导出 {w}×{h} 版本：{}", out.display()), "export.done");
-            Ok(vec![out.to_string_lossy().into_owned()])
+            let sub_note = if burn_subtitle && has_srt { "含硬字幕" } else { "无硬字幕" };
+            env_agent_message(&env, &ctx.job_id, &format!("已导出 {w}×{h} 版本（{sub_note}）：{}", out.display()), "export.done");
+            Ok(outputs)
         })
     })
 }
@@ -942,15 +1039,21 @@ pub fn video_understand_handler(env: Arc<AgentEnv>) -> JobHandler {
             ctx.report(0.1, "读取媒体信息…");
             let info = onetv_media::probe(&locator, &video).map_err(|e| fatal(e.to_string()))?;
             ctx.report(0.3, "场景切分检测…");
-            // 场景检测：select scene 阈值，showinfo 输出 pts_time
-            let output = std::process::Command::new(&resolved.ffmpeg)
-                .args(["-i"])
-                .arg(&video)
-                .args(["-vf", "select='gt(scene,0.30)',showinfo", "-f", "null", "-"])
-                .stderr(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .output()
-                .map_err(|e| fatal(e.to_string()))?;
+            // 场景检测为全片扫描（分钟级阻塞）：放阻塞线程池（v2.12.0）
+            let ffmpeg_bin = resolved.ffmpeg.clone();
+            let video2 = video.clone();
+            let output = tokio::task::spawn_blocking(move || {
+                std::process::Command::new(&ffmpeg_bin)
+                    .args(["-i"])
+                    .arg(&video2)
+                    .args(["-vf", "select='gt(scene,0.30)',showinfo", "-f", "null", "-"])
+                    .stderr(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .output()
+            })
+            .await
+            .map_err(|e| fatal(e.to_string()))?
+            .map_err(|e| fatal(e.to_string()))?;
             let mut cuts: Vec<f64> = vec![0.0];
             let err_text = String::from_utf8_lossy(&output.stderr);
             for line in err_text.lines() {
@@ -1002,6 +1105,104 @@ pub fn video_understand_handler(env: Arc<AgentEnv>) -> JobHandler {
                 }));
                 ctx.report(0.55 + 0.35 * (i as f64 / cuts.len().max(1) as f64), &format!("分析镜头 {}/{}…", i + 1, cuts.len()));
             }
+            // VLM 语义分析（v2.14，项20）：自动探测 Vision 能力 Provider（含 fallback 路由），
+            // 对前 4 个关键帧逐帧描述并回填镜头字段；未配置 Vision 时保持确定性管线结果。
+            let vision_route = {
+                let registry = env.registry.read().clone();
+                crate::providers::router::ModelRouter::route(
+                    &registry,
+                    crate::providers::Capability::Vision,
+                    None,
+                    None,
+                    env.offline_mode(),
+                    false,
+                )
+                .ok()
+            };
+            let mut vlm_provider = String::new();
+            let mut vlm_model = String::new();
+            if let Some(decision) = &vision_route {
+                if decision.provider.driver == crate::providers::ProviderDriverKind::OpenaiCompatible {
+                    vlm_provider = decision.provider.id.clone();
+                    vlm_model = decision.model_id.clone();
+                }
+            }
+            let vlm_prompt = "你是短剧分镜分析师。分析这张视频关键帧，只输出 JSON（不要解释/围栏）：{\"shotSize\":\"景别(远景/全景/中景/近景/特写)\",\"cameraMovement\":\"推/拉/摇/移/固定\",\"scene\":\"场景描述(20字内)\",\"characters\":[\"出现的角色描述\"],\"action\":\"画面动作(30字内)\",\"color\":\"色调\"}。不确定的字段留空字符串。";
+            let mut vlm_ok = 0usize;
+            if !vlm_provider.is_empty() {
+                let registry = env.registry.read().clone();
+                let vprofile = registry.get(&vlm_provider);
+                if let Some(profile) = vprofile {
+                    let total_vlm = shots.len().min(4);
+                    for (i, shot) in shots.iter_mut().enumerate().take(4) {
+                        if ctx.is_cancelled() {
+                            return Err(fatal("已取消"));
+                        }
+                        let Some(frame_path) = shot
+                            .get("sourceFrame")
+                            .and_then(|v| v.as_str())
+                            .map(PathBuf::from)
+                        else {
+                            continue;
+                        };
+                        let Some(bytes) = std::fs::read(&frame_path).ok() else { continue };
+                        if bytes.len() > 8 * 1024 * 1024 {
+                            continue;
+                        }
+                        use base64::Engine as _;
+                        let data_url = format!(
+                            "data:image/png;base64,{}",
+                            base64::engine::general_purpose::STANDARD.encode(&bytes)
+                        );
+                        ctx.report(
+                            0.6 + 0.3 * (i as f64 / total_vlm.max(1) as f64),
+                            &format!("VLM 分析关键帧 {}/{}…", i + 1, total_vlm),
+                        );
+                        let res = crate::providers::openai::vision_describe(
+                            env.gateway(),
+                            &profile,
+                            &vlm_model,
+                            &vlm_prompt,
+                            &data_url,
+                        )
+                        .await;
+                        match res {
+                            Ok(text) => {
+                                let trimmed = text.trim();
+                                let json_str = match (trimmed.find('{'), trimmed.rfind('}')) {
+                                    (Some(a), Some(b)) if b > a => &trimmed[a..=b],
+                                    _ => trimmed,
+                                };
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                    if let Some(x) = v.get("shotSize").and_then(|x| x.as_str()) {
+                                        shot["shotSize"] = json!(x);
+                                    }
+                                    if let Some(x) = v.get("cameraMovement").and_then(|x| x.as_str()) {
+                                        shot["camera"] = json!({ "movement": x, "angle": "" });
+                                    }
+                                    if let Some(x) = v.get("scene").and_then(|x| x.as_str()) {
+                                        shot["scene"] = json!(x);
+                                    }
+                                    if let Some(x) = v.get("characters").and_then(|x| x.as_array()) {
+                                        shot["characters"] = json!(x);
+                                    }
+                                    if let Some(x) = v.get("action").and_then(|x| x.as_str()) {
+                                        shot["action"] = json!(x);
+                                    }
+                                    if let Some(x) = v.get("color").and_then(|x| x.as_str()) {
+                                        shot["color"] = json!(x);
+                                    }
+                                    vlm_ok += 1;
+                                }
+                            }
+                            _ => {
+                                tracing::warn!(shot = i, "VLM 关键帧分析失败（跳过该帧）");
+                            }
+                        }
+                    }
+                }
+            }
+
             let doc = json!({
                 "schemaVersion": "1.0",
                 "source": video.to_string_lossy(),
@@ -1011,7 +1212,11 @@ pub fn video_understand_handler(env: Arc<AgentEnv>) -> JobHandler {
                 "fps": info.fps,
                 "hasAudio": info.has_audio,
                 "shots": shots,
-                "notes": "VLM 语义分析（台词/人物/表情识别）需要在设置中配置 Vision 能力的 Provider；当前为确定性管线结果。",
+                "notes": if vlm_ok > 0 {
+                    format!("VLM 语义分析已完成 {vlm_ok} 帧（Provider: {vlm_provider} / {vlm_model}）。台词级识别需 ASR 能力，暂未启用。")
+                } else {
+                    "VLM 语义分析（台词/人物/表情识别）需要在设置中配置 Vision 能力的 Provider；当前为确定性管线结果。".to_string()
+                },
                 "updatedAt": chrono::Utc::now().to_rfc3339()
             });
             let episode = ctx.episode_id.clone().unwrap_or_else(|| "ep01".into());

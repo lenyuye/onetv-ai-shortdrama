@@ -12,6 +12,18 @@ fn api(base: &str, path: &str) -> String {
     format!("{}/{}", base.trim_end_matches('/'), path.trim_start_matches('/'))
 }
 
+/// 查询参数值 percent-encode（ComfyUI filename 可能含中文/空格/& 等）
+fn enc_query(v: &str) -> String {
+    let mut out = String::new();
+    for b in v.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(*b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
 pub async fn health(gw: &Gateway, profile: &ProviderProfile) -> GatewayResult<()> {
     let url = api(&profile.base_url, "system_stats");
     gw.check(&url)?;
@@ -149,7 +161,7 @@ pub async fn txt2img(
     for (i, (filename, subfolder)) in outputs.iter().enumerate() {
         let view = api(
             &profile.base_url,
-            &format!("view?filename={filename}&subfolder={subfolder}&type=output"),
+            &format!("view?filename={}&subfolder={}&type=output", enc_query(&filename), enc_query(&subfolder)),
         );
         let dest = out_dir.join(format!("comfy_{}_{}.png", chrono::Utc::now().timestamp_millis(), i));
         gw.download(profile, &view, &dest).await?;
@@ -188,6 +200,26 @@ pub fn patch_workflow(workflow: &mut serde_json::Value, prompt: &str, negative: 
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+}
+
+/// 数值/任意占位符替换：input 值**整串等于** `__token__` 时替换为给定值。
+/// 用于数字字段（ComfyUI API 格式里 width/length 等是数字，不能用文本替换）：
+/// Wan 常用 `__width__` / `__height__` / `__frames__`，由画幅与时长推导后传入。
+pub fn patch_workflow_vars(workflow: &mut serde_json::Value, vars: &[(&str, serde_json::Value)]) {
+    let Some(nodes) = workflow.as_object_mut() else { return };
+    for (_, node) in nodes.iter_mut() {
+        let Some(inputs) = node.get_mut("inputs").and_then(|v| v.as_object_mut()) else { continue };
+        for (_, v) in inputs.iter_mut() {
+            if let serde_json::Value::String(t) = v {
+                let trimmed = t.trim();
+                if let Some(tok) = trimmed.strip_prefix("__").and_then(|x| x.strip_suffix("__")) {
+                    if let Some(val) = vars.iter().find(|(k, _)| *k == tok) {
+                        *v = val.1.clone();
+                    }
+                }
             }
         }
     }
@@ -248,6 +280,8 @@ pub async fn run_workflow(
     image: Option<&std::path::Path>,
     out_dir: &std::path::Path,
     cancel: impl Fn() -> bool,
+    // 轮询进度回调（0.0~1.0，按已用时间/超时估算；v2.9.1 接入 job progress）
+    on_progress: impl Fn(f64),
 ) -> GatewayResult<Vec<std::path::PathBuf>> {
     // 首帧参考图：上传后填入所有 LoadImage 类节点（WanImageToVideo / LoadImage 等）
     if let Some(img_path) = image {
@@ -290,6 +324,8 @@ pub async fn run_workflow(
     let history_url = api(&profile.base_url, &format!("history/{prompt_id}"));
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_millis(profile.timeout_ms.max(1_800_000));
+    let started = std::time::Instant::now();
+    let budget_ms = profile.timeout_ms.max(1_800_000);
     let mut outputs: Vec<(String, String, String)> = Vec::new(); // (filename, subfolder, type)
     loop {
         if cancel() {
@@ -298,6 +334,7 @@ pub async fn run_workflow(
         if std::time::Instant::now() > deadline {
             return Err(GatewayError::Network("ComfyUI 工作流执行超时".into()));
         }
+        on_progress(((started.elapsed().as_millis() as f64) / (budget_ms as f64) * 0.95).min(0.95));
         tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
         let egress = json!({"endpoint": history_url, "data": "轮询状态"});
         let hist = gw
@@ -354,7 +391,7 @@ pub async fn run_workflow(
     for (i, (filename, subfolder, typ)) in outputs.iter().enumerate() {
         let view = api(
             &profile.base_url,
-            &format!("view?filename={filename}&subfolder={subfolder}&type={typ}"),
+            &format!("view?filename={}&subfolder={}&type={typ}", enc_query(&filename), enc_query(&subfolder)),
         );
         let ext = filename.rsplit('.').next().map(|e| e.chars().take(4).collect::<String>()).unwrap_or("png".into());
         let dest = out_dir.join(format!("comfywf_{}_{}.{}", chrono::Utc::now().timestamp_millis(), i, ext));
@@ -368,6 +405,154 @@ pub async fn run_workflow(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Arc;
+    use parking_lot::Mutex;
+
+    /// 极简 ComfyUI Mock 服务器：真实 HTTP 全链路（upload/prompt/history/view），
+    /// 用于无 GPU 环境实测 run_workflow 管线。阻塞线程 + std TcpListener。
+    fn spawn_mock_comfy(history_empty_polls: usize) -> (String, Arc<Mutex<serde_json::Value>>, Arc<Mutex<serde_json::Value>>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let submitted: Arc<Mutex<serde_json::Value>> = Arc::new(Mutex::new(serde_json::Value::Null));
+        let uploaded: Arc<Mutex<serde_json::Value>> = Arc::new(Mutex::new(serde_json::Value::Null));
+        let submitted2 = submitted.clone();
+        let uploaded2 = uploaded.clone();
+
+        std::thread::spawn(move || {
+            let polls = AtomicUsize::new(0);
+            for stream in listener.incoming() {
+                let mut stream = match stream {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                // 读 header
+                let mut buf: Vec<u8> = Vec::new();
+                let mut byte = [0u8; 1];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    if stream.read(&mut byte).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    buf.push(byte[0]);
+                }
+                let head = String::from_utf8_lossy(&buf).to_string();
+                let first_line = head.lines().next().unwrap_or_default().to_string();
+                let content_length = head
+                    .to_lowercase()
+                    .lines()
+                    .find(|l| l.starts_with("content-length:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 {
+                    let _ = stream.read_exact(&mut body);
+                }
+
+                let respond = |stream: &mut std::net::TcpStream, status: &str, ctype: &str, body: Vec<u8>| {
+                    let resp = format!("HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.write_all(&body);
+                };
+
+                if first_line.starts_with("POST /upload/image") {
+                    *uploaded2.lock() = json!({ "bytes": body.len() });
+                    respond(&mut stream, "200 OK", "application/json", json!({"name": "onetv_test.png", "subfolder": ""}).to_string().into_bytes());
+                } else if first_line.starts_with("POST /prompt") {
+                    let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or(json!({}));
+                    *submitted2.lock() = v.get("prompt").cloned().unwrap_or(json!({}));
+                    respond(&mut stream, "200 OK", "application/json", json!({"prompt_id": "test-job-1"}).to_string().into_bytes());
+                } else if first_line.starts_with("GET /history/") {
+                    let n = polls.fetch_add(1, Ordering::SeqCst);
+                    if n < history_empty_polls {
+                        respond(&mut stream, "200 OK", "application/json", b"{}".to_vec());
+                    } else {
+                        let hist = json!({
+                            "test-job-1": {
+                                "status": {"completed": true, "status_str": "success"},
+                                "outputs": {
+                                    "11": {"images": [{"filename": "onetv_frame.png", "subfolder": "", "type": "output"}]},
+                                    "12": {"gifs": [{"filename": "onetv_video.webm", "subfolder": "vhs", "type": "output"}]}
+                                }
+                            }
+                        });
+                        respond(&mut stream, "200 OK", "application/json", hist.to_string().into_bytes());
+                    }
+                } else if first_line.starts_with("GET /view") {
+                    // 按 query 里的 filename 产出可区分的字节
+                    let marker: &[u8] = if first_line.contains("onetv_frame.png") { b"PNG-DATA" } else { b"WEBM-DATA" };
+                    respond(&mut stream, "200 OK", "application/octet-stream", marker.to_vec());
+                } else {
+                    respond(&mut stream, "200 OK", "application/json", b"{}".to_vec());
+                }
+            }
+        });
+        (addr, submitted, uploaded)
+    }
+
+    #[tokio::test]
+    async fn run_workflow_end_to_end_against_mock_comfy() {
+        use crate::providers::{ProviderDriverKind, ProviderProfile};
+
+        let (addr, submitted, uploaded) = spawn_mock_comfy(2);
+
+        let dir = tempfile::tempdir().unwrap();
+        let audit = std::sync::Arc::new(onetv_security::audit::AuditLog::new(dir.path()).unwrap());
+        let gw = Gateway::new(std::sync::Arc::new(parking_lot::RwLock::new(onetv_security::NetworkPolicy::new(false))), audit);
+        let mut profile = ProviderProfile::new("comfy-mock", ProviderDriverKind::Comfyui, &format!("http://{addr}"));
+        profile.auth.auth_type = "none".into();
+
+        // Wan 风格工作流：占位符 + 数值占位 + LoadImage
+        let mut wf = json!({
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "__prompt__"}},
+            "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "__negative__"}},
+            "8": {"class_type": "LoadImage", "inputs": {"image": "placeholder.png"}},
+            "9": {"class_type": "WanImageToVideo", "inputs": {"width": "__width__", "height": "__height__", "length": "__frames__"}},
+            "10": {"class_type": "KSampler", "inputs": {"seed": 0}},
+            "11": {"class_type": "VAEDecode", "inputs": {}},
+            "12": {"class_type": "SaveWEBM", "inputs": {}}
+        });
+        patch_workflow(&mut wf, "少女在雨中奔跑", "低质量");
+        patch_workflow_vars(&mut wf, &[("width", json!(480)), ("height", json!(832)), ("frames", json!(81))]);
+
+        // 首帧参考图
+        let img_path = dir.path().join("first_frame.png");
+        std::fs::write(&img_path, b"fake-png-bytes").unwrap();
+
+        let out_dir = dir.path().join("out");
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let progress2 = progress.clone();
+        let outs = run_workflow(&gw, &profile, wf, Some(&img_path), &out_dir, || false, move |p| {
+            progress2.store((p * 1000.0) as u64, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await
+        .expect("run_workflow 应成功");
+
+        // 产物：1 png + 1 webm，内容与 /view 对应
+        assert_eq!(outs.len(), 2);
+        let names: Vec<String> = outs.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().any(|n| n.ends_with(".png")));
+        assert!(names.iter().any(|n| n.ends_with(".webm")));
+        let png = outs.iter().find(|p| p.extension().unwrap() == "png").unwrap();
+        assert_eq!(std::fs::read(png).unwrap(), b"PNG-DATA");
+
+        // 提交的工作流：占位符已替换、seed 已随机、数值为真数字、首帧已上传
+        let sent = submitted.lock().clone();
+        assert_eq!(sent["6"]["inputs"]["text"], json!("少女在雨中奔跑"));
+        assert_eq!(sent["7"]["inputs"]["text"], json!("低质量"));
+        assert!(sent["10"]["inputs"]["seed"].as_u64().unwrap() > 0, "seed=0 应被随机化");
+        assert_eq!(sent["9"]["inputs"]["width"], json!(480));
+        assert_eq!(sent["9"]["inputs"]["height"], json!(832));
+        assert_eq!(sent["9"]["inputs"]["length"], json!(81));
+        assert_eq!(sent["8"]["inputs"]["image"], json!("onetv_test.png"), "LoadImage 应收到上传后的文件名");
+        // 上传确实发生
+        assert!(uploaded.lock().get("bytes").and_then(|b| b.as_u64()).unwrap_or(0) > 0);
+        // 进度回调被触发过
+        assert!(progress.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    }
 
     #[test]
     fn workflow_patch_replaces_placeholders_and_randomizes_zero_seed() {

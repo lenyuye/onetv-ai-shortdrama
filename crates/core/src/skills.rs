@@ -71,8 +71,9 @@ impl SkillHub {
         {
             return Err(SkillError::Invalid("id 只允许小写字母/数字/-/_".into()));
         }
-        if !m.version.split('.').count() == 3 && m.version.is_empty() {
-            return Err(SkillError::Invalid("version 必须是 semver".into()));
+        // v2.12.0：修复恒为 false 的死代码——version 必须是 x.y.z 三段 semver
+        if m.version.is_empty() || m.version.split('.').count() != 3 {
+            return Err(SkillError::Invalid("version 必须是 semver（x.y.z）".into()));
         }
         if !m.entry.starts_with("workflows/") {
             return Err(SkillError::Invalid("entry 必须位于 workflows/ 内".into()));
@@ -192,6 +193,11 @@ fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
         let e = e?;
         let p = e.path();
         let d = dest.join(e.file_name());
+        // v2.12.0：跳过 symlink——自引用符号链接会无限递归/拷出目录
+        if p.symlink_metadata().map(|m| m.is_symlink()).unwrap_or(true) {
+            tracing::warn!(path = %p.display(), "skill 安装跳过符号链接");
+            continue;
+        }
         if p.is_dir() {
             copy_dir(&p, &d)?;
         } else {

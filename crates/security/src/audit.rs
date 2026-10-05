@@ -53,6 +53,13 @@ impl AuditLog {
             }
         }
         let _g = self.lock.lock();
+        // v2.12.0：超过 10MB 轮转为 .old，防止审计文件无限增长
+        if let Ok(meta) = std::fs::metadata(&self.path) {
+            if meta.len() > 10 * 1024 * 1024 {
+                let old = self.path.with_extension("old.jsonl");
+                let _ = std::fs::rename(&self.path, &old);
+            }
+        }
         if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&self.path) {
             if let Ok(line) = serde_json::to_string(&entry) {
                 let _ = writeln!(f, "{line}");
