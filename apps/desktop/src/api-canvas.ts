@@ -13,6 +13,13 @@ export const canvasGet = (episodeId: string) =>
   invoke<CanvasDocument>("canvas_get", { episodeId });
 
 /** 保存某分集的画布文档（全量覆盖）。 */
+/** 画布批量运行（v2.14）：拓扑执行全图；review 节点暂停时返回 paused=true */
+export const canvasRunBatch = (episodeId: string, resume = false) =>
+  invoke<{ ok: boolean; paused: boolean; reviewNodeId?: string; completed: number; skipped: number; total: number; message?: string }>(
+    "canvas_run_batch",
+    { episodeId, resume },
+  );
+
 export const canvasSave = (episodeId: string, doc: CanvasDocument) =>
   invoke<void>("canvas_save", { episodeId, doc });
 

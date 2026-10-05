@@ -13,6 +13,7 @@
  * 因此这里是「读 camelCase、写 snake_case」，映射统一收在 providerSave 内。
  */
 import { invoke } from "@tauri-apps/api/core";
+import { t } from "./i18n";
 import type {
   Capability,
   ModelDefaultCapability,
@@ -27,6 +28,8 @@ export interface ProviderModelDto {
   modelId: string;
   displayName: string;
   capabilities: Capability[];
+  /** 单价（元/次），v2.14 预算守卫金额化 */
+  pricing?: { perCall?: number } | null;
 }
 
 export interface ProviderDto {
@@ -53,7 +56,7 @@ export interface ProviderSaveInput {
   name: string;
   driver: ProviderDriver;
   baseUrl: string;
-  models: { modelId: string; displayName: string; capabilities: Capability[] }[];
+  models: { modelId: string; displayName: string; capabilities: Capability[]; pricing?: { perCall?: number } | null }[];
   timeoutMs?: number;
   concurrency?: number;
   enabled: boolean;
@@ -99,6 +102,8 @@ export interface JobDto {
   outputs?: string[];
   /** 对话类任务的文本回复（画布文本节点生成回填用） */
   reply?: string | null;
+  /** v2.10 自动 QC 报告（视频类任务产出后自动检测） */
+  qc?: { file: string; durationSec: number; hasAudio?: boolean; black: { start: number; end: number }[]; silence: { start: number; end: number }[] }[] | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -121,18 +126,22 @@ export interface EgressPreview {
 
 /* ---------------- Capability 常量表（与 shared-types 的 Capability 联合一致） ---------------- */
 
+/**
+ * label 为 UI 展示文案：用 getter 在渲染期经 i18n 取当前语言
+ * （value 是数据/类型标识符，保持原样，不参与 i18n）。
+ */
 export const CAPABILITY_OPTIONS: { value: Capability; label: string }[] = [
-  { value: "chat", label: "对话" },
-  { value: "vision", label: "视觉理解" },
-  { value: "structured_output", label: "结构化输出" },
-  { value: "image_generation", label: "图像生成" },
-  { value: "image_edit", label: "图像编辑" },
-  { value: "video_generation", label: "视频生成" },
-  { value: "video_edit", label: "视频编辑" },
-  { value: "video_extend", label: "视频延展" },
-  { value: "tts", label: "语音合成" },
-  { value: "music", label: "音乐生成" },
-  { value: "embedding", label: "向量嵌入" },
+  { value: "chat", get label() { return t("对话"); } },
+  { value: "vision", get label() { return t("视觉理解"); } },
+  { value: "structured_output", get label() { return t("结构化输出"); } },
+  { value: "image_generation", get label() { return t("图像生成"); } },
+  { value: "image_edit", get label() { return t("图像编辑"); } },
+  { value: "video_generation", get label() { return t("视频生成"); } },
+  { value: "video_edit", get label() { return t("视频编辑"); } },
+  { value: "video_extend", get label() { return t("视频延展"); } },
+  { value: "tts", get label() { return t("语音合成"); } },
+  { value: "music", get label() { return t("音乐生成"); } },
+  { value: "embedding", get label() { return t("向量嵌入"); } },
 ];
 
 export const capabilityLabel = (c: Capability): string =>
@@ -143,11 +152,11 @@ export const capabilityLabel = (c: Capability): string =>
  * 其它既有能力（vision / image_edit / embedding 等）不在表单展示，但保存时原样保留。
  */
 export const EDITOR_CAPABILITY_OPTIONS: { value: Capability; label: string }[] = [
-  { value: "chat", label: "对话" },
-  { value: "structured_output", label: "结构化输出" },
-  { value: "image_generation", label: "生图" },
-  { value: "video_generation", label: "生视频" },
-  { value: "tts", label: "配音" },
+  { value: "chat", get label() { return t("对话"); } },
+  { value: "structured_output", get label() { return t("结构化输出"); } },
+  { value: "image_generation", get label() { return t("生图"); } },
+  { value: "video_generation", get label() { return t("生视频"); } },
+  { value: "tts", get label() { return t("配音"); } },
 ];
 
 /** 驱动-能力约束：SD / ComfyUI 后端只接受生图（lib.rs validate_driver_capabilities） */
@@ -163,12 +172,12 @@ export const driverAllowedCaps = (d: ProviderDriver): readonly Capability[] | nu
 
 /* ---------------- 「生成模型设置」（settings.modelDefaults） ---------------- */
 
-/** 四个能力键的行标签（卡片行 + toast 文案） */
+/** 四个能力键的行标签（卡片行 + toast 文案；label/short 为展示文案，getter 渲染期经 i18n） */
 export const MODEL_DEFAULT_ROWS: { key: ModelDefaultCapability; label: string; short: string }[] = [
-  { key: "chat", label: "对话 / 推理", short: "对话" },
-  { key: "image", label: "图片生成", short: "图片" },
-  { key: "video", label: "视频生成", short: "视频" },
-  { key: "tts", label: "音频配音", short: "配音" },
+  { key: "chat", get label() { return t("对话 / 推理"); }, get short() { return t("对话"); } },
+  { key: "image", get label() { return t("图片生成"); }, get short() { return t("图片"); } },
+  { key: "video", get label() { return t("视频生成"); }, get short() { return t("视频"); } },
+  { key: "tts", get label() { return t("音频配音"); }, get short() { return t("配音"); } },
 ];
 
 /** 能力键 → 下拉筛选模型所需的 Capability */
@@ -213,6 +222,7 @@ export async function providerSave(profile: ProviderSaveInput): Promise<Provider
       model_id: m.modelId,
       display_name: m.displayName || m.modelId,
       capabilities: m.capabilities,
+      pricing: m.pricing ?? null,
     })),
     timeout_ms: profile.timeoutMs ?? 180_000,
     concurrency: profile.concurrency ?? 2,

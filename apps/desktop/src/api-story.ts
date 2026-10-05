@@ -64,6 +64,8 @@ export interface AgentPlanView {
   summary: string;
   estimated: { jobs: number; remoteCalls: number; risk: string };
   steps: AgentPlanStepView[];
+  /** L4 Reviewer 复核备注（v2.13） */
+  reviewNotes?: string[];
 }
 
 export interface AgentChatResult {
@@ -111,6 +113,9 @@ export async function agentApprove(planId: string): Promise<string[]> {
 
 function normalizePlan(raw: Record<string, unknown>): AgentPlanView {
   const est = asObj(raw.estimated);
+  const reviewNotes = Array.isArray(raw.reviewNotes)
+    ? raw.reviewNotes.map((x) => str(x)).filter(Boolean)
+    : undefined;
   return {
     planId: str(raw.planId ?? raw.plan_id),
     intent: str(raw.intent, "chat"),
@@ -120,6 +125,7 @@ function normalizePlan(raw: Record<string, unknown>): AgentPlanView {
       remoteCalls: est ? num(est.remoteCalls ?? est.remote_calls, 0) : 0,
       risk: est ? str(est.risk, "low") : "low",
     },
+    reviewNotes: reviewNotes && reviewNotes.length > 0 ? reviewNotes : undefined,
     steps: arr(raw.steps).map((s, i) => {
       const so = asObj(s) ?? {};
       const tool = str(so.tool, `step-${i + 1}`);
@@ -277,9 +283,17 @@ function arr(v: unknown): unknown[] {
   return Array.isArray(v) ? v : [];
 }
 
-/** 统一错误文案（invoke 抛出的通常是字符串） */
+/** 统一错误文案：invoke 抛出字符串（旧命令）或 {message} 对象（CommandError 序列化） */
 export function errMsg(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
-  return String(e);
+  if (e && typeof e === "object" && "message" in e) {
+    const m = (e as { message: unknown }).message;
+    if (typeof m === "string") return m;
+  }
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
 }

@@ -20,6 +20,8 @@ export interface ChatMsg {
     risk: string;
     remoteCalls: number;
     steps: { id: string; tool: string; description: string; approval: string }[];
+    /** L4 Reviewer 复核备注（v2.13） */
+    reviewNotes?: string[];
     /** 低风险自动执行的计划：不显示批准/拒绝按钮 */
     auto?: boolean;
     /** 批准/拒绝后置位：按钮消失，状态不再自相矛盾 */
@@ -230,8 +232,8 @@ export const useAgentChat = create<AgentChatState>((set, get) => {
       set((st) => {
         let list = st.sessionsByProject[key] ?? [];
         if (!list.some((s) => s.id === sessionId)) {
-          const fresh = newSession();
-          list = [...list, fresh];
+          // 兜底：会话不存在（如 jobId 归档表已过期）时按原 id 重建，消息不丢
+          list = [...list, { id: sessionId, title: DEFAULT_SESSION_TITLE, createdAt: Date.now(), msgs: [] }];
         }
         return {
           sessionsByProject: {

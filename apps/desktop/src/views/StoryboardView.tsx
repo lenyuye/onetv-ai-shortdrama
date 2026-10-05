@@ -11,6 +11,7 @@ import * as api from "../api";
 import * as story from "../api-story";
 import type { AgentPlanView } from "../api-story";
 import { useApp } from "../store";
+import { useT } from "../i18n";
 import { PlanPanel } from "./ScriptView";
 
 /* ---------------- 常量 ---------------- */
@@ -27,6 +28,7 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
 
 export default function StoryboardView() {
   const { project, setView, toast } = useApp();
+  const t = useT();
   const [episodes, setEpisodes] = useState<EpisodeInfo[]>([]);
   const [episodesLoaded, setEpisodesLoaded] = useState(false);
   const [episodeId, setEpisodeId] = useState("");
@@ -97,7 +99,7 @@ export default function StoryboardView() {
           if (cancelled) return;
           setDoc(story.emptyStoryboardDocument(ep));
           const msg = api.errMsg(e);
-          if (!msg.includes("已取消")) toast(`加载分镜失败：${msg}`, "err");
+          if (!msg.includes("已取消")) toast(t("加载分镜失败：{msg}", { msg }), "err");
         })
         .finally(() => {
           if (!cancelled) setLoading(false);
@@ -138,8 +140,8 @@ export default function StoryboardView() {
   useEffect(() => {
     if (!ctxMenu) return;
     const onDown = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t && typeof t.closest === "function" && t.closest("[data-ctxmenu]")) return;
+      const el = e.target as HTMLElement | null;
+      if (el && typeof el.closest === "function" && el.closest("[data-ctxmenu]")) return;
       setCtxMenu(null);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -165,7 +167,7 @@ export default function StoryboardView() {
         toast(okText, "ok");
       } catch (e) {
         const msg = api.errMsg(e);
-        if (!msg.includes("已取消")) toast(`保存分镜表失败：${msg}`, "err");
+        if (!msg.includes("已取消")) toast(t("保存分镜表失败：{msg}", { msg }), "err");
       } finally {
         setSaving(false);
       }
@@ -213,20 +215,20 @@ export default function StoryboardView() {
   const addShotNow = async () => {
     if (!doc) return;
     const shot = emptyShot(doc.shots);
-    await saveDoc({ ...doc, shots: [...doc.shots, shot] }, `已新建镜头 ${shot.shotId}`);
+    await saveDoc({ ...doc, shots: [...doc.shots, shot] }, t("已新建镜头 {id}", { id: shot.shotId }));
   };
 
   /** 📄 复制镜头到本页剪贴板 */
   const copyShot = (shot: Shot) => {
     setShotClipboard(deepCloneShot(shot));
-    toast(`已复制镜头 ${shot.shotId} 到剪贴板`, "ok");
+    toast(t("已复制镜头 {id} 到剪贴板", { id: shot.shotId }), "ok");
   };
 
   /** 📋 粘贴剪贴板镜头到末尾（新 id、清空分镜图、状态回草稿） */
   const pasteShot = async () => {
     if (!doc) return;
     if (!shotClipboard) {
-      toast("剪贴板为空，请先复制一个镜头", "warn");
+      toast(t("剪贴板为空，请先复制一个镜头"), "warn");
       return;
     }
     const shot: Shot = {
@@ -235,7 +237,7 @@ export default function StoryboardView() {
       outputAssetId: undefined,
       status: "draft",
     };
-    await saveDoc({ ...doc, shots: [...doc.shots, shot] }, `已粘贴镜头 ${shot.shotId}`);
+    await saveDoc({ ...doc, shots: [...doc.shots, shot] }, t("已粘贴镜头 {id}", { id: shot.shotId }));
   };
 
   /** ⧉ 生成副本：原镜头之后克隆（新 shotId、outputAssetId 清空、status 回 draft） */
@@ -250,19 +252,19 @@ export default function StoryboardView() {
     const idx = doc.shots.findIndex((s) => s.shotId === shot.shotId);
     const list = [...doc.shots];
     list.splice(idx + 1, 0, clone);
-    await saveDoc({ ...doc, shots: list }, `已生成镜头副本 ${clone.shotId}`);
+    await saveDoc({ ...doc, shots: list }, t("已生成镜头副本 {id}", { id: clone.shotId }));
   };
 
   /** 🗑 删除镜头（仅剩一个时拒绝） */
   const deleteShotNow = async (shotId: string) => {
     if (!doc) return;
     if (doc.shots.length <= 1) {
-      toast("至少保留一个镜头", "warn");
+      toast(t("至少保留一个镜头"), "warn");
       return;
     }
     await saveDoc(
       { ...doc, shots: doc.shots.filter((s) => s.shotId !== shotId) },
-      `已删除镜头 ${shotId}`
+      t("已删除镜头 {id}", { id: shotId })
     );
   };
 
@@ -271,12 +273,12 @@ export default function StoryboardView() {
     let targetId = shotId;
     if (!targetId) {
       if (shots.length === 0) {
-        toast("分镜表为空，请先新建或拆分镜头", "warn");
+        toast(t("分镜表为空，请先新建或拆分镜头"), "warn");
         return;
       }
       const first = shots.find((s) => !s.outputAssetId);
       if (!first) {
-        toast("所有镜头均已出图，无需再上传", "warn");
+        toast(t("所有镜头均已出图，无需再上传"), "warn");
         return;
       }
       targetId = first.shotId;
@@ -284,7 +286,7 @@ export default function StoryboardView() {
     try {
       const att = await api.agentAttach();
       if (att.kind !== "images") {
-        toast("请选择图片文件（已存入资产库）", "warn");
+        toast(t("请选择图片文件（已存入资产库）"), "warn");
         return;
       }
       if (!doc) return;
@@ -294,10 +296,10 @@ export default function StoryboardView() {
           s.shotId === targetId ? { ...s, outputAssetId: att.assetId, status: "ready" } : s
         ),
       };
-      await saveDoc(next, `已为镜头 ${targetId} 上传分镜图`);
+      await saveDoc(next, t("已为镜头 {id} 上传分镜图", { id: targetId }));
     } catch (e) {
       const msg = api.errMsg(e);
-      if (!msg.includes("已取消")) toast(`上传分镜图失败：${msg}`, "err");
+      if (!msg.includes("已取消")) toast(t("上传分镜图失败：{msg}", { msg }), "err");
     }
   };
 
@@ -320,7 +322,7 @@ export default function StoryboardView() {
 
   const approveSelected = async () => {
     if (selectedIds.size === 0) {
-      toast("请先勾选要批准的镜头", "warn");
+      toast(t("请先勾选要批准的镜头"), "warn");
       return;
     }
     if (!doc) return;
@@ -328,7 +330,7 @@ export default function StoryboardView() {
       ...doc,
       shots: doc.shots.map((s) => (selectedIds.has(s.shotId) ? { ...s, status: "approved" } : s)),
     };
-    await saveDoc(next, `已批准 ${selectedIds.size} 个镜头（人工 QC）`);
+    await saveDoc(next, t("已批准 {n} 个镜头（人工 QC）", { n: selectedIds.size }));
     setSelectedIds(new Set());
   };
 
@@ -362,14 +364,14 @@ export default function StoryboardView() {
       ),
     };
     setEditShotId(null);
-    await saveDoc(next, "镜头已更新并保存分镜表");
+    await saveDoc(next, t("镜头已更新并保存分镜表"));
   };
 
   /* ---------- Agent：拆分镜头 / 批量生成分镜图 ---------- */
 
   const openAi = (ctx: "split" | "batch" | "compose" | "export") => {
     if ((ctx === "batch" || ctx === "compose" || ctx === "export") && shots.length === 0) {
-      toast("分镜表为空，请先「从剧本拆分镜头」", "warn");
+      toast(t("分镜表为空，请先「从剧本拆分镜头」"), "warn");
       return;
     }
     setAiContext(ctx);
@@ -413,7 +415,7 @@ export default function StoryboardView() {
     setApproveBusy(true);
     try {
       await story.agentApprove(plan.planId);
-      toast("任务已创建，可在任务页查看", "ok");
+      toast(t("任务已创建，可在任务页查看"), "ok");
       setAiOpen(false);
       setPlan(null);
       // 生成任务由后端异步执行，稍后自动刷新；也可手动刷新
@@ -423,7 +425,7 @@ export default function StoryboardView() {
       }, 1500);
     } catch (e) {
       const msg = api.errMsg(e);
-      if (!msg.includes("已取消")) toast(`批准失败：${msg}`, "err");
+      if (!msg.includes("已取消")) toast(t("批准失败：{msg}", { msg }), "err");
     } finally {
       setApproveBusy(false);
     }
@@ -457,12 +459,12 @@ export default function StoryboardView() {
   /** 第一步确认弹窗正文 —— 四个入口语义不同，各有专属文案 */
   const aiIntro =
     aiContext === "split"
-      ? "Agent 将读取当前集剧本，按场景与台词拆分为镜头表（本地工具，不出站）。"
+      ? t("Agent 将读取当前集剧本，按场景与台词拆分为镜头表（本地工具，不出站）。")
       : aiContext === "compose"
-        ? "将把已出图镜头用 FFmpeg 在本地合成为竖版成片（不出网），需要项目里已有分镜图。"
+        ? t("将把已出图镜头用 FFmpeg 在本地合成为竖版成片（不出网），需要项目里已有分镜图。")
         : aiContext === "export"
-          ? "将把最近合成的成片转码为选定画幅并导出（本地转码，不出网）。"
-          : `将为 ${shots.length} 个镜头逐个生成分镜图并写回分镜表（status → ready）。`;
+          ? t("将把最近合成的成片转码为选定画幅并导出（本地转码，不出网）。")
+          : t("将为 {n} 个镜头逐个生成分镜图并写回分镜表（status → ready）。", { n: shots.length });
 
   /* ---------- 守卫空状态 ---------- */
 
@@ -470,9 +472,9 @@ export default function StoryboardView() {
     return (
       <div className="empty-state" style={{ height: "100%" }}>
         <div className="big">🖼️</div>
-        <h2>尚未打开项目</h2>
-        <p>分镜按分集组织，请先在「工作区」创建或打开一个项目</p>
-        <button className="btn primary" onClick={() => setView("home")}>前往工作区</button>
+        <h2>{t("尚未打开项目")}</h2>
+        <p>{t("分镜按分集组织，请先在「工作区」创建或打开一个项目")}</p>
+        <button className="btn primary" onClick={() => setView("home")}>{t("前往工作区")}</button>
       </div>
     );
   }
@@ -481,7 +483,7 @@ export default function StoryboardView() {
     return (
       <div className="empty-state" style={{ height: "100%" }}>
         <div className="big">⏳</div>
-        <p>分集加载中…</p>
+        <p>{t("分集加载中…")}</p>
       </div>
     );
   }
@@ -490,9 +492,9 @@ export default function StoryboardView() {
     return (
       <div className="empty-state" style={{ height: "100%" }}>
         <div className="big">🎞️</div>
-        <h2>还没有分集</h2>
-        <p>分镜挂在分集下，请先在「项目」页新增一集</p>
-        <button className="btn primary" onClick={() => setView("projects")}>前往项目页</button>
+        <h2>{t("还没有分集")}</h2>
+        <p>{t("分镜挂在分集下，请先在「项目」页新增一集")}</p>
+        <button className="btn primary" onClick={() => setView("projects")}>{t("前往项目页")}</button>
       </div>
     );
   }
@@ -506,62 +508,62 @@ export default function StoryboardView() {
 
       <div className="page-header">
         <div>
-          <h1>🖼️ 分镜</h1>
+          <h1>{t("🖼️ 分镜")}</h1>
           <div className="desc">
             {project.project.title}
-            {epTitle ? ` · 第 ${epNo} 集 · ${epTitle}` : ""}
+            {epTitle ? ` · ${t("第 {n} 集 · {title}", { n: epNo, title: epTitle })}` : ""}
             {shots.length > 0
-              ? ` · ${shots.length} 个镜头 · 已出图 ${readyCount} · 已批准 ${approvedCount}`
+              ? ` · ${t("{n} 个镜头 · 已出图 {ready} · 已批准 {approved}", { n: shots.length, ready: readyCount, approved: approvedCount })}`
               : ""}
           </div>
         </div>
         <div className="sb-toolbar">
-          <select value={episodeId} onChange={(e) => setEpisodeId(e.target.value)} aria-label="选择分集">
+          <select value={episodeId} onChange={(e) => setEpisodeId(e.target.value)} aria-label={t("选择分集")}>
             {episodes.map((ep) => (
               <option key={ep.id} value={ep.id}>
-                第 {ep.number} 集 · {ep.title}
+                {t("第 {n} 集 · {title}", { n: ep.number, title: ep.title })}
               </option>
             ))}
           </select>
-          <button className="btn" onClick={() => openAi("split")}>🎬 从剧本拆分镜头</button>
-          <button className="btn primary" onClick={() => openAi("batch")}>✨ 批量生成分镜图</button>
-          <button className="btn blue" onClick={() => openAi("compose")}>🎞️ 合成成片</button>
-          <button className="btn" onClick={() => openAi("export")}>📤 导出竖版</button>
-          <button className="btn" disabled={saving} onClick={() => void addShotNow()}>➕ 新建镜头</button>
+          <button className="btn" onClick={() => openAi("split")}>{t("🎬 从剧本拆分镜头")}</button>
+          <button className="btn primary" onClick={() => openAi("batch")}>{t("✨ 批量生成分镜图")}</button>
+          <button className="btn blue" onClick={() => openAi("compose")}>{t("🎞️ 合成成片")}</button>
+          <button className="btn" onClick={() => openAi("export")}>{t("📤 导出竖版")}</button>
+          <button className="btn" disabled={saving} onClick={() => void addShotNow()}>{t("➕ 新建镜头")}</button>
           <button
             className="btn"
             disabled={!shotClipboard || saving}
-            title={shotClipboard ? "粘贴剪贴板镜头到末尾" : "剪贴板为空，请先复制镜头"}
+            title={shotClipboard ? t("粘贴剪贴板镜头到末尾") : t("剪贴板为空，请先复制镜头")}
             onClick={() => void pasteShot()}
           >
-            📋 粘贴
+            {t("📋 粘贴")}
           </button>
-          <button className="btn" disabled={saving} onClick={() => void uploadShotImage(null)}>⬆️ 上传分镜图</button>
-          <button className="btn ghost" disabled={loading} onClick={() => refresh(episodeId)}>⟳ 刷新</button>
+          <button className="btn" disabled={saving} onClick={() => void uploadShotImage(null)}>{t("⬆️ 上传分镜图")}</button>
+          <button className="btn ghost" disabled={loading} onClick={() => refresh(episodeId)}>{t("⟳ 刷新")}</button>
         </div>
       </div>
 
       {loading ? (
         <div className="empty-state" style={{ padding: "80px 20px" }}>
           <div className="big">⏳</div>
-          <p>分镜加载中…</p>
+          <p>{t("分镜加载中…")}</p>
         </div>
       ) : shots.length === 0 ? (
         !hasScript ? (
           /* ---------- 无剧本：引导去剧本页 ---------- */
           <div className="empty-state" style={{ padding: "90px 20px" }}>
             <div className="big">📝</div>
-            <h2>这一集还没有剧本</h2>
-            <p>分镜由剧本拆分而来，请先到「剧本」页完成本集剧本</p>
-            <button className="btn primary" onClick={() => setView("script")}>前往剧本页</button>
+            <h2>{t("这一集还没有剧本")}</h2>
+            <p>{t("分镜由剧本拆分而来，请先到「剧本」页完成本集剧本")}</p>
+            <button className="btn primary" onClick={() => setView("script")}>{t("前往剧本页")}</button>
           </div>
         ) : (
           /* ---------- 有剧本无分镜：引导拆分 ---------- */
           <div className="empty-state" style={{ padding: "90px 20px" }}>
             <div className="big">🎬</div>
-            <h2>还没有分镜</h2>
-            <p>点击「从剧本拆分镜头」，Agent 会按场景与台词生成分镜表</p>
-            <button className="btn primary" onClick={() => openAi("split")}>🎬 从剧本拆分镜头</button>
+            <h2>{t("还没有分镜")}</h2>
+            <p>{t("点击「从剧本拆分镜头」，Agent 会按场景与台词生成分镜表")}</p>
+            <button className="btn primary" onClick={() => openAi("split")}>{t("🎬 从剧本拆分镜头")}</button>
           </div>
         )
       ) : (
@@ -570,15 +572,15 @@ export default function StoryboardView() {
           <div className="sb-selectbar">
             <label className="checkbox-row">
               <input type="checkbox" checked={allSelected} onChange={toggleAll} />
-              全选（{shots.length}）
+              {t("全选（{n}）", { n: shots.length })}
             </label>
-            <span className="sb-select-hint">已选 {selectedIds.size} 个</span>
+            <span className="sb-select-hint">{t("已选 {n} 个", { n: selectedIds.size })}</span>
             <span style={{ flex: 1 }} />
             <button className="btn sm green-btn" disabled={selectedIds.size === 0 || saving} onClick={() => void approveSelected()}>
-              ✓ 批准选中镜头（{selectedIds.size}）
+              {t("✓ 批准选中镜头（{n}）", { n: selectedIds.size })}
             </button>
-            <button className="btn sm blue" disabled={saving} onClick={() => doc && void saveDoc(doc, "分镜表已保存")}>
-              💾 保存分镜表
+            <button className="btn sm blue" disabled={saving} onClick={() => doc && void saveDoc(doc, t("分镜表已保存"))}>
+              {t("💾 保存分镜表")}
             </button>
           </div>
 
@@ -596,7 +598,7 @@ export default function StoryboardView() {
                     e.preventDefault();
                     setCtxMenu({ x: e.clientX, y: e.clientY, shotId: shot.shotId });
                   }}
-                  title="点击编辑 prompt / 景别 / 时长 / 台词 · 右键更多操作"
+                  title={t("点击编辑 prompt / 景别 / 时长 / 台词 · 右键更多操作")}
                 >
                   <div className="sb-shot-head">
                     <input
@@ -604,26 +606,26 @@ export default function StoryboardView() {
                       checked={selectedIds.has(shot.shotId)}
                       onClick={(e) => e.stopPropagation()}
                       onChange={() => toggleShot(shot.shotId)}
-                      aria-label={`选择 ${shot.shotId}`}
+                      aria-label={t("选择 {id}", { id: shot.shotId })}
                     />
                     <span className="sb-shot-id">{shot.shotId}</span>
-                    <span className="tag blue">{shot.shotSize}</span>
+                    <span className="tag blue">{t(shot.shotSize)}</span>
                     <span style={{ flex: 1 }} />
-                    <span className={`tag ${status.cls}`}>{status.label}</span>
+                    <span className={`tag ${status.cls}`}>{t(status.label)}</span>
                   </div>
 
                   <div className="sb-shot-actions" onClick={(e) => e.stopPropagation()}>
-                    <button className="btn sm" onClick={() => openDetail(shot)}>✏️ 编辑</button>
-                    <button className="btn sm" onClick={() => copyShot(shot)}>📄 复制</button>
-                    <button className="btn sm" disabled={saving} onClick={() => void duplicateShot(shot)}>⧉ 生成副本</button>
-                    <button className="btn sm danger" disabled={saving} onClick={() => void deleteShotNow(shot.shotId)}>🗑 删除</button>
+                    <button className="btn sm" onClick={() => openDetail(shot)}>{t("✏️ 编辑")}</button>
+                    <button className="btn sm" onClick={() => copyShot(shot)}>{t("📄 复制")}</button>
+                    <button className="btn sm" disabled={saving} onClick={() => void duplicateShot(shot)}>{t("⧉ 生成副本")}</button>
+                    <button className="btn sm danger" disabled={saving} onClick={() => void deleteShotNow(shot.shotId)}>{t("🗑 删除")}</button>
                   </div>
 
                   {img && (
                     <img
                       className="sb-shot-img"
                       src={img}
-                      alt={`${shot.shotId} 分镜图`}
+                      alt={t("{id} 分镜图", { id: shot.shotId })}
                       loading="lazy"
                       onError={() => markImgBroken(shot)}
                     />
@@ -631,11 +633,11 @@ export default function StoryboardView() {
 
                   <div className="sb-shot-body">
                     <div className="sb-shot-scene">
-                      <span className="sb-k">场景</span>
+                      <span className="sb-k">{t("场景")}</span>
                       <span className="sb-v">{shot.scene || "—"}</span>
                     </div>
                     <div className="sb-shot-tags">
-                      <span className="tag">🎥 {shot.camera.movement || "固定机位"}</span>
+                      <span className="tag">🎥 {shot.camera.movement || t("固定机位")}</span>
                       <span className="tag">⏱ {(Number(shot.durationSec) || 0).toFixed(1)}s</span>
                     </div>
                     {shot.action && <p className="sb-shot-action">{shot.action}</p>}
@@ -648,7 +650,7 @@ export default function StoryboardView() {
 
           <div className="sb-foot">
             <span>🎨</span>
-            <span>分镜图由图像 Provider 生成；Mock Provider 可离线演示 · 点击镜头卡编辑 prompt / 景别 / 时长 / 台词</span>
+            <span>{t("分镜图由图像 Provider 生成；Mock Provider 可离线演示 · 点击镜头卡编辑 prompt / 景别 / 时长 / 台词")}</span>
           </div>
         </>
       )}
@@ -663,32 +665,32 @@ export default function StoryboardView() {
             top: Math.max(4, Math.min(ctxMenu.y, window.innerHeight - 200)),
           }}
         >
-          <button onClick={() => { setCtxMenu(null); void addShotNow(); }}>➕ 新建镜头</button>
+          <button onClick={() => { setCtxMenu(null); void addShotNow(); }}>{t("➕ 新建镜头")}</button>
           <button
             disabled={!ctxShot}
             onClick={() => { const s = ctxShot; setCtxMenu(null); if (s) copyShot(s); }}
           >
-            📄 复制
+            {t("📄 复制")}
           </button>
           <button
             disabled={!shotClipboard}
-            title={shotClipboard ? "粘贴剪贴板镜头到末尾" : "剪贴板为空，请先复制镜头"}
+            title={shotClipboard ? t("粘贴剪贴板镜头到末尾") : t("剪贴板为空，请先复制镜头")}
             onClick={() => { setCtxMenu(null); void pasteShot(); }}
           >
-            📋 粘贴
+            {t("📋 粘贴")}
           </button>
           <button
             className="danger"
             disabled={!ctxShot}
             onClick={() => { const id = ctxMenu.shotId; setCtxMenu(null); void deleteShotNow(id); }}
           >
-            🗑 删除
+            {t("🗑 删除")}
           </button>
           <button
             disabled={!ctxShot}
             onClick={() => { const id = ctxMenu.shotId; setCtxMenu(null); void uploadShotImage(id); }}
           >
-            ⬆️ 上传分镜图
+            {t("⬆️ 上传分镜图")}
           </button>
         </div>
       )}
@@ -700,12 +702,12 @@ export default function StoryboardView() {
             <div className="modal-head">
               <span>
                 {aiContext === "split"
-                  ? "🎬 从剧本拆分镜头"
+                  ? t("🎬 从剧本拆分镜头")
                   : aiContext === "compose"
-                    ? "🎞️ 合成成片"
+                    ? t("🎞️ 合成成片")
                     : aiContext === "export"
-                      ? "📤 导出竖版"
-                      : "✨ 批量生成分镜图"}
+                      ? t("📤 导出竖版")
+                      : t("✨ 批量生成分镜图")}
                 {epTitle ? ` · ${epTitle}` : ""}
               </span>
               <button className="btn sm ghost" onClick={closeAi}>×</button>
@@ -721,7 +723,7 @@ export default function StoryboardView() {
               ) : autoExecuted ? (
                 <div className="sb-plan-done">
                   <div className="big">✅</div>
-                  <p>低风险任务已自动执行，无需批准。稍后刷新即可查看结果。</p>
+                  <p>{t("低风险任务已自动执行，无需批准。稍后刷新即可查看结果。")}</p>
                   <p className="hint">{plan.summary}</p>
                 </div>
               ) : (
@@ -729,10 +731,10 @@ export default function StoryboardView() {
                   {/* 批量生成分镜图：Egress 预览确认框（规格 §5.4 / §14） */}
                   {aiContext === "batch" && (
                     <div className="egress-box">
-                      <div className="egress-title">🛡️ 出站预览（Egress Preview）</div>
-                      <div className="kv"><span className="k">目标</span><span className="v">图像 Provider</span></div>
-                      <div className="kv"><span className="k">数据</span><span className="v">每镜 prompt（逐镜发送，不含项目源码 / 密钥）</span></div>
-                      <div className="kv"><span className="k">模型</span><span className="v">由路由选择（Provider Map 中 image_generation 能力最高优先）</span></div>
+                      <div className="egress-title">{t("🛡️ 出站预览（Egress Preview）")}</div>
+                      <div className="kv"><span className="k">{t("目标")}</span><span className="v">{t("图像 Provider")}</span></div>
+                      <div className="kv"><span className="k">{t("数据")}</span><span className="v">{t("每镜 prompt（逐镜发送，不含项目源码 / 密钥）")}</span></div>
+                      <div className="kv"><span className="k">{t("模型")}</span><span className="v">{t("由路由选择（Provider Map 中 image_generation 能力最高优先）")}</span></div>
                     </div>
                   )}
                   <PlanPanel plan={plan} />
@@ -742,17 +744,17 @@ export default function StoryboardView() {
             <div className="modal-foot">
               {!plan ? (
                 <button className="btn primary" disabled={chatBusy} onClick={() => void runChat()}>
-                  {chatBusy ? "规划中…" : "生成执行计划"}
+                  {chatBusy ? t("规划中…") : t("生成执行计划")}
                 </button>
               ) : autoExecuted ? (
-                <button className="btn primary" onClick={closeAi}>好的</button>
+                <button className="btn primary" onClick={closeAi}>{t("好的")}</button>
               ) : (
                 <button className="btn primary" disabled={approveBusy} onClick={() => void approvePlan()}>
-                  {approveBusy ? "执行中…" : "批准执行"}
+                  {approveBusy ? t("执行中…") : t("批准执行")}
                 </button>
               )}
               <button className="btn" disabled={chatBusy || approveBusy} onClick={closeAi}>
-                {plan && !autoExecuted ? "拒绝" : "取消"}
+                {plan && !autoExecuted ? t("拒绝") : t("取消")}
               </button>
             </div>
           </div>
@@ -765,24 +767,24 @@ export default function StoryboardView() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <span>
-                🎞️ 镜头 {editShot.shotId}
+                {t("🎞️ 镜头 {id}", { id: editShot.shotId })}
                 {editShot.scene ? ` · ${editShot.scene}` : ""}
               </span>
               <button className="btn sm ghost" onClick={() => setEditShotId(null)}>×</button>
             </div>
             <div className="modal-body">
               <div className="field">
-                <label>画面 prompt（图像 / 视频生成输入）</label>
+                <label>{t("画面 prompt（图像 / 视频生成输入）")}</label>
                 <textarea
                   value={editForm.prompt}
                   rows={5}
-                  placeholder="描述画面主体、构图、光线、风格…"
+                  placeholder={t("描述画面主体、构图、光线、风格…")}
                   onChange={(e) => setEditForm((f) => ({ ...f, prompt: e.target.value }))}
                 />
               </div>
               <div className="sb-edit-row">
                 <div className="field">
-                  <label>景别 shotSize</label>
+                  <label>{t("景别 shotSize")}</label>
                   <select
                     value={SHOT_SIZE_OPTIONS.includes(editForm.shotSize) ? editForm.shotSize : "custom"}
                     onChange={(e) => {
@@ -791,15 +793,15 @@ export default function StoryboardView() {
                     }}
                   >
                     {SHOT_SIZE_OPTIONS.map((s) => (
-                      <option key={s} value={s}>{s}</option>
+                      <option key={s} value={s}>{t(s)}</option>
                     ))}
                     {!SHOT_SIZE_OPTIONS.includes(editForm.shotSize) && (
-                      <option value="custom">{editForm.shotSize}（自定义）</option>
+                      <option value="custom">{t("{size}（自定义）", { size: editForm.shotSize })}</option>
                     )}
                   </select>
                 </div>
                 <div className="field">
-                  <label>时长（秒）</label>
+                  <label>{t("时长（秒）")}</label>
                   <input
                     type="number"
                     min={0.5}
@@ -810,20 +812,20 @@ export default function StoryboardView() {
                 </div>
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
-                <label>台词（可选）</label>
+                <label>{t("台词（可选）")}</label>
                 <textarea
                   value={editForm.dialogue}
                   rows={2}
-                  placeholder="该镜头中的角色台词"
+                  placeholder={t("该镜头中的角色台词")}
                   onChange={(e) => setEditForm((f) => ({ ...f, dialogue: e.target.value }))}
                 />
               </div>
             </div>
             <div className="modal-foot">
               <button className="btn primary" disabled={saving} onClick={() => void applyDetail()}>
-                {saving ? "保存中…" : "💾 保存到分镜表"}
+                {saving ? t("保存中…") : t("💾 保存到分镜表")}
               </button>
-              <button className="btn" disabled={saving} onClick={() => setEditShotId(null)}>取消</button>
+              <button className="btn" disabled={saving} onClick={() => setEditShotId(null)}>{t("取消")}</button>
             </div>
           </div>
         </div>

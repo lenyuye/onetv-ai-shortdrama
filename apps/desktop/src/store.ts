@@ -57,9 +57,53 @@ interface AppState {
 
 let toastSeq = 1;
 
+/* ---------- 视图 / 右栏折叠状态持久化（localStorage，读写失败静默回退默认值） ---------- */
+
+/** 视图白名单：localStorage 里读到非法值时回退 "home"（与 ViewKey 联合类型一一对应） */
+const VIEW_KEYS: ViewKey[] = [
+  "home",
+  "projects",
+  "agent",
+  "script",
+  "storyboard",
+  "canvas",
+  "assets",
+  "models",
+  "skills",
+  "hermes",
+  "jobs",
+  "settings",
+];
+const VIEW_STORAGE_KEY = "onetv-view";
+const RIGHTBAR_STORAGE_KEY = "onetv-rightbar-collapsed";
+
+function loadStoredView(): ViewKey {
+  try {
+    const raw = window.localStorage.getItem(VIEW_STORAGE_KEY);
+    return VIEW_KEYS.includes(raw as ViewKey) ? (raw as ViewKey) : "home";
+  } catch {
+    return "home"; // 隐私模式 / 存储不可用等异常时回退默认视图
+  }
+}
+
+function loadStoredRightbar(): boolean {
+  try {
+    return window.localStorage.getItem(RIGHTBAR_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export const useApp = create<AppState>((set, get) => ({
-  view: "home",
-  setView: (v) => set({ view: v }),
+  view: loadStoredView(), // 启动时恢复上次停留的视图
+  setView: (v) => {
+    try {
+      window.localStorage.setItem(VIEW_STORAGE_KEY, v);
+    } catch {
+      /* 存储不可用时忽略，仅切换内存态 */
+    }
+    set({ view: v });
+  },
 
   authed: false,
   setAuthed: (v) => set({ authed: v }),
@@ -109,8 +153,17 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
 
-  rightbarCollapsed: false,
-  toggleRightbar: () => set((s) => ({ rightbarCollapsed: !s.rightbarCollapsed })),
+  rightbarCollapsed: loadStoredRightbar(), // 启动时恢复上次折叠状态
+  toggleRightbar: () =>
+    set((s) => {
+      const next = !s.rightbarCollapsed;
+      try {
+        window.localStorage.setItem(RIGHTBAR_STORAGE_KEY, next ? "1" : "0");
+      } catch {
+        /* 存储不可用时忽略，仅切换内存态 */
+      }
+      return { rightbarCollapsed: next };
+    }),
 
   toasts: [],
   toast: (text, kind = "info") => {

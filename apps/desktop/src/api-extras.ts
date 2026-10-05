@@ -38,6 +38,18 @@ export const skill_list = () => invoke<SkillInfo[]>("skill_list");
 /** 安装本地 Skill：弹出文件夹选择框，读取并校验 manifest 后落盘 */
 export const skill_install = () => invoke<SkillInstallResult>("skill_install");
 
+/** 从 Git 仓库安装 Skill（可选 tag/branch；v2.13） */
+export const skillInstallGit = (url: string, tag?: string) =>
+  invoke<SkillInstallResult>("skill_install_git", { url, tag });
+
+/** Provider 配置导入导出（v2.13，不含密钥） */
+export const providerExport = () => invoke<{ ok: boolean; path: string; count: number }>("provider_export");
+export const providerImport = () => invoke<{ ok: boolean; imported: number }>("provider_import");
+
+/** 从视频理解结果重建画布（v2.13） */
+export const recreateCanvas = (episodeId: string) =>
+  invoke<{ ok: boolean; created: number }>("recreate_canvas", { episodeId });
+
 /** 卸载 Skill（内置 Skill 是否可卸载由 Rust 侧裁决） */
 export const skill_uninstall = (id: string) => invoke<void>("skill_uninstall", { id });
 
@@ -69,3 +81,69 @@ export const project_export_pkg = () => invoke<ProjectPkgResult>("project_export
 
 /** 导入工程包（弹出文件选择框）；成功后需要 loadProject() 刷新全局项目态 */
 export const project_import_pkg = () => invoke<ProjectPkgResult>("project_import_pkg");
+
+/* ---------------- Story Bible（v2.8.0） ---------------- */
+
+export interface BibleCharacter {
+  name: string;
+  desc?: string;
+  appearance?: string;
+  refAssetId?: string;
+}
+export interface BibleNamedItem {
+  name: string;
+  desc?: string;
+}
+export interface BibleDoc {
+  story: {
+    title?: string;
+    genre?: string;
+    era?: string;
+    location?: string;
+    theme?: string;
+    targetDurationSec?: number;
+    targetPlatform?: string;
+    aspectRatio?: string;
+    visualStyle?: string;
+  };
+  characters: BibleCharacter[];
+  locations: BibleNamedItem[];
+  props: BibleNamedItem[];
+  continuity: string[];
+}
+
+const EMPTY_BIBLE: BibleDoc = {
+  story: { title: "", genre: "", era: "", location: "", theme: "", targetDurationSec: 120, targetPlatform: "抖音", aspectRatio: "9:16", visualStyle: "" },
+  characters: [],
+  locations: [],
+  props: [],
+  continuity: [],
+};
+
+export const bibleGet = () => invoke<Partial<BibleDoc>>("bible_get");
+export const bibleSave = (doc: BibleDoc) => invoke<void>("bible_save", { doc });
+/** AI 生成 Story Bible（brief：一句话需求） */
+export const bibleGenerate = (brief: string) => invoke<Partial<BibleDoc>>("bible_generate", { brief });
+
+/** 当前项目远程生成用量（预算守卫看板；未打开项目时 invoke 报错，由调用方兜底） */
+export const costsGet = () =>
+  invoke<{ today: number; total: number; todayCost: number; totalCost: number; date: string }>("costs_get");
+
+/** 记忆语义搜索（v2.14：字符二元组余弦相似度，纯本地） */
+export const memorySearch = (query: string, limit?: number) =>
+  invoke<{ record: { id: string; text: string; scope: string; createdAt?: string; created_at?: string }; score: number }[]>(
+    "memory_search",
+    { query, limit },
+  );
+
+/** 归一化：补齐缺失字段，保证编辑器四张表可用 */
+export function normalizeBible(raw: Partial<BibleDoc> | null | undefined): BibleDoc {
+  const story = { ...EMPTY_BIBLE.story, ...(raw?.story ?? {}) };
+  return {
+    story,
+    characters: Array.isArray(raw?.characters) ? raw!.characters : [],
+    locations: Array.isArray(raw?.locations) ? raw!.locations : [],
+    props: Array.isArray(raw?.props) ? raw!.props : [],
+    continuity: Array.isArray(raw?.continuity) ? raw!.continuity : [],
+  };
+}

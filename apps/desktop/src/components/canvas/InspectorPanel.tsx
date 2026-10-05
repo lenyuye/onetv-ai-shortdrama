@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { NODE_TYPE_DEFS } from "@onetv/node-sdk";
 import type { CanvasNode } from "@onetv/shared-types";
+import { t, useT } from "../../i18n";
 import { NODE_ICONS, type NodeParamDef } from "./canvas-model";
 
 interface InspectorPanelProps {
@@ -18,20 +19,26 @@ interface InspectorPanelProps {
   onEditStart: () => void;
   onEditEnd: () => void;
   onDelete: () => void;
+  /** review 节点暂停时批准并恢复批次（v2.14） */
+  onBatchResume?: () => void;
 }
 
 function placeholderFor(key: string): string {
-  if (key === "model") return "模型引用，如 openai/gpt-4o";
-  if (key === "prompt" || key === "text") return "输入提示词 / 文本内容…";
-  if (key === "expression") return "如 out.shots.length > 0";
-  if (key === "voice") return "音色名称";
-  if (key === "preset") return "预设名称";
+  if (key === "model") return t("模型引用，如 openai/gpt-4o");
+  if (key === "prompt" || key === "text") return t("输入提示词 / 文本内容…");
+  if (key === "expression") return t("如 out.shots.length > 0");
+  if (key === "voice") return t("音色名称");
+  if (key === "preset") return t("预设名称");
   return "";
 }
 
 export default function InspectorPanel(props: InspectorPanelProps) {
-  const { node, onConfigChange, onConfigReplace, onTitleChange, onEditStart, onEditEnd, onDelete } =
+  const t = useT();
+  const { node, onConfigChange, onConfigReplace, onTitleChange, onEditStart, onEditEnd, onDelete, onBatchResume } =
     props;
+  const locked = node?.config?.locked === true;
+  const disabled = node?.config?.disabled === true;
+  const isReviewAwaiting = node?.type === "review" && node?.config?.status === "awaiting_review";
   const [draft, setDraft] = useState("");
   const [draftErr, setDraftErr] = useState<string | null>(null);
 
@@ -44,8 +51,8 @@ export default function InspectorPanel(props: InspectorPanelProps) {
   if (!node) {
     return (
       <aside className="cv-inspector">
-        <div className="cv-inspector-title">参数</div>
-        <div className="hint">未选中节点。点击画布中的节点后，可在此编辑标题与参数。</div>
+        <div className="cv-inspector-title">{t("参数")}</div>
+        <div className="hint">{t("未选中节点。点击画布中的节点后，可在此编辑标题与参数。")}</div>
       </aside>
     );
   }
@@ -59,19 +66,19 @@ export default function InspectorPanel(props: InspectorPanelProps) {
     try {
       const parsed = JSON.parse(draft) as unknown;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        setDraftErr("JSON 必须是一个对象（{...}）");
+        setDraftErr(t("JSON 必须是一个对象（{...}）"));
         return;
       }
       onConfigReplace(parsed as Record<string, unknown>);
       setDraftErr(null);
     } catch (e) {
-      setDraftErr(`JSON 解析失败：${String(e)}`);
+      setDraftErr(t("JSON 解析失败：{error}", { error: String(e) }));
     }
   };
 
   return (
     <aside className="cv-inspector">
-      <div className="cv-inspector-title">参数</div>
+      <div className="cv-inspector-title">{t("参数")}</div>
       <div className="cv-inspector-head">
         <span className="icon">{NODE_ICONS[node.type] ?? "⬜"}</span>
         <span className="name">{def?.title ?? node.title}</span>
@@ -79,11 +86,41 @@ export default function InspectorPanel(props: InspectorPanelProps) {
       </div>
       <div className="cv-node-id">{node.id}</div>
 
+      {/* v2.14：禁用/锁定开关（批量运行跳过禁用节点；锁定防误删误改） */}
+      <div style={{ display: "flex", gap: 16, alignItems: "center", margin: "8px 0 4px", flexWrap: "wrap" }}>
+        <label style={{ display: "flex", gap: 6, alignItems: "center", cursor: "pointer", fontSize: 12 }}>
+          <input type="checkbox" checked={disabled} onChange={(e) => { onEditStart(); onConfigChange({ disabled: e.target.checked }); onEditEnd(); }} />
+          {t("⏸ 禁用（运行时跳过）")}
+        </label>
+        <label style={{ display: "flex", gap: 6, alignItems: "center", cursor: "pointer", fontSize: 12 }}>
+          <input type="checkbox" checked={locked} onChange={(e) => { onEditStart(); onConfigChange({ locked: e.target.checked }); onEditEnd(); }} />
+          {t("🔒 锁定（防删除/修改）")}
+        </label>
+      </div>
+
+      {isReviewAwaiting && (
+        <div style={{ background: "rgba(255,181,71,.12)", border: "1px solid rgba(255,181,71,.4)", borderRadius: 8, padding: 10, margin: "8px 0" }}>
+          <div style={{ fontSize: 12, marginBottom: 8 }}>{t("⏸ 该审核节点正在等待批准——批准后批次将从中断处继续。")}</div>
+          <button
+            className="btn primary sm"
+            onClick={() => {
+              onEditStart();
+              onConfigChange({ status: "approved", batchStatus: "done", batchNote: "人工批准" });
+              onEditEnd();
+              onBatchResume?.();
+            }}
+          >
+            {t("✓ 批准并继续运行")}
+          </button>
+        </div>
+      )}
+
       <div className="field">
-        <label>节点标题</label>
+        <label>{locked ? t("节点标题（已锁定）") : t("节点标题")}</label>
         <input
           type="text"
           value={node.title}
+          disabled={locked}
           onFocus={onEditStart}
           onBlur={onEditEnd}
           onChange={(e) => onTitleChange(e.target.value)}
@@ -106,6 +143,7 @@ export default function InspectorPanel(props: InspectorPanelProps) {
             {enumValues.length > 0 ? (
               <select
                 value={rawStr}
+                disabled={locked}
                 onFocus={onEditStart}
                 onBlur={onEditEnd}
                 onChange={(e) => onConfigChange({ [key]: e.target.value })}
@@ -123,6 +161,7 @@ export default function InspectorPanel(props: InspectorPanelProps) {
               <textarea
                 rows={3}
                 value={rawStr}
+                disabled={locked}
                 placeholder={placeholderFor(key)}
                 onFocus={onEditStart}
                 onBlur={onEditEnd}
@@ -132,6 +171,7 @@ export default function InspectorPanel(props: InspectorPanelProps) {
               <input
                 type={isNum ? "number" : "text"}
                 value={rawStr}
+                disabled={locked}
                 min={p.min}
                 max={p.max}
                 placeholder={placeholderFor(key)}
@@ -160,16 +200,16 @@ export default function InspectorPanel(props: InspectorPanelProps) {
         />
         {draftErr && <div className="cv-json-err">{draftErr}</div>}
         <button className="btn sm" onClick={applyDraft}>
-          应用 JSON
+          {t("应用 JSON")}
         </button>
       </div>
 
       <div style={{ flex: 1 }} />
-      <button className="btn danger sm" onClick={onDelete}>
-        🗑 删除该节点
+      <button className="btn danger sm" disabled={locked} title={locked ? t("节点已锁定") : undefined} onClick={onDelete}>
+        {t("🗑 删除该节点")}
       </button>
       <div className="hint" style={{ marginTop: 6 }}>
-        也可以选中节点后按 Delete 键删除
+        {t("也可以选中节点后按 Delete 键删除")}
       </div>
     </aside>
   );

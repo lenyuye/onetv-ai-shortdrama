@@ -20,7 +20,10 @@ import LoginView from "./views/LoginView";
 import AgentChatView from "./views/AgentChatView";
 import { Toaster } from "./components/Toaster";
 import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
+import { CommandPalette } from "./components/CommandPalette";
+import { useTauriEvent } from "./hooks/useTauriEvent";
 import { initAgentChatBridge } from "./agentChatStore";
+import { useT } from "./i18n";
 
 const NAV: { key: ViewKey; icon: string; label: string; section: string }[] = [
   { key: "home", icon: "🏠", label: "工作区", section: "工作区" },
@@ -37,19 +40,37 @@ const NAV: { key: ViewKey; icon: string; label: string; section: string }[] = [
   { key: "settings", icon: "⚙️", label: "设置", section: "系统" },
 ];
 
-const PLACEHOLDER_VIEWS: Record<string, string> = {};
-
 export default function App() {
   const { view, setView, settings, loadSettings, ffmpeg, loadFfmpeg, project, loadProject, authed, setAuthed, appVersion, loadAppVersion } =
     useApp();
+  const t = useT();
   // 顶栏/底栏实时任务计数（此前硬编码"任务 0"，批准执行后徽标不动）
   const [jobs, setJobs] = useState<JobDto[]>([]);
+  // ⌘K 命令面板（v2.11.0）
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const refreshJobs = () => {
     jobList(200)
       .then((list) => setJobs(list))
       .catch(() => {});
   };
+
+  // 原生控件/滚动条随主题切换（v2.11.0；此前 index.html 写死 dark，浅色模式下原生元素仍按深色渲染）
+  useEffect(() => {
+    document.documentElement.style.colorScheme = settings?.theme === "light" ? "light" : "dark";
+  }, [settings?.theme]);
+
+  // ⌘K / Ctrl+K 打开命令面板
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     initAgentChatBridge(); // agent.message 全局桥：按 jobId 归档到项目对话（切视图不丢回复）
@@ -58,25 +79,22 @@ export default function App() {
     loadProject();
     loadAppVersion();
     api.authStatus().then((st) => setAuthed(!!st.loggedIn)).catch(() => setAuthed(false));
+    // 仅拉取一次初始列表；后续更新完全由 job.* 事件驱动（见下方 useTauriEvent）。
+    // 不再做全量轮询：每个事件都会 refreshJobs，轮询只会带来无意义的全量列表重复拉取。
     refreshJobs();
-
-    // 任务事件驱动 + 兜底轮询，保证徽标实时反映队列
-    const events = ["job.created", "job.progress", "job.succeeded", "job.failed"];
-    const unlistens: Promise<unknown>[] = events.map((e) => api.onAppEvent(e, refreshJobs));
-    const timer = window.setInterval(refreshJobs, 5000);
-
-    // 原生菜单入口（macOS 菜单栏 → 对应页面）
-    unlistens.push(
-      api.onAppEvent("menu:settings", () => useApp.getState().setView("settings")),
-      api.onAppEvent("menu:new-project", () => useApp.getState().setView("home")),
-      api.onAppEvent("menu:open-project", () => useApp.getState().setView("home")),
-      api.onAppEvent("menu:export-pkg", () => useApp.getState().setView("projects")),
-    );
-    return () => {
-      unlistens.forEach((u) => u.then((f) => (f as () => void)()).catch(() => {}));
-      window.clearInterval(timer);
-    };
   }, []);
+
+  // 任务事件驱动刷新：任何任务状态变化都触发一次全量列表刷新，徽标实时反映队列
+  useTauriEvent("job.created", refreshJobs);
+  useTauriEvent("job.progress", refreshJobs);
+  useTauriEvent("job.succeeded", refreshJobs);
+  useTauriEvent("job.failed", refreshJobs);
+
+  // 原生菜单入口（macOS 菜单栏 → 对应页面）
+  useTauriEvent("menu:settings", () => useApp.getState().setView("settings"));
+  useTauriEvent("menu:new-project", () => useApp.getState().setView("home"));
+  useTauriEvent("menu:open-project", () => useApp.getState().setView("home"));
+  useTauriEvent("menu:export-pkg", () => useApp.getState().setView("projects"));
 
   const activeJobs = jobs.filter((j) => !["SUCCEEDED", "FAILED", "CANCELED"].includes(j.state));
   const runningCount = jobs.filter((j) => j.state === "RUNNING").length;
@@ -169,14 +187,6 @@ export default function App() {
     case "agent":
       main = <AgentChatView />;
       break;
-    default:
-      main = (
-        <PlaceholderView
-          view={view}
-          hasProject={!!project}
-          text={PLACEHOLDER_VIEWS[view] ?? "该模块将在后续阶段实现"}
-        />
-      );
   }
 
   return (
@@ -189,14 +199,14 @@ export default function App() {
           <span>OneTV</span>
         </div>
         <div className="divider" />
-        <span className="save-state">{project ? `项目：${project.project.title}` : "未打开项目"}</span>
+        <span className="save-state">{project ? t("项目：{title}", { title: project.project.title }) : t("未打开项目")}</span>
         <div className="spacer" />
-        {offline && <span className="pill offline">🛡️ Local-only 离线模式</span>}
+        {offline && <span className="pill offline">🛡️ {t("Local-only 离线模式")}</span>}
         <span className={`pill ${ffmpeg?.ok ? "ok" : "warn"}`} title={ffmpeg?.message}>
-          {ffmpeg?.ok ? `FFmpeg ${ffmpeg.ffmpegVersion ?? ""}` : "FFmpeg 未就绪"}
+          {ffmpeg?.ok ? `FFmpeg ${ffmpeg.ffmpegVersion ?? ""}` : t("FFmpeg 未就绪")}
         </span>
-        <span className={`pill ${activeJobs.length ? "ok" : ""}`} title="进行中的任务数">任务 {activeJobs.length}</span>
-        <button className="btn sm ghost" onClick={() => setView("settings")}>设置</button>
+        <span className={`pill ${activeJobs.length ? "ok" : ""}`} title={t("进行中的任务数")}>{t("任务 {n}", { n: activeJobs.length })}</span>
+        <button className="btn sm ghost" onClick={() => setView("settings")}>{t("设置")}</button>
       </header>
 
       <div className="app-body">
@@ -204,16 +214,18 @@ export default function App() {
         <nav className="leftnav">
           {["工作区", "创作", "管理", "系统"].map((section) => (
             <div key={section}>
-              <div className="nav-section">{section}</div>
+              <div className="nav-section">{t(section)}</div>
               {NAV.filter((n) => n.section === section).map((n) => (
-                <div
+                <button
                   key={n.key}
+                  type="button"
                   className={`nav-item ${view === n.key ? "active" : ""}`}
+                  aria-current={view === n.key ? "page" : undefined}
                   onClick={() => setView(n.key)}
                 >
-                  <span className="icon">{n.icon}</span>
-                  {n.label}
-                </div>
+                  <span className="icon" aria-hidden>{n.icon}</span>
+                  {t(n.label)}
+                </button>
               ))}
             </div>
           ))}
@@ -227,42 +239,20 @@ export default function App() {
 
       {/* 底部任务栏 */}
       <footer className="bottombar">
-        <span>并发 {runningCount}/{settings?.maxConcurrentJobs ?? 2}</span>
+        <span>{t("并发 {n}/{max}", { n: runningCount, max: settings?.maxConcurrentJobs ?? 2 })}</span>
         <span className="sep">|</span>
-        <span>队列 {activeJobs.length}</span>
+        <span>{t("队列 {n}", { n: activeJobs.length })}</span>
         <span className="sep">|</span>
         <div className="progress-mini"><div style={{ width: `${avgProgress}%` }} /></div>
         <span className="sep">|</span>
-        <span>{offline ? "网络：Local-only（已禁止公网出站）" : "网络：仅允许已配置的 Provider"}</span>
+        <span>{offline ? t("网络：Local-only（已禁止公网出站）") : t("网络：仅允许已配置的 Provider")}</span>
         <span style={{ flex: 1 }} />
         <span>OneTV v{appVersion ?? "…"} · Local-first · No telemetry</span>
       </footer>
 
+      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
       <Toaster />
     </div>
   );
 }
 
-function PlaceholderView({ view, hasProject, text }: { view: string; hasProject: boolean; text: string }) {
-  const labels: Record<string, string> = {
-    agent: "Agent 对话",
-    script: "剧本",
-    storyboard: "分镜",
-    canvas: "画布",
-    assets: "资产库",
-    skills: "Skill Hub",
-    jobs: "任务队列",
-  };
-  return (
-    <div className="empty-state" style={{ height: "100%" }}>
-      <div className="big">{hasProject ? "🚧" : "🎬"}</div>
-      <h2>{labels[view] ?? "模块建设中"}</h2>
-      <p>{hasProject ? text : "请先在「工作区」创建或打开一个项目"}</p>
-      {!hasProject && (
-        <button className="btn primary" onClick={() => useApp.getState().setView("home")}>
-          前往工作区
-        </button>
-      )}
-    </div>
-  );
-}

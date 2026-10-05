@@ -3,6 +3,7 @@
  */
 import { NODE_PALETTE_ORDER, NODE_TYPE_DEFS } from "@onetv/node-sdk";
 import type { NodeType } from "@onetv/shared-types";
+import { useT } from "../../i18n";
 import { NODE_ICONS } from "./canvas-model";
 
 export const NODE_DND_MIME = "application/onetv-node";
@@ -12,10 +13,11 @@ interface NodePaletteProps {
 }
 
 export default function NodePalette({ onAdd }: NodePaletteProps) {
+  const t = useT();
   return (
     <aside className="cv-palette">
-      <div className="cv-palette-title">节点面板</div>
-      <div className="hint">点击创建，或拖拽到画布</div>
+      <div className="cv-palette-title">{t("节点面板")}</div>
+      <div className="hint">{t("点击创建，或拖拽到画布")}</div>
       {NODE_PALETTE_ORDER.map((type) => {
         const def = NODE_TYPE_DEFS[type];
         const inputs = (def?.inputs ?? []).map((p) => p.port).join("/");
@@ -27,7 +29,11 @@ export default function NodePalette({ onAdd }: NodePaletteProps) {
             draggable
             title={
               def
-                ? `${def.title}\n输入: ${inputs || "无"}\n输出: ${outputs || "无"}`
+                ? t("{title}\n输入: {inputs}\n输出: {outputs}", {
+                    title: t(def.title),
+                    inputs: inputs || t("无"),
+                    outputs: outputs || t("无"),
+                  })
                 : type
             }
             onDragStart={(e) => {
@@ -38,7 +44,7 @@ export default function NodePalette({ onAdd }: NodePaletteProps) {
           >
             <span className="icon">{NODE_ICONS[type] ?? "⬜"}</span>
             <div className="meta">
-              <div className="name">{def?.title ?? type}</div>
+              <div className="name">{def ? t(def.title) : type}</div>
               <div className="sub">{type}</div>
             </div>
           </div>

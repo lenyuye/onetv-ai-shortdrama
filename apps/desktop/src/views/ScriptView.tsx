@@ -10,6 +10,7 @@ import * as api from "../api";
 import * as story from "../api-story";
 import type { AgentPlanView } from "../api-story";
 import { useApp } from "../store";
+import { useT } from "../i18n";
 
 /* ---------------- 剧本库多版本（存储在 script.json 文档内部） ---------------- */
 
@@ -133,6 +134,7 @@ function fmtTime(iso: string): string {
 
 export default function ScriptView() {
   const { project, setView, toast } = useApp();
+  const t = useT();
   const [episodes, setEpisodes] = useState<EpisodeInfo[]>([]);
   const [episodesLoaded, setEpisodesLoaded] = useState(false);
   const [episodeId, setEpisodeId] = useState("");
@@ -216,11 +218,11 @@ export default function ScriptView() {
           });
           await story.docSave(ep, "script", next);
           setDoc(next);
-          toast(`已登记 AI 生成剧本为新版本《${version.title}》`, "ok");
+          toast(t("已登记 AI 生成剧本为新版本《{title}》", { title: version.title }), "ok");
           return true;
         } catch (e) {
           const msg = api.errMsg(e);
-          if (!msg.includes("已取消")) toast(`登记 AI 剧本版本失败：${msg}`, "err");
+          if (!msg.includes("已取消")) toast(t("登记 AI 剧本版本失败：{msg}", { msg }), "err");
           return true;
         } finally {
           setSaving(false);
@@ -254,7 +256,7 @@ export default function ScriptView() {
           if (cancelled) return;
           setDoc(story.emptyScriptDocument(ep));
           const msg = api.errMsg(e);
-          if (!msg.includes("已取消")) toast(`加载剧本失败：${msg}`, "err");
+          if (!msg.includes("已取消")) toast(t("加载剧本失败：{msg}", { msg }), "err");
         })
         .finally(() => {
           if (!cancelled) setLoading(false);
@@ -301,8 +303,8 @@ export default function ScriptView() {
   useEffect(() => {
     if (!ctxMenu) return;
     const onDown = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t && typeof t.closest === "function" && t.closest("[data-ctxmenu]")) return;
+      const el = e.target as HTMLElement | null;
+      if (el && typeof el.closest === "function" && el.closest("[data-ctxmenu]")) return;
       setCtxMenu(null);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -320,9 +322,9 @@ export default function ScriptView() {
     return (
       <div className="empty-state" style={{ height: "100%" }}>
         <div className="big">📝</div>
-        <h2>尚未打开项目</h2>
-        <p>剧本按分集组织，请先在「工作区」创建或打开一个项目</p>
-        <button className="btn primary" onClick={() => setView("home")}>前往工作区</button>
+        <h2>{t("尚未打开项目")}</h2>
+        <p>{t("剧本按分集组织，请先在「工作区」创建或打开一个项目")}</p>
+        <button className="btn primary" onClick={() => setView("home")}>{t("前往工作区")}</button>
       </div>
     );
   }
@@ -331,7 +333,7 @@ export default function ScriptView() {
     return (
       <div className="empty-state" style={{ height: "100%" }}>
         <div className="big">⏳</div>
-        <p>分集加载中…</p>
+        <p>{t("分集加载中…")}</p>
       </div>
     );
   }
@@ -340,9 +342,9 @@ export default function ScriptView() {
     return (
       <div className="empty-state" style={{ height: "100%" }}>
         <div className="big">🎞️</div>
-        <h2>还没有分集</h2>
-        <p>剧本挂在分集下，请先在「项目」页新增一集</p>
-        <button className="btn primary" onClick={() => setView("projects")}>前往项目页</button>
+        <h2>{t("还没有分集")}</h2>
+        <p>{t("剧本挂在分集下，请先在「项目」页新增一集")}</p>
+        <button className="btn primary" onClick={() => setView("projects")}>{t("前往项目页")}</button>
       </div>
     );
   }
@@ -422,7 +424,7 @@ export default function ScriptView() {
   };
 
   const removeScene = (si: number) => {
-    if (!window.confirm("删除该场景（含全部台词）？保存后生效。")) return;
+    if (!window.confirm(t("删除该场景（含全部台词）？保存后生效。"))) return;
     setDoc((d) => (d ? { ...d, scenes: d.scenes.filter((_, i) => i !== si) } : d));
   };
 
@@ -444,7 +446,7 @@ export default function ScriptView() {
       toast(okText, "ok");
     } catch (e) {
       const msg = api.errMsg(e);
-      if (!msg.includes("已取消")) toast(`保存剧本失败：${msg}`, "err");
+      if (!msg.includes("已取消")) toast(t("保存剧本失败：{msg}", { msg }), "err");
     } finally {
       setSaving(false);
     }
@@ -466,7 +468,7 @@ export default function ScriptView() {
           },
         ],
       },
-      "已新建场景"
+      t("已新建场景")
     );
   };
 
@@ -476,14 +478,14 @@ export default function ScriptView() {
     const sc = doc.scenes[si];
     if (!sc) return;
     setSceneClipboard({ ...sc, dialogues: sc.dialogues.map((d) => ({ ...d })) });
-    toast(`已复制场景「${sc.heading}」到剪贴板`, "ok");
+    toast(t("已复制场景「{name}」到剪贴板", { name: sc.heading }), "ok");
   };
 
   /** 📋 粘贴到末尾（新 id） */
   const pasteScene = async () => {
     if (!doc) return;
     if (!sceneClipboard) {
-      toast("剪贴板为空，请先复制一个场景", "warn");
+      toast(t("剪贴板为空，请先复制一个场景"), "warn");
       return;
     }
     await persistScript(
@@ -498,7 +500,7 @@ export default function ScriptView() {
           },
         ],
       },
-      "已粘贴场景"
+      t("已粘贴场景")
     );
   };
 
@@ -515,19 +517,19 @@ export default function ScriptView() {
     };
     const scenes = [...doc.scenes];
     scenes.splice(si + 1, 0, clone);
-    await persistScript({ ...doc, scenes }, `已新建场景副本「${clone.heading}」`);
+    await persistScript({ ...doc, scenes }, t("已新建场景副本「{name}」", { name: clone.heading }));
   };
 
   /** 🗑 删除场景（至少保留一个） */
   const removeSceneNow = async (si: number) => {
     if (!doc) return;
     if (doc.scenes.length <= 1) {
-      toast("至少保留一个场景", "warn");
+      toast(t("至少保留一个场景"), "warn");
       return;
     }
     await persistScript(
       { ...doc, scenes: doc.scenes.filter((_, i) => i !== si) },
-      `已删除第 ${si + 1} 场`
+      t("已删除第 {n} 场", { n: si + 1 })
     );
   };
 
@@ -539,7 +541,7 @@ export default function ScriptView() {
       const att = await api.agentAttach();
       const preview = att.textPreview?.trim() ?? "";
       if (!preview) {
-        toast("仅支持文本格式文件（txt/md/…），该文件已存入资产库", "warn");
+        toast(t("仅支持文本格式文件（txt/md/…），该文件已存入资产库"), "warn");
         return;
       }
       if (!doc) return;
@@ -575,11 +577,11 @@ export default function ScriptView() {
           versions: [...(doc.versions ?? []), version],
           activeVersionId: version.id,
         },
-        `已导入剧本文件为新版本《${baseName}》`
+        t("已导入剧本文件为新版本《{title}》", { title: baseName })
       );
     } catch (e) {
       const msg = api.errMsg(e);
-      if (!msg.includes("已取消")) toast(`上传剧本文件失败：${msg}`, "err");
+      if (!msg.includes("已取消")) toast(t("上传剧本文件失败：{msg}", { msg }), "err");
     }
   };
 
@@ -612,7 +614,7 @@ export default function ScriptView() {
     closeNewScript();
     await persistScript(
       { ...doc, scenes, versions: [...(doc.versions ?? []), version], activeVersionId: version.id },
-      `已新建剧本《${title}》`
+      t("已新建剧本《{title}》", { title })
     );
   };
 
@@ -623,7 +625,7 @@ export default function ScriptView() {
     if (!v) return;
     await persistScript(
       { ...doc, scenes: cloneScenes(v.scenes), activeVersionId: v.id },
-      `已切换到《${v.title}》`
+      t("已切换到《{title}》", { title: v.title })
     );
   };
 
@@ -635,7 +637,7 @@ export default function ScriptView() {
     const root = src.copyOf ?? src.id; // 副本的根 id：源是副本则继承其 copyOf
     const copies = libVersions.filter((v) => v.source === "copy" && v.copyOf === root).length;
     if (copies >= COPY_LIMIT_PER_ROOT) {
-      toast("该剧本最多只能创建 3 个副本", "warn");
+      toast(t("该剧本最多只能创建 3 个副本"), "warn");
       return;
     }
     const clone: ScriptVersion = {
@@ -648,7 +650,7 @@ export default function ScriptView() {
     };
     await persistScript(
       { ...doc, versions: [...libVersions, clone] },
-      `已创建副本《${clone.title}》`
+      t("已创建副本《{title}》", { title: clone.title })
     );
   };
 
@@ -659,8 +661,8 @@ export default function ScriptView() {
     if (!v) return;
     const isActive = id === libActiveId;
     const confirmText = isActive
-      ? `删除当前使用中的版本《${v.title}》？该版本的剧本内容将一并删除。`
-      : `删除版本《${v.title}》？该版本的剧本内容将一并删除。`;
+      ? t("删除当前使用中的版本《{title}》？该版本的剧本内容将一并删除。", { title: v.title })
+      : t("删除版本《{title}》？该版本的剧本内容将一并删除。", { title: v.title });
     if (!window.confirm(confirmText)) return;
     let rest = libVersions.filter((x) => x.id !== id);
     if (rest.length === 0) {
@@ -672,7 +674,7 @@ export default function ScriptView() {
     const nextScenes = cloneScenes(rest.find((x) => x.id === nextActive)?.scenes ?? []);
     await persistScript(
       { ...doc, scenes: nextScenes, versions: rest, activeVersionId: nextActive },
-      `已删除版本《${v.title}》`
+      t("已删除版本《{title}》", { title: v.title })
     );
   };
 
@@ -685,10 +687,10 @@ export default function ScriptView() {
       const stamped = withVersionBookkeeping({ ...doc, updatedAt: new Date().toISOString() });
       await story.docSave(episodeId, "script", stamped);
       setDoc(stamped);
-      toast("剧本已保存", "ok");
+      toast(t("剧本已保存"), "ok");
     } catch (e) {
       const msg = api.errMsg(e);
-      if (!msg.includes("已取消")) toast(`保存剧本失败：${msg}`, "err");
+      if (!msg.includes("已取消")) toast(t("保存剧本失败：{msg}", { msg }), "err");
     } finally {
       setSaving(false);
     }
@@ -742,7 +744,7 @@ export default function ScriptView() {
     setApproveBusy(true);
     try {
       await story.agentApprove(plan.planId);
-      toast("任务已创建，可在任务页查看", "ok");
+      toast(t("任务已创建，可在任务页查看"), "ok");
       setAiOpen(false);
       setPlan(null);
       // 生成结果落盘后要登记为新版本：记录当前场景快照，刷新时对比
@@ -755,7 +757,7 @@ export default function ScriptView() {
       }, 1500);
     } catch (e) {
       const msg = api.errMsg(e);
-      if (!msg.includes("已取消")) toast(`批准失败：${msg}`, "err");
+      if (!msg.includes("已取消")) toast(t("批准失败：{msg}", { msg }), "err");
     } finally {
       setApproveBusy(false);
     }
@@ -771,8 +773,8 @@ export default function ScriptView() {
   const epLabel =
     epNo != null
       ? strippedTitle
-        ? `第 ${epNo} 集 · ${strippedTitle}`
-        : `第 ${epNo} 集`
+        ? t("第 {n} 集 · {title}", { n: epNo, title: strippedTitle })
+        : t("第 {n} 集", { n: epNo })
       : rawEpTitle;
   const hasScript = !!doc && doc.scenes.length > 0;
 
@@ -794,33 +796,33 @@ export default function ScriptView() {
 
       <div className="page-header">
         <div>
-          <h1>📝 剧本</h1>
+          <h1>{t("📝 剧本")}</h1>
           <div className="desc">
             {project.project.title}
             {epLabel ? ` · ${epLabel}` : ""}
-            {hasScript ? ` · ${doc?.scenes.length ?? 0} 个场景` : ""}
+            {hasScript ? ` · ${t("{n} 个场景", { n: doc?.scenes.length ?? 0 })}` : ""}
           </div>
         </div>
         <div className="script-toolbar">
           <select
             value={episodeId}
             onChange={(e) => setEpisodeId(e.target.value)}
-            aria-label="选择分集"
+            aria-label={t("选择分集")}
           >
             {episodes.map((ep) => (
               <option key={ep.id} value={ep.id}>
-                第 {ep.number} 集 · {ep.title}
+                {t("第 {n} 集 · {title}", { n: ep.number, title: ep.title })}
               </option>
             ))}
           </select>
-          <button className="btn primary" onClick={openAi}>✨ AI 生成剧本</button>
+          <button className="btn primary" onClick={openAi}>{t("✨ AI 生成剧本")}</button>
           {hasScript && (
             <button className={`btn ${editing ? "" : "ghost"}`} onClick={() => setEditing((v) => !v)}>
-              {editing ? "✓ 完成编辑" : "✏️ 编辑"}
+              {editing ? t("✓ 完成编辑") : t("✏️ 编辑")}
             </button>
           )}
           <button className="btn blue" disabled={!hasScript || saving || loading} onClick={() => void saveDoc()}>
-            {saving ? "保存中…" : "💾 保存剧本"}
+            {saving ? t("保存中…") : t("💾 保存剧本")}
           </button>
         </div>
       </div>
@@ -829,14 +831,14 @@ export default function ScriptView() {
       {!loading && doc && (
         <div className="card script-lib">
           <div className="script-lib-head">
-            <span className="script-lib-name">📚 剧本库</span>
-            <span className="script-lib-hint">编辑内容仅作用于「使用中」的版本</span>
+            <span className="script-lib-name">{t("📚 剧本库")}</span>
+            <span className="script-lib-hint">{t("编辑内容仅作用于「使用中」的版本")}</span>
             <span style={{ flex: 1 }} />
             <button className="btn sm" disabled={saving} onClick={() => void uploadScriptVersion()}>
-              ⬆️ 上传剧本
+              {t("⬆️ 上传剧本")}
             </button>
             <button className="btn sm" disabled={saving} onClick={openNewScript}>
-              🆕 新建剧本
+              {t("🆕 新建剧本")}
             </button>
           </div>
           <div className="script-lib-list">
@@ -846,22 +848,22 @@ export default function ScriptView() {
               return (
                 <div key={v.id} className={`script-lib-row${isActive ? " active" : ""}`}>
                   <span className="script-lib-title" title={v.title}>{v.title}</span>
-                  <span className={`tag ${meta.cls}`}>{meta.label}</span>
+                  <span className={`tag ${meta.cls}`}>{t(meta.label)}</span>
                   <span className="script-lib-time">{fmtTime(v.createdAt)}</span>
-                  <span className="tag">{v.scenes.length} 场</span>
+                  <span className="tag">{t("{n} 场", { n: v.scenes.length })}</span>
                   <span style={{ flex: 1 }} />
                   {isActive ? (
-                    <span className="tag green">使用中</span>
+                    <span className="tag green">{t("使用中")}</span>
                   ) : (
                     <button className="btn sm" disabled={saving} onClick={() => void useVersion(v.id)}>
-                      使用
+                      {t("使用")}
                     </button>
                   )}
                   <button className="btn sm" disabled={saving} onClick={() => void duplicateVersion(v.id)}>
-                    复制副本
+                    {t("复制副本")}
                   </button>
                   <button className="btn sm danger" disabled={saving} onClick={() => void deleteVersion(v.id)}>
-                    删除
+                    {t("删除")}
                   </button>
                 </div>
               );
@@ -873,15 +875,15 @@ export default function ScriptView() {
       {loading ? (
         <div className="empty-state" style={{ padding: "80px 20px" }}>
           <div className="big">⏳</div>
-          <p>剧本加载中…</p>
+          <p>{t("剧本加载中…")}</p>
         </div>
       ) : !hasScript ? (
         /* ---------- 空状态：引导 AI 生成 ---------- */
         <div className="empty-state" style={{ padding: "90px 20px" }}>
           <div className="big">📝</div>
-          <h2>这一集还没有剧本</h2>
-          <p>用一句话描述你的想法，AI 会先生成执行计划，批准后再开始创作</p>
-          <button className="btn primary" onClick={openAi}>✨ AI 生成剧本</button>
+          <h2>{t("这一集还没有剧本")}</h2>
+          <p>{t("用一句话描述你的想法，AI 会先生成执行计划，批准后再开始创作")}</p>
+          <button className="btn primary" onClick={openAi}>{t("✨ AI 生成剧本")}</button>
         </div>
       ) : (
         /* ---------- 剧本正文 ---------- */
@@ -890,22 +892,22 @@ export default function ScriptView() {
             {editing ? (
               <>
                 <div className="field">
-                  <label>剧名</label>
+                  <label>{t("剧名")}</label>
                   <input type="text" value={doc?.title ?? ""} onChange={(e) => patchDoc({ title: e.target.value })} />
                 </div>
                 <div className="field" style={{ marginBottom: 0 }}>
-                  <label>一句话简介（Logline）</label>
+                  <label>{t("一句话简介（Logline）")}</label>
                   <textarea
                     value={doc?.logline ?? ""}
                     rows={2}
-                    placeholder="一句话概括这一集的故事"
+                    placeholder={t("一句话概括这一集的故事")}
                     onChange={(e) => patchDoc({ logline: e.target.value })}
                   />
                 </div>
               </>
             ) : (
               <>
-                <h2 className="script-title">{doc?.title || "未命名剧本"}</h2>
+                <h2 className="script-title">{doc?.title || t("未命名剧本")}</h2>
                 {doc?.logline && <p className="script-logline">{doc.logline}</p>}
               </>
             )}
@@ -924,15 +926,15 @@ export default function ScriptView() {
                 ) : (
                   <h3 className="scene-heading">{scene.heading}</h3>
                 )}
-                <span className="tag">{scene.dialogues.length} 句台词</span>
+                <span className="tag">{t("{n} 句台词", { n: scene.dialogues.length })}</span>
                 {editing && (
-                  <button className="btn sm danger" onClick={() => removeScene(si)}>🗑 删除场景</button>
+                  <button className="btn sm danger" onClick={() => removeScene(si)}>{t("🗑 删除场景")}</button>
                 )}
               </div>
 
               {editing ? (
                 <div className="field">
-                  <label>场景梗概</label>
+                  <label>{t("场景梗概")}</label>
                   <textarea
                     value={scene.synopsis}
                     rows={2}
@@ -953,24 +955,24 @@ export default function ScriptView() {
                             type="text"
                             className="dlg-char-input"
                             value={dl.characterName}
-                            placeholder="角色名"
+                            placeholder={t("角色名")}
                             onChange={(e) => patchDialogue(si, di, { characterName: e.target.value })}
                           />
                           <input
                             type="text"
                             className="dlg-paren-input"
                             value={dl.parenthetical ?? ""}
-                            placeholder="语气提示（可选）"
+                            placeholder={t("语气提示（可选）")}
                             onChange={(e) => patchDialogue(si, di, { parenthetical: e.target.value || undefined })}
                           />
                           <textarea
                             className="dlg-line-input"
                             value={dl.line}
                             rows={2}
-                            placeholder="台词内容"
+                            placeholder={t("台词内容")}
                             onChange={(e) => patchDialogue(si, di, { line: e.target.value })}
                           />
-                          <button className="btn sm danger" onClick={() => removeDialogue(si, di)}>删除</button>
+                          <button className="btn sm danger" onClick={() => removeDialogue(si, di)}>{t("删除")}</button>
                         </>
                       ) : (
                         <>
@@ -987,18 +989,18 @@ export default function ScriptView() {
               )}
 
               {editing && (
-                <button className="btn sm" onClick={() => addDialogue(si)}>+ 添加台词</button>
+                <button className="btn sm" onClick={() => addDialogue(si)}>{t("+ 添加台词")}</button>
               )}
             </div>
           ))}
 
           {editing && (
-            <button className="btn scene-add" onClick={addScene}>+ 新增场景</button>
+            <button className="btn scene-add" onClick={addScene}>{t("+ 新增场景")}</button>
           )}
 
           <div className="script-foot">
             <span>🔒</span>
-            <span>剧本保存在项目 episodes/ 内 · 编辑后记得「保存剧本」</span>
+            <span>{t("剧本保存在项目 episodes/ 内 · 编辑后记得「保存剧本」")}</span>
           </div>
         </div>
       )}
@@ -1008,38 +1010,38 @@ export default function ScriptView() {
         <div className="modal-overlay" onClick={closeAi}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <span>✨ AI 生成剧本{epLabel ? ` · ${epLabel}` : ""}</span>
+              <span>{t("✨ AI 生成剧本")}{epLabel ? ` · ${epLabel}` : ""}</span>
               <button className="btn sm ghost" onClick={closeAi}>×</button>
             </div>
             <div className="modal-body">
               {!plan ? (
                 <>
                   <div className="field">
-                    <label>一句话需求</label>
+                    <label>{t("一句话需求")}</label>
                     <textarea
                       value={prompt}
                       rows={4}
                       autoFocus
-                      placeholder="一句话需求：都市情感短剧，女主是咖啡店老板…"
+                      placeholder={t("一句话需求：都市情感短剧，女主是咖啡店老板…")}
                       onChange={(e) => setPrompt(e.target.value)}
                     />
                     <div className="sub">
-                      Agent 会先给出执行计划；剧本生成将调用 Chat Provider（可能联网出站）
+                      {t("Agent 会先给出执行计划；剧本生成将调用 Chat Provider（可能联网出站）")}
                     </div>
                   </div>
                   {aiErr && <div className="script-err">⚠️ {aiErr}</div>}
                   {/* 模型选择器：生成按钮上方 */}
                   <div className="field" style={{ marginBottom: 0 }}>
-                    <label>AI 模型</label>
+                    <label>{t("AI 模型")}</label>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                       <select
                         value={aiModel ? encodeModelOption(aiModel) : ""}
                         disabled={chatBusy || approveBusy}
-                        aria-label="选择 AI 模型"
+                        aria-label={t("选择 AI 模型")}
                         style={{ minWidth: 220 }}
                         onChange={(e) => setAiModel(parseModelOption(e.target.value))}
                       >
-                        <option value="">自动（默认模型/自动路由）</option>
+                        <option value="">{t("自动（默认模型/自动路由）")}</option>
                         {chatProviders.map((p) => (
                           <optgroup key={p.id} label={p.name}>
                             {p.models.map((m, i) => (
@@ -1055,7 +1057,7 @@ export default function ScriptView() {
                       </select>
                       {chatProviders.length === 0 && (
                         <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                          未配置可用对话模型，将使用离线 Mock
+                          {t("未配置可用对话模型，将使用离线 Mock")}
                         </span>
                       )}
                     </div>
@@ -1064,7 +1066,7 @@ export default function ScriptView() {
               ) : autoExecuted ? (
                 <div className="plan-done">
                   <div className="big">✅</div>
-                  <p>低风险任务已自动执行，无需批准。稍后刷新即可查看结果。</p>
+                  <p>{t("低风险任务已自动执行，无需批准。稍后刷新即可查看结果。")}</p>
                   <p className="hint">{plan.summary}</p>
                 </div>
               ) : (
@@ -1078,17 +1080,17 @@ export default function ScriptView() {
                   disabled={!prompt.trim() || chatBusy}
                   onClick={() => void runChat()}
                 >
-                  {chatBusy ? "规划中…" : "生成执行计划"}
+                  {chatBusy ? t("规划中…") : t("生成执行计划")}
                 </button>
               ) : autoExecuted ? (
-                <button className="btn primary" onClick={closeAi}>好的</button>
+                <button className="btn primary" onClick={closeAi}>{t("好的")}</button>
               ) : (
                 <button className="btn primary" disabled={approveBusy} onClick={() => void approvePlan()}>
-                  {approveBusy ? "执行中…" : "批准执行"}
+                  {approveBusy ? t("执行中…") : t("批准执行")}
                 </button>
               )}
               <button className="btn" disabled={chatBusy || approveBusy} onClick={closeAi}>
-                {plan && !autoExecuted ? "拒绝" : "取消"}
+                {plan && !autoExecuted ? t("拒绝") : t("取消")}
               </button>
             </div>
           </div>
@@ -1100,36 +1102,36 @@ export default function ScriptView() {
         <div className="modal-overlay" onClick={closeNewScript}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <span>🆕 新建剧本{epLabel ? ` · ${epLabel}` : ""}</span>
+              <span>{t("🆕 新建剧本")}{epLabel ? ` · ${epLabel}` : ""}</span>
               <button className="btn sm ghost" onClick={closeNewScript}>×</button>
             </div>
             <div className="modal-body">
               <div className="field">
-                <label>剧本标题</label>
+                <label>{t("剧本标题")}</label>
                 <input
                   type="text"
                   value={newTitle}
                   autoFocus
-                  placeholder="例如：雨夜重逢"
+                  placeholder={t("例如：雨夜重逢")}
                   onChange={(e) => setNewTitle(e.target.value)}
                 />
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
-                <label>剧本内容（必填，粘贴完整剧本文本）</label>
+                <label>{t("剧本内容（必填，粘贴完整剧本文本）")}</label>
                 <textarea
                   value={newText}
                   rows={10}
-                  placeholder="粘贴剧本文本，将作为新版本的第 1 场保存…"
+                  placeholder={t("粘贴剧本文本，将作为新版本的第 1 场保存…")}
                   onChange={(e) => setNewText(e.target.value)}
                 />
               </div>
             </div>
             <div className="modal-foot">
               <button className="btn primary" disabled={!newText.trim() || saving} onClick={() => void submitNewScript()}>
-                创建版本
+                {t("创建版本")}
               </button>
               <button className="btn" disabled={saving} onClick={closeNewScript}>
-                取消
+                {t("取消")}
               </button>
             </div>
           </div>
@@ -1142,17 +1144,18 @@ export default function ScriptView() {
 /* ---------------- 计划面板（summary + 步骤 + 风险 tag） ---------------- */
 
 export function PlanPanel({ plan }: { plan: AgentPlanView }) {
+  const t = useT();
   const riskClass = plan.estimated.risk === "high" ? "red" : plan.estimated.risk === "medium" ? "amber" : "green";
   const riskLabel =
-    plan.estimated.risk === "high" ? "高风险" : plan.estimated.risk === "medium" ? "中风险" : "低风险";
+    plan.estimated.risk === "high" ? t("高风险") : plan.estimated.risk === "medium" ? t("中风险") : t("低风险");
   return (
     <div className="plan-panel">
-      <div className="plan-summary">{plan.summary || "（无摘要）"}</div>
+      <div className="plan-summary">{plan.summary || t("（无摘要）")}</div>
       <div className="plan-tags">
         <span className="tag blue">{plan.intent}</span>
         <span className={`tag ${riskClass}`}>{riskLabel}</span>
-        <span className="tag">任务 {plan.estimated.jobs}</span>
-        <span className="tag">远程调用 {plan.estimated.remoteCalls}</span>
+        <span className="tag">{t("任务 {n}", { n: plan.estimated.jobs })}</span>
+        <span className="tag">{t("远程调用 {n}", { n: plan.estimated.remoteCalls })}</span>
       </div>
       <div className="plan-steps">
         {plan.steps.map((s, i) => (
@@ -1161,12 +1164,12 @@ export function PlanPanel({ plan }: { plan: AgentPlanView }) {
             <span className="tag mono plan-tool">{s.tool}</span>
             <span className="plan-desc">{s.description}</span>
             <span className={`tag ${s.approval === "required" ? "pink" : ""}`}>
-              {s.approval === "required" ? "需批准" : "自动"}
+              {s.approval === "required" ? t("需批准") : t("自动")}
             </span>
           </div>
         ))}
       </div>
-      <div className="plan-note">批准后将创建任务并在后台执行，可在「任务」页查看进度。</div>
+      <div className="plan-note">{t("批准后将创建任务并在后台执行，可在「任务」页查看进度。")}</div>
     </div>
   );
 }

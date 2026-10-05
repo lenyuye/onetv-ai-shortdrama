@@ -13,6 +13,7 @@ import { useApp } from "../../store";
 import { assetList, assetUrl, type AssetRecord } from "../../api-assets";
 import { canvasGet } from "../../api-canvas";
 import type { CanvasNode, NodeType } from "@onetv/shared-types";
+import { useT } from "../../i18n";
 
 const TYPE_CN: Record<string, string> = {
   text: "文本", script: "剧本", image: "生图", video: "生视频", audio: "配音",
@@ -84,6 +85,7 @@ export default function NodeChatPanel({
   onConfig: (nodeId: string, patch: Record<string, unknown>) => void;
   onClose: () => void;
 }) {
+  const t = useT();
   const cap =
     node.type === "image" ? "image_generation"
     : node.type === "video" || node.type === "video-clip" ? "video_generation"
@@ -94,7 +96,9 @@ export default function NodeChatPanel({
     cap ? p.models.some((m) => m.capabilities.includes(cap)) : false
   );
   /** 当前节点类型是否支持面板直发生成 */
-  const runnable = RUNNABLE_TYPES.includes(node.type);
+  const runnable =
+    RUNNABLE_TYPES.includes(node.type) &&
+    node.config?.disabled !== true; // v2.14：禁用节点不可面板直发
 
   const [prompt, setPrompt] = useState("");
   const [providerId, setProviderId] = useState("");
@@ -140,7 +144,7 @@ export default function NodeChatPanel({
       setRefPicker({ items, loading: false });
     } catch (e) {
       setRefPicker(null);
-      useApp.getState().toast(`读取节点参考失败：${api.errMsg(e)}`, "err");
+      useApp.getState().toast(t("读取节点参考失败：{msg}", { msg: api.errMsg(e) }), "err");
     }
   };
 
@@ -199,7 +203,7 @@ export default function NodeChatPanel({
     if (!text || sending || !runnable) return;
     setSending(true);
     setJobError("");
-    setJobState("排队中…");
+    setJobState(t("排队中…"));
     try {
       const r = await api.canvasNodeRun({
         episodeId,
@@ -210,7 +214,7 @@ export default function NodeChatPanel({
         modelId: modelId || undefined,
         referenceAssetIds: refs_.map((x) => x.id),
       });
-      setJobState("任务已入队");
+      setJobState(t("任务已入队"));
       pollRef.current = window.setInterval(async () => {
         try {
           const jobs: JobDto[] = await jobList(200);
@@ -239,9 +243,9 @@ export default function NodeChatPanel({
             if (pollRef.current) window.clearInterval(pollRef.current);
             setJobState(null);
             setSending(false);
-            setJobError(j.error || "任务失败");
+            setJobError(j.error || t("任务失败"));
           } else {
-            setJobState(`${j.state === "RUNNING" ? "生成中" : j.state} ${Math.round((j.progress ?? 0) * 100)}%`);
+            setJobState(`${j.state === "RUNNING" ? t("生成中") : j.state} ${Math.round((j.progress ?? 0) * 100)}%`);
           }
         } catch { /* 轮询失败下轮重试 */ }
       }, 1500);
@@ -255,10 +259,10 @@ export default function NodeChatPanel({
   const uploadRef = async () => {
     try {
       const att = await api.agentAttach();
-      bindRef({ id: att.assetId, name: att.name, path: att.path, kind: att.kind, from: "本地上传" });
+      bindRef({ id: att.assetId, name: att.name, path: att.path, kind: att.kind, from: t("本地上传") });
     } catch (e) {
       const msg = api.errMsg(e);
-      if (!msg.includes("已取消")) useApp.getState().toast(`参考上传失败：${msg}`, "err");
+      if (!msg.includes("已取消")) useApp.getState().toast(t("参考上传失败：{msg}", { msg }), "err");
     }
   };
 
@@ -275,9 +279,9 @@ export default function NodeChatPanel({
       onContextMenu={(e) => e.stopPropagation()}
     >
       <div className="node-chat-head">
-        <span>{TYPE_CN[node.type] ?? node.type}节点</span>
+        <span>{t("{type}节点", { type: t(TYPE_CN[node.type] ?? node.type) })}</span>
         <span className="node-chat-sub">{node.title || node.id}</span>
-        <button className="node-chat-close" title="关闭" onClick={onClose}>×</button>
+        <button className="node-chat-close" title={t("关闭")} onClick={onClose}>×</button>
       </div>
 
       {/* 预览区：文本节点显示文本产物；媒体节点显示已有产物；否则给出尝试快捷项 */}
@@ -290,18 +294,18 @@ export default function NodeChatPanel({
               </pre>
             ) : (
               <div className="node-chat-placeholder">
-                <div className="node-chat-try">尝试：</div>
+                <div className="node-chat-try">{t("尝试：")}</div>
                 {actions.map((a) => (
                   <button key={a.label} className="node-chat-try-item" onClick={() => setPrompt((v) => (v ? v + " " : "") + a.tpl)}>
                     <span className="node-chat-try-ic">{a.icon}</span>
-                    {a.label}
+                    {t(a.label)}
                   </button>
                 ))}
               </div>
             )}
           </div>
         ) : showImage ? (
-          <img src={assetUrl(resultPath!)} alt="生成结果" />
+          <img src={assetUrl(resultPath!)} alt={t("生成结果")} />
         ) : showVideo ? (
           <video src={assetUrl(resultPath!)} controls />
         ) : showAudio ? (
@@ -310,16 +314,16 @@ export default function NodeChatPanel({
           <div className="node-chat-placeholder">
             {actions.length > 0 ? (
               <>
-                <div className="node-chat-try">尝试：</div>
+                <div className="node-chat-try">{t("尝试：")}</div>
                 {actions.map((a) => (
                   <button key={a.label} className="node-chat-try-item" onClick={() => setPrompt((v) => (v ? v + " " : "") + a.tpl)}>
                     <span className="node-chat-try-ic">{a.icon}</span>
-                    {a.label}
+                    {t(a.label)}
                   </button>
                 ))}
               </>
             ) : (
-              <span className="node-chat-try">该节点类型暂不支持面板直发生成</span>
+              <span className="node-chat-try">{t("该节点类型暂不支持面板直发生成")}</span>
             )}
           </div>
         )}
@@ -327,30 +331,30 @@ export default function NodeChatPanel({
 
       {/* 参考上传 + 节点参考绑定 + 风格 chips */}
       <div className="node-chat-chips">
-        <button className="node-chat-chip" onClick={() => void uploadRef()} title="上传参考（任意格式，自动存入项目资产库）">＋ 参考</button>
+        <button className="node-chat-chip" onClick={() => void uploadRef()} title={t("上传参考（任意格式，自动存入项目资产库）")}>{t("＋ 参考")}</button>
         <div className="node-chat-refpick" ref={pickerRef}>
           <button
             className={`node-chat-chip${refPicker ? " has-ref" : ""}`}
             onClick={() => (refPicker ? setRefPicker(null) : void loadNodeRefs())}
-            title="绑定画布节点中的参考图/视频（其他节点的产物或已挂参考）"
+            title={t("绑定画布节点中的参考图/视频（其他节点的产物或已挂参考）")}
           >
-            ⚓ 节点参考
+            {t("⚓ 节点参考")}
           </button>
           {refPicker && (
             <div className="node-chat-refmenu">
-              <div className="node-chat-refmenu-head">绑定节点中的参考（点击添加）</div>
+              <div className="node-chat-refmenu-head">{t("绑定节点中的参考（点击添加）")}</div>
               {refPicker.loading ? (
-                <div className="node-chat-refmenu-empty">读取中…</div>
+                <div className="node-chat-refmenu-empty">{t("读取中…")}</div>
               ) : refPicker.items.length === 0 ? (
                 <div className="node-chat-refmenu-empty">
-                  画布中暂无可绑定的参考——其他节点生成产物或挂接参考后即可在此调用
+                  {t("画布中暂无可绑定的参考——其他节点生成产物或挂接参考后即可在此调用")}
                 </div>
               ) : (
                 refPicker.items.map((it) => (
                   <button
                     key={it.id}
                     className="node-chat-refmenu-item"
-                    title={`${it.path}\n来自节点：${it.from}`}
+                    title={t("{path}\n来自节点：{from}", { path: it.path, from: it.from })}
                     onClick={() => {
                       bindRef(it);
                       setRefPicker(null);
@@ -370,19 +374,19 @@ export default function NodeChatPanel({
           )}
         </div>
         {refs_.map((r, i) => (
-          <span key={r.id} className="node-chat-chip has-ref" title={`${r.path}\n来源：${r.from}`}>
+          <span key={r.id} className="node-chat-chip has-ref" title={t("{path}\n来源：{from}", { path: r.path, from: r.from })}>
             {r.kind === "images" ? (
               <img className="node-chat-refthumb" src={assetUrl(r.path)} alt="" />
             ) : (
               <span>{refIcon(r.kind)}</span>
             )}
             {r.name.length > 12 ? `${r.name.slice(0, 12)}…` : r.name}
-            <button title="移除参考" onClick={() => setRefs((rs) => rs.filter((_, j) => j !== i))}>×</button>
+            <button title={t("移除参考")} onClick={() => setRefs((rs) => rs.filter((_, j) => j !== i))}>×</button>
           </span>
         ))}
         {STYLE_PRESETS.map((st) => (
           <button key={st} className="node-chat-chip" onClick={() => setPrompt((v) => (v ? `${v}，风格：${st}` : `风格：${st}，`))}>
-            🎨 {st}
+            🎨 {t(st)}
           </button>
         ))}
       </div>
@@ -394,16 +398,16 @@ export default function NodeChatPanel({
         value={prompt}
         placeholder={
           !runnable
-            ? "该节点类型暂不支持面板直发生成（文本/图片/视频/音频节点可直接生成）"
+            ? t("该节点类型暂不支持面板直发生成（文本/图片/视频/音频节点可直接生成）")
             : node.type === "image"
-            ? "可直接文字生图，或绑定参考后输入指令，如：将背景改为雪夜"
+            ? t("可直接文字生图，或绑定参考后输入指令，如：将背景改为雪夜")
             : node.type === "video" || node.type === "video-clip"
-            ? "描述要生成的视频镜头，如：雨夜霓虹街头，主角撑伞走过"
+            ? t("描述要生成的视频镜头，如：雨夜霓虹街头，主角撑伞走过")
             : node.type === "audio"
-            ? "输入要配音的台词文本"
+            ? t("输入要配音的台词文本")
             : node.type === "text"
-            ? "输入要生成的文本内容或指令，如：写一段女主雨夜的内心独白"
-            : "输入提示词"
+            ? t("输入要生成的文本内容或指令，如：写一段女主雨夜的内心独白")
+            : t("输入提示词")
         }
         disabled={!runnable}
         onChange={(e) => setPrompt(e.target.value)}
@@ -424,9 +428,9 @@ export default function NodeChatPanel({
             setProviderId(pid);
             setModelId(mid);
           }}
-          title="生成模型（留空 = 使用模型页「生成模型设置」的默认）"
+          title={t("生成模型（留空 = 使用模型页「生成模型设置」的默认）")}
         >
-          <option value="">自动模型</option>
+          <option value="">{t("自动模型")}</option>
           {capableProviders.map((p) =>
             p.models
               .filter((m) => m.capabilities.includes(cap))
@@ -438,21 +442,21 @@ export default function NodeChatPanel({
           )}
         </select>
         {(node.type === "image" || node.type === "video" || node.type === "video-clip") && (
-          <select className="node-chat-aspect" value={aspect} onChange={(e) => setAspect(e.target.value)} title="画幅">
+          <select className="node-chat-aspect" value={aspect} onChange={(e) => setAspect(e.target.value)} title={t("画幅")}>
             <option value="9:16">9:16</option>
             <option value="16:9">16:9</option>
             <option value="1:1">1:1</option>
           </select>
         )}
         <span style={{ flex: 1 }} />
-        <button className="node-chat-send" disabled={sending || !prompt.trim() || !runnable} onClick={() => void send()} title="⌘+Enter 发送">
+        <button className="node-chat-send" disabled={sending || !prompt.trim() || !runnable} onClick={() => void send()} title={t("⌘+Enter 发送")}>
           {sending ? "…" : "↑"}
         </button>
       </div>
 
       {(jobState || jobError) && (
         <div className={`node-chat-status ${jobError ? "err" : ""}`}>
-          {jobError ? `⚠️ ${jobError}` : `⏳ ${jobState}`}
+          {jobError ? t("⚠️ {msg}", { msg: jobError }) : t("⏳ {msg}", { msg: jobState ?? "" })}
         </div>
       )}
     </div>

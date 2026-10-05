@@ -7,7 +7,7 @@
  * - AWAITING_APPROVAL 行突出显示：[批准] 按钮 + Egress 预览（目标/数据/敏感项）。
  *   job_list 本身不返回 egress，预览数据来自 job.awaitingApproval 事件订阅，
  *   以及对等待行 job_events 的兜底扫描。
- * - 顶部：并发说明 + 刷新 + 自动刷新开关（2s 轮询 job_list）；
+ * - 顶部：并发说明 + 刷新 + 自动刷新开关（15s 兜底轮询 job_list，实时更新靠事件订阅）；
  *   另订阅 job.created / job.progress / job.succeeded / job.failed 实时更新（cleanup unlisten）。
  *
  * 复用 global.css 设计系统，布局细节用本组件内 scoped <style> 补充（无法修改 global.css）。
@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api-providers";
 import type { EgressPreview, JobDto, JobEventDto } from "../api-providers";
 import { errMsg, onAppEvent } from "../api";
+import { t, useT } from "../i18n";
 import { useApp } from "../store";
 
 /* ---------------- 常量 ---------------- */
@@ -144,30 +145,34 @@ function findEgressInEvents(events: JobEventDto[]): EgressPreview | null {
 /* ---------------- Egress 预览 ---------------- */
 
 function EgressBox({ eg }: { eg: EgressPreview }) {
+  const t = useT();
   const texts = Array.isArray(eg.textFields) ? eg.textFields.map(String) : [];
   const assets = Array.isArray(eg.assets) ? eg.assets.map(String) : [];
   const sensitive: string[] = [...texts, ...assets];
   return (
     <div className="egress-box">
       <div>
-        <span className="k">目标</span>
+        <span className="k">{t("目标")}</span>
         {eg.endpoint ?? "—"}
-        {eg.model ? ` · 模型 ${eg.model}` : ""}
+        {eg.model ? t(" · 模型 {model}", { model: eg.model }) : ""}
         {eg.providerId ? ` · provider ${eg.providerId}` : ""}
       </div>
       <div>
-        <span className="k">数据</span>
-        {texts.length ? `文本字段：${texts.join("、")}` : "无文本字段"}
-        {assets.length ? `；资产 ${assets.length} 项` : ""}
+        <span className="k">{t("数据")}</span>
+        {texts.length ? t("文本字段：{fields}", { fields: texts.join("、") }) : t("无文本字段")}
+        {assets.length ? t("；资产 {count} 项", { count: assets.length }) : ""}
       </div>
       <div>
-        <span className="k">敏感项</span>
+        <span className="k">{t("敏感项")}</span>
         {sensitive.length ? (
           <>
-            {sensitive.length} 项内容将发送至远程 Provider（{truncate(sensitive.join("、"), 80)}）
+            {t("{count} 项内容将发送至远程 Provider（{detail}）", {
+              count: sensitive.length,
+              detail: truncate(sensitive.join("、"), 80),
+            })}
           </>
         ) : (
-          "无"
+          t("无")
         )}
       </div>
     </div>
@@ -177,6 +182,7 @@ function EgressBox({ eg }: { eg: EgressPreview }) {
 /* ---------------- 主视图 ---------------- */
 
 export default function JobsView() {
+  const t = useT();
   const { settings, toast } = useApp();
 
   const [jobs, setJobs] = useState<JobDto[]>([]);
@@ -187,7 +193,7 @@ export default function JobsView() {
   const [eventsModal, setEventsModal] = useState<{ job: JobDto; events: JobEventDto[] } | null>(null);
   const [eventsLoading, setEventsLoading] = useState(false);
 
-  /** 已兜底扫描过 egress 的 job，避免 2s 轮询反复拉事件 */
+  /** 已兜底扫描过 egress 的 job，避免轮询/事件刷新时反复拉事件 */
   const egressCheckedRef = useRef<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
@@ -206,10 +212,12 @@ export default function JobsView() {
     void refresh();
   }, [refresh]);
 
-  /* 自动刷新：2s 轮询 */
+  /* 自动刷新：事件订阅（见下）为主，15s 兜底轮询。
+     此前是 2s 全量轮询——事件已覆盖所有状态变化，高频轮询只是重复拉全量列表；
+     保留低频兜底是为了容错事件总线不可用 / 丢事件的场景。 */
   useEffect(() => {
     if (!autoRefresh) return;
-    const t = window.setInterval(() => void refresh(), 2000);
+    const t = window.setInterval(() => void refresh(), 15000);
     return () => window.clearInterval(t);
   }, [autoRefresh, refresh]);
 
@@ -270,36 +278,36 @@ export default function JobsView() {
   const doCancel = async (j: JobDto) => {
     try {
       await api.jobCancel(j.id);
-      toast(`已请求取消：${j.title}`, "ok");
+      toast(t("已请求取消：{title}", { title: j.title }), "ok");
       await refresh();
     } catch (e) {
       const msg = errMsg(e);
       if (msg.includes("已取消")) return; // 用户主动取消，静默
-      toast(`取消失败：${msg}`, "err");
+      toast(t("取消失败：{msg}", { msg }), "err");
     }
   };
 
   const doRetry = async (j: JobDto) => {
     try {
       await api.jobRetry(j.id);
-      toast(`已重新入队：${j.title}`, "ok");
+      toast(t("已重新入队：{title}", { title: j.title }), "ok");
       await refresh();
     } catch (e) {
       const msg = errMsg(e);
       if (msg.includes("已取消")) return; // 取消类错误静默
-      toast(`重试失败：${msg}`, "err");
+      toast(t("重试失败：{msg}", { msg }), "err");
     }
   };
 
   const doApprove = async (j: JobDto) => {
     try {
       await api.jobApprove(j.id);
-      toast(`已批准：${j.title}`, "ok");
+      toast(t("已批准：{title}", { title: j.title }), "ok");
       await refresh();
     } catch (e) {
       const msg = errMsg(e);
       if (msg.includes("已取消")) return; // 取消类错误静默
-      toast(`批准失败：${msg}`, "err");
+      toast(t("批准失败：{msg}", { msg }), "err");
     }
   };
 
@@ -311,7 +319,7 @@ export default function JobsView() {
       setEventsModal({ job: j, events });
     } catch (e) {
       const msg = errMsg(e);
-      if (!msg.includes("已取消")) toast(`读取事件失败：${msg}`, "err");
+      if (!msg.includes("已取消")) toast(t("读取事件失败：{msg}", { msg }), "err");
       setEventsModal(null);
     } finally {
       setEventsLoading(false);
@@ -329,43 +337,45 @@ export default function JobsView() {
 
       <div className="page-header">
         <div>
-          <h1>⏳ 任务队列</h1>
+          <h1>{t("⏳ 任务队列")}</h1>
           <div className="desc">
-            全局并发上限 {settings?.maxConcurrentJobs ?? 2}（可在「设置 → 任务引擎」调整），每个 Provider 另有独立并发上限 ·
-            共 {jobs.length} 条 · 进行中 {runningCount}
-            {awaitingCount > 0 ? ` · 待确认 ${awaitingCount}` : ""}
+            {t(
+              "全局并发上限 {max}（可在「设置 → 任务引擎」调整），每个 Provider 另有独立并发上限 · 共 {total} 条 · 进行中 {running}",
+              { max: settings?.maxConcurrentJobs ?? 2, total: jobs.length, running: runningCount }
+            )}
+            {awaitingCount > 0 ? t(" · 待确认 {count}", { count: awaitingCount }) : ""}
           </div>
         </div>
         <div className="jobs-toolbar">
           <label className="checkbox-row">
             <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
-            自动刷新（2s）
+            {t("自动刷新（15s 兜底）")}
           </label>
-          <button className="btn ghost" onClick={() => void refresh()}>⟳ 刷新</button>
+          <button className="btn ghost" onClick={() => void refresh()}>{t("⟳ 刷新")}</button>
         </div>
       </div>
 
       {loading ? (
-        <div className="page hint">加载中…</div>
+        <div className="page hint">{t("加载中…")}</div>
       ) : jobs.length === 0 ? (
         <div className="empty-state" style={{ padding: "80px 20px" }}>
           <div className="big">⏳</div>
-          <h2>暂无任务</h2>
-          <p>在创作视图发起生成 / 渲染后，任务会出现在这里</p>
+          <h2>{t("暂无任务")}</h2>
+          <p>{t("在创作视图发起生成 / 渲染后，任务会出现在这里")}</p>
         </div>
       ) : (
         <div className="card" style={{ padding: 0, overflowX: "auto" }}>
           <table className="table jobs-table">
             <thead>
               <tr>
-                <th>标题</th>
-                <th>类型</th>
-                <th>状态</th>
-                <th>进度</th>
-                <th>Provider / 模型</th>
-                <th>错误</th>
-                <th>创建时间</th>
-                <th>操作</th>
+                <th>{t("标题")}</th>
+                <th>{t("类型")}</th>
+                <th>{t("状态")}</th>
+                <th>{t("进度")}</th>
+                <th>{t("Provider / 模型")}</th>
+                <th>{t("错误")}</th>
+                <th>{t("创建时间")}</th>
+                <th>{t("操作")}</th>
               </tr>
             </thead>
             <tbody>
@@ -397,8 +407,9 @@ export default function JobsView() {
       <div className="jobs-foot">
         <span>🛡️</span>
         <span>
-          任务状态机：QUEUED → VALIDATING →（AWAITING_APPROVAL，需人工批准）→ SUBMITTING → RUNNING →
-          DOWNLOADING → POST_PROCESSING → SUCCEEDED / FAILED；失败自动重试进入 RETRY_WAIT
+          {t(
+            "任务状态机：QUEUED → VALIDATING →（AWAITING_APPROVAL，需人工批准）→ SUBMITTING → RUNNING → DOWNLOADING → POST_PROCESSING → SUCCEEDED / FAILED；失败自动重试进入 RETRY_WAIT"
+          )}
         </span>
       </div>
 
@@ -407,14 +418,14 @@ export default function JobsView() {
         <div className="modal-overlay" onClick={() => setEventsModal(null)}>
           <div className="modal" style={{ width: "min(680px, 94vw)" }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <span>事件时间线 · {collapseTitle(eventsModal.job.title)}</span>
+              <span>{t("事件时间线 · {title}", { title: collapseTitle(eventsModal.job.title) })}</span>
               <button className="btn sm ghost" onClick={() => setEventsModal(null)}>✕</button>
             </div>
             <div className="modal-body">
               {eventsLoading ? (
-                <div className="hint">加载中…</div>
+                <div className="hint">{t("加载中…")}</div>
               ) : eventsModal.events.length === 0 ? (
-                <div className="hint">暂无事件</div>
+                <div className="hint">{t("暂无事件")}</div>
               ) : (
                 eventsModal.events.map((ev, i) => (
                   <div className="ev-item" key={i}>
@@ -428,7 +439,7 @@ export default function JobsView() {
               )}
             </div>
             <div className="modal-foot">
-              <button className="btn" onClick={() => setEventsModal(null)}>关闭</button>
+              <button className="btn" onClick={() => setEventsModal(null)}>{t("关闭")}</button>
             </div>
           </div>
         </div>
@@ -438,6 +449,24 @@ export default function JobsView() {
 }
 
 /* ---------------- 单行 ---------------- */
+
+type QcSummary = { ok: boolean; detail: string } | null;
+function qcSummary(job: JobDto): QcSummary {
+  const reports = job.qc;
+  if (!reports || !Array.isArray(reports) || reports.length === 0) return null;
+  let black = 0;
+  let silence = 0;
+  for (const r of reports) {
+    for (const seg of r.black ?? []) black += Math.max(0, (seg.end ?? 0) - (seg.start ?? 0));
+    for (const seg of r.silence ?? []) silence += Math.max(0, (seg.end ?? 0) - (seg.start ?? 0));
+  }
+  const parts: string[] = [];
+  if (black > 1) parts.push(t("黑帧 {dur}s", { dur: black.toFixed(1) }));
+  if (silence > 3) parts.push(t("静音 {dur}s", { dur: silence.toFixed(1) }));
+  if (reports.some((r) => r.hasAudio === false)) parts.push(t("无音轨"));
+  if (parts.length === 0) return { ok: true, detail: t("黑帧/静音/音轨检测未见异常") };
+  return { ok: false, detail: parts.join(" · ") };
+}
 
 function JobRow({
   job,
@@ -462,18 +491,27 @@ function JobRow({
   onApprove: () => void;
   onEvents: () => void;
 }) {
+  const t = useT();
   const awaiting = job.state === "AWAITING_APPROVAL";
+  const qc = qcSummary(job);
   return (
     <>
       <tr className={awaiting ? "await" : ""}>
         <td className="jobs-title" title={job.id}>
           {collapseTitle(job.title)}
-          {awaiting && <span className="jobs-await-mark">（等待确认，请批准后执行）</span>}
+          {awaiting && <span className="jobs-await-mark">{t("（等待确认，请批准后执行）")}</span>}
+          {qc && (
+            <div className="jobs-qc" title={qc.detail}>
+              <span className={`tag ${qc.ok ? "" : "amber"}`}>
+                {qc.ok ? t("🔍 QC 通过") : t("⚠️ QC：{detail}", { detail: qc.detail })}
+              </span>
+            </div>
+          )}
         </td>
-        <td><span className="tag">{kindLabel(job.kind)}</span></td>
+        <td><span className="tag">{t(kindLabel(job.kind))}</span></td>
         <td>
-          <span className={`tag ${meta.cls}`}>{meta.label}</span>
-          {(job.attempts ?? 0) > 0 && <span className="jobs-attempts"> ·第 {(job.attempts ?? 0) + 1} 次</span>}
+          <span className={`tag ${meta.cls}`}>{t(meta.label)}</span>
+          {(job.attempts ?? 0) > 0 && <span className="jobs-attempts">{t(" ·第 {n} 次", { n: (job.attempts ?? 0) + 1 })}</span>}
         </td>
         <td>
           <div className="prog-cell">
@@ -488,11 +526,11 @@ function JobRow({
         <td className="jobs-err">
           {job.error ? (
             expanded ? (
-              <div className="err-full" onClick={onToggleError} title="点击收起">
+              <div className="err-full" onClick={onToggleError} title={t("点击收起")}>
                 {job.error}
               </div>
             ) : (
-              <span className="err-text" onClick={onToggleError} title={`${job.error}\n（点击展开）`}>
+              <span className="err-text" onClick={onToggleError} title={t("{error}\n（点击展开）", { error: job.error })}>
                 {truncate(job.error, 60)}
               </span>
             )
@@ -503,15 +541,15 @@ function JobRow({
         <td className="jobs-time">{formatTime(job.createdAt)}</td>
         <td className="jobs-ops">
           {awaiting && (
-            <button className="btn sm blue" onClick={onApprove}>批准</button>
+            <button className="btn sm blue" onClick={onApprove}>{t("批准")}</button>
           )}
           {!TERMINAL_STATES.has(job.state) && (
-            <button className="btn sm" onClick={onCancel}>取消</button>
+            <button className="btn sm" onClick={onCancel}>{t("取消")}</button>
           )}
           {RETRYABLE_STATES.has(job.state) && (
-            <button className="btn sm" onClick={onRetry}>重试</button>
+            <button className="btn sm" onClick={onRetry}>{t("重试")}</button>
           )}
-          <button className="btn sm ghost" onClick={onEvents}>事件</button>
+          <button className="btn sm ghost" onClick={onEvents}>{t("事件")}</button>
         </td>
       </tr>
       {/* 等待确认行的 Egress 预览（仅在事件 / 事件时间线里携带了 egress 时显示） */}
@@ -519,7 +557,7 @@ function JobRow({
         <tr className="egress-row">
           <td colSpan={8}>
             <div className="egress-wrap">
-              <span className="tag amber">Egress 预览 · 批准后将向以下目标发送数据</span>
+              <span className="tag amber">{t("Egress 预览 · 批准后将向以下目标发送数据")}</span>
               <EgressBox eg={egress} />
             </div>
           </td>

@@ -11,7 +11,9 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
+import { useTauriEvent } from "../hooks/useTauriEvent";
 import { useApp } from "../store";
+import { useT } from "../i18n";
 
 /** Tauri 命令 Err 时前端拿到 {message} 对象，统一提取可读文案 */
 const errMsg = (e: unknown): string => {
@@ -50,6 +52,7 @@ function fmtTime(rfc3339: string): string {
 
 export default function HermesView() {
   const { toast } = useApp();
+  const t = useT();
 
   /* ---------- 连接设置 ---------- */
   const [cfg, setCfg] = useState<api.HermesConfig | null>(null);
@@ -88,28 +91,16 @@ export default function HermesView() {
       setEnabled(c.enabled);
     }).catch(() => {});
     void refreshLogs();
-
-    // Hermes 回调 OneTV（反向控制调用）时实时追加到历史
-    // cancelled 标志：卸载早于 listen promise resolve 时阻止监听器泄漏（与其他视图统一）
-    let unlisten: (() => void) | null = null;
-    let cancelled = false;
-    api.onAppEvent<api.HermesLogEntry["payload"]>("hermes.inbound", (payload) => {
-      setLogs((prev) => [
-        { time: new Date().toISOString(), kind: "inbound", payload: payload ?? {} },
-        ...prev,
-      ]);
-    }).then((f) => {
-      if (cancelled) {
-        f();
-        return;
-      }
-      unlisten = f;
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
   }, [refreshLogs]);
+
+  // Hermes 回调 OneTV（反向控制调用）时实时追加到历史
+  //（useTauriEvent 内部处理「卸载早于 listen promise resolve」竞态，handler 走 ref 镜像）
+  useTauriEvent<api.HermesLogEntry["payload"]>("hermes.inbound", (payload) => {
+    setLogs((prev) => [
+      { time: new Date().toISOString(), kind: "inbound", payload: payload ?? {} },
+      ...prev,
+    ]);
+  });
 
   const saveConfig = async () => {
     setSaving(true);
@@ -124,9 +115,9 @@ export default function HermesView() {
       setCfg(saved);
       setUrl(saved.url ?? "");
       setToken("");
-      toast("Hermes 配置已保存", "ok");
+      toast(t("Hermes 配置已保存"), "ok");
     } catch (e) {
-      toast(`保存失败：${errMsg(e)}`, "err");
+      toast(t("保存失败：{msg}", { msg: errMsg(e) }), "err");
     } finally {
       setSaving(false);
     }
@@ -143,9 +134,9 @@ export default function HermesView() {
       });
       setCfg(saved);
       setToken("");
-      toast("Token 已清除", "ok");
+      toast(t("Token 已清除"), "ok");
     } catch (e) {
-      toast(`清除失败：${errMsg(e)}`, "err");
+      toast(t("清除失败：{msg}", { msg: errMsg(e) }), "err");
     } finally {
       setSaving(false);
     }
@@ -157,10 +148,10 @@ export default function HermesView() {
     try {
       const r = await api.hermesTest();
       if (r.ok) {
-        const body = r.body ? ` · 返回：${truncate(r.body, 160)}` : "";
-        setTestResult({ ok: true, text: `连接成功 · ${r.latencyMs ?? "?"} ms${body}` });
+        const body = r.body ? t(" · 返回：{text}", { text: truncate(r.body, 160) }) : "";
+        setTestResult({ ok: true, text: t("连接成功 · {ms} ms", { ms: r.latencyMs ?? "?" }) + body });
       } else {
-        setTestResult({ ok: false, text: r.message ?? "连接失败" });
+        setTestResult({ ok: false, text: r.message ?? t("连接失败") });
       }
     } catch (e) {
       setTestResult({ ok: false, text: errMsg(e) });
@@ -177,10 +168,10 @@ export default function HermesView() {
     try {
       const r = await api.hermesSend(text);
       if (r.ok) {
-        setSendResult({ ok: true, text: r.reply ?? "(空回复)" });
+        setSendResult({ ok: true, text: r.reply ?? t("(空回复)") });
         setSendText("");
       } else {
-        setSendResult({ ok: false, text: r.message ?? "发送失败" });
+        setSendResult({ ok: false, text: r.message ?? t("发送失败") });
       }
       void refreshLogs();
     } catch (e) {
@@ -196,30 +187,30 @@ export default function HermesView() {
 
       <div className="page-header">
         <div>
-          <h1>🛰️ Hermes 连接</h1>
-          <div className="desc">OneTV 与 Hermes agent 的双向桥接：出向发送指令，入向接收回调与反向控制</div>
+          <h1>🛰️ {t("Hermes 连接")}</h1>
+          <div className="desc">{t("OneTV 与 Hermes agent 的双向桥接：出向发送指令，入向接收回调与反向控制")}</div>
         </div>
       </div>
 
       {/* 顶部说明：双向能力 + 安全说明 + 反向控制协议 */}
       <div className="card hm-help">
-        <h3>📡 工作方式</h3>
+        <h3>📡 {t("工作方式")}</h3>
         <ul>
-          <li><b>出向</b>：在下方「发送指令」发送文本到 Hermes（POST <code>{"{url}"}</code>/message）；</li>
-          <li><b>入向</b>：启用「反向控制监听」后，Hermes 可回调 OneTV 触发动作，来信实时出现在「通信历史」；</li>
-          <li><b>安全</b>：地址仅允许本机/局域网；监听只绑定本机回环（127.0.0.1），默认关闭；建议设置 Token 鉴权（存系统钥匙串）；</li>
-          <li><b>反向控制协议</b>：Hermes 可 POST <code>http://127.0.0.1:{"{listenPort}"}</code>/invoke，body <code>{"{ action, params }"}</code>，动作白名单：
-            <code>status</code>、<code>job_list</code>、<code>job_status</code>、<code>create_image{"{prompt}"}</code>、<code>agent_chat{"{text}"}</code>、<code>agent_approve{"{planId}"}</code>；
-            探活用 GET <code>/health</code>；Token 不匹配返回 401。</li>
+          <li><b>{t("出向")}</b>：{t("在下方「发送指令」发送文本到 Hermes（POST")} <code>{"{url}"}</code>{t("/message）；")}</li>
+          <li><b>{t("入向")}</b>：{t("启用「反向控制监听」后，Hermes 可回调 OneTV 触发动作，来信实时出现在「通信历史」；")}</li>
+          <li><b>{t("安全")}</b>：{t("地址仅允许本机/局域网；监听只绑定本机回环（127.0.0.1），默认关闭；建议设置 Token 鉴权（存系统钥匙串）；")}</li>
+          <li><b>{t("反向控制协议")}</b>：{t("Hermes 可 POST")} <code>http://127.0.0.1:{"{listenPort}"}</code>{t("/invoke，body")} <code>{"{ action, params }"}</code>{t("，动作白名单：")}
+            <code>status</code>{t("、")}<code>job_list</code>{t("、")}<code>job_status</code>{t("、")}<code>create_image{"{prompt}"}</code>{t("、")}<code>agent_chat{"{text}"}</code>{t("、")}<code>agent_approve{"{planId}"}</code>{t("；")}
+            {t("探活用 GET")} <code>/health</code>{t("；Token 不匹配返回 401。")}</li>
         </ul>
       </div>
 
       <div className="grid-2">
         {/* a. 连接设置 */}
         <div className="card">
-          <h3>🔌 连接设置</h3>
+          <h3>🔌 {t("连接设置")}</h3>
           <div className="field">
-            <label>Hermes 地址（仅允许本机 / 局域网地址）</label>
+            <label>{t("Hermes 地址（仅允许本机 / 局域网地址）")}</label>
             <input
               type="text"
               value={url}
@@ -231,7 +222,7 @@ export default function HermesView() {
             />
           </div>
           <div className="field">
-            <label>本机监听端口（反向控制回调端口，≥1024）</label>
+            <label>{t("本机监听端口（反向控制回调端口，≥1024）")}</label>
             <input
               type="number"
               min={1024}
@@ -241,15 +232,15 @@ export default function HermesView() {
             />
           </div>
           <div className="field">
-            <label>Token {cfg?.hasToken ? "（已设置）" : "（未设置，建议配置）"}</label>
+            <label>Token {cfg?.hasToken ? t("（已设置）") : t("（未设置，建议配置）")}</label>
             <input
               type="password"
               value={token}
-              placeholder={cfg?.hasToken ? "已设置（留空保持不变）" : "用于 Hermes 调用 OneTV 时的鉴权"}
+              placeholder={cfg?.hasToken ? t("已设置（留空保持不变）") : t("用于 Hermes 调用 OneTV 时的鉴权")}
               autoComplete="new-password"
               onChange={(e) => setToken(e.target.value)}
             />
-            <span className="sub">🔒 Token 只存系统钥匙串；留空保存 = 保持不变；点击「清除 Token」删除。Hermes 回调时 Token 不匹配将返回 401。</span>
+            <span className="sub">{t("🔒 Token 只存系统钥匙串；留空保存 = 保持不变；点击「清除 Token」删除。Hermes 回调时 Token 不匹配将返回 401。")}</span>
           </div>
           <label className="checkbox-row" style={{ marginBottom: 10 }}>
             <input
@@ -257,18 +248,18 @@ export default function HermesView() {
               checked={enabled}
               onChange={(e) => setEnabled(e.target.checked)}
             />
-            启用反向控制监听（Hermes 可回调 OneTV 执行白名单动作；默认关闭）
+            {t("启用反向控制监听（Hermes 可回调 OneTV 执行白名单动作；默认关闭）")}
           </label>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button className="btn primary" disabled={saving} onClick={() => void saveConfig()}>
-              {saving ? "保存中…" : "保存配置"}
+              {saving ? t("保存中…") : t("保存配置")}
             </button>
             <button className="btn blue" disabled={testBusy} onClick={() => void doTest()}>
-              {testBusy ? "测试中…" : "测试连接"}
+              {testBusy ? t("测试中…") : t("测试连接")}
             </button>
             {cfg?.hasToken && (
               <button className="btn danger" disabled={saving} onClick={() => void clearToken()}>
-                清除 Token
+                {t("清除 Token")}
               </button>
             )}
           </div>
@@ -281,14 +272,14 @@ export default function HermesView() {
 
         {/* b. 发送指令 */}
         <div className="card">
-          <h3>💬 发送指令</h3>
+          <h3>💬 {t("发送指令")}</h3>
           <div className="hint" style={{ marginBottom: 8 }}>
-            文本将发送到已配置的 Hermes 地址（POST {"{url}"}/message）；发送与回复都会记录到「通信历史」。
+            {t("文本将发送到已配置的 Hermes 地址（POST {url}/message）；发送与回复都会记录到「通信历史」。", { url: "{url}" })}
           </div>
           <textarea
             className="hm-input"
             value={sendText}
-            placeholder="输入要发送给 Hermes 的指令，例如：帮我生成一张赛博朋克城市夜景"
+            placeholder={t("输入要发送给 Hermes 的指令，例如：帮我生成一张赛博朋克城市夜景")}
             onChange={(e) => setSendText(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void doSend();
@@ -296,13 +287,13 @@ export default function HermesView() {
           />
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             <button className="btn primary" disabled={sendBusy || !sendText.trim()} onClick={() => void doSend()}>
-              {sendBusy ? "发送中…" : "发送"}
+              {sendBusy ? t("发送中…") : t("发送")}
             </button>
-            <span className="sub" style={{ alignSelf: "center" }}>⌘/Ctrl + Enter 快捷发送</span>
+            <span className="sub" style={{ alignSelf: "center" }}>{t("⌘/Ctrl + Enter 快捷发送")}</span>
           </div>
           {sendResult && (
             <div className={`hm-bubble ${sendResult.ok ? "ok" : "err"}`}>
-              <div className="hm-bubble-head">{sendResult.ok ? "Hermes 回复" : "发送失败"}</div>
+              <div className="hm-bubble-head">{sendResult.ok ? t("Hermes 回复") : t("发送失败")}</div>
               <div className="hm-bubble-body">{sendResult.text}</div>
             </div>
           )}
@@ -312,20 +303,20 @@ export default function HermesView() {
       {/* c. 通信历史 */}
       <div className="card hm-log-card">
         <div className="hm-log-head">
-          <h3>📜 通信历史（最近 {logs.length} 条）</h3>
-          <button className="btn sm" onClick={() => setLogs([])} title="仅清空当前显示，不影响本机日志文件">
-            清空显示
+          <h3>📜 {t("通信历史（最近 {n} 条）", { n: logs.length })}</h3>
+          <button className="btn sm" onClick={() => setLogs([])} title={t("仅清空当前显示，不影响本机日志文件")}>
+            {t("清空显示")}
           </button>
         </div>
         {logs.length === 0 ? (
-          <div className="hint">暂无通信记录。发送指令或等待 Hermes 来信后，这里会显示最近 100 条。</div>
+          <div className="hint">{t("暂无通信记录。发送指令或等待 Hermes 来信后，这里会显示最近 100 条。")}</div>
         ) : (
           <div className="hm-log-list">
             {logs.map((entry, i) => (
               <div className="hm-log-row" key={`${entry.time}-${i}`}>
                 <span className="hm-log-time">{fmtTime(entry.time)}</span>
                 <span className={`tag ${entry.kind === "inbound" ? "blue" : entry.kind === "outbound_error" ? "red" : "green"}`}>
-                  {KIND_LABEL[entry.kind] ?? entry.kind}
+                  {t(KIND_LABEL[entry.kind] ?? entry.kind)}
                 </span>
                 <span className="hm-log-text">{logSummary(entry)}</span>
               </div>

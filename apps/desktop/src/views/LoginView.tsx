@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import * as api from "../api";
 import { useApp } from "../store";
+import { useT } from "../i18n";
 
 /** Tauri 命令 Err 时前端拿到 {message} 对象，统一提取可读文案 */
 const errMsg = (e: unknown): string => {
@@ -15,6 +16,7 @@ const errMsg = (e: unknown): string => {
 
 export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
   const { toast, appVersion } = useApp();
+  const t = useT();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -47,7 +49,7 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
 
   const login = async () => {
     if (!username.trim() || !password) {
-      setErr("请输入用户名和密码");
+      setErr(t("请输入用户名和密码"));
       return;
     }
     setBusy(true);
@@ -57,7 +59,7 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
       if (r.ok) {
         onSuccess();
       } else {
-        setErr("用户名或密码不正确");
+        setErr(t("用户名或密码不正确"));
       }
     } catch (e) {
       setErr(errMsg(e));
@@ -70,12 +72,12 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
     setResetErr("");
     const email = resetEmail.trim();
     if (!email || !email.includes("@") || resetPass.length < 5) {
-      setResetErr("请输入绑定邮箱和新密码（至少 5 位）");
+      setResetErr(t("请输入绑定邮箱和新密码（至少 5 位）"));
       return;
     }
     try {
       await api.authResetWithEmail(email, resetPass);
-      toast("密码已重置，请用新密码登录", "ok");
+      toast(t("密码已重置，请用新密码登录"), "ok");
       setResetOpen(false);
       setPassword("");
     } catch (e) {
@@ -90,11 +92,11 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
         <div className="login-logo">
           <img src="/logo.png" alt="OneTV" />
           <h1>OneTV</h1>
-          <p>本地优先的短剧创作工作台 · v{appVersion ?? "…"}</p>
+          <p>{t("本地优先的短剧创作工作台 · v{version}", { version: appVersion ?? "…" })}</p>
         </div>
 
         <div className="field">
-          <label>用户名</label>
+          <label>{t("用户名")}</label>
           <input
             type="text"
             autoCapitalize="none"
@@ -108,10 +110,10 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
           />
         </div>
         <div className="field">
-          <label>密码</label>
+          <label>{t("密码")}</label>
           <input
             type="password"
-            placeholder="请输入密码"
+            placeholder={t("请输入密码")}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && login()}
@@ -119,15 +121,15 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
         </div>
         {err && <div className="login-err">⚠️ {err}</div>}
         <button className="btn primary login-btn" disabled={busy} onClick={login}>
-          {busy ? "登录中…" : "登 录"}
+          {busy ? t("登录中…") : t("登 录")}
         </button>
         <div className="login-foot">
           <span>
             {footDefault === null
-              ? "首次使用：账号 admin / 密码 12345，登录后请在「设置 → 账户安全」修改并绑定邮箱"
+              ? t("首次使用：账号 admin / 密码 12345，登录后请在「设置 → 账户安全」修改并绑定邮箱")
               : footDefault
-                ? "首次使用：账号 admin / 密码 12345，登录后请在「设置 → 账户安全」修改并绑定邮箱"
-                : "账号为你本人设置（忘记密码可凭绑定邮箱重置）"}
+                ? t("首次使用：账号 admin / 密码 12345，登录后请在「设置 → 账户安全」修改并绑定邮箱")
+                : t("账号为你本人设置（忘记密码可凭绑定邮箱重置）")}
           </span>
           <a
             onClick={(e) => {
@@ -135,44 +137,44 @@ export default function LoginView({ onSuccess }: { onSuccess: () => void }) {
               void openReset();
             }}
           >
-            忘记密码？
+            {t("忘记密码？")}
           </a>
         </div>
-        <div className="login-privacy">🔐 本地账户 · 凭据加密存储于本机 · 不联网验证</div>
+        <div className="login-privacy">{t("🔐 本地账户 · 凭据加密存储于本机 · 不联网验证")}</div>
       </div>
 
       {resetOpen && (
         <div className="modal-overlay" onClick={() => setResetOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <span>🔑 凭绑定邮箱重置密码</span>
+              <span>{t("🔑 凭绑定邮箱重置密码")}</span>
               <button className="btn sm ghost" onClick={() => setResetOpen(false)}>✕</button>
             </div>
             <div className="modal-body">
               {stillDefault && (
-                <div className="login-err">💡 你还未设置账号和密码，请按默认方式登录（admin / 12345），首次登录后在「设置 → 账户安全」中设置并绑定邮箱。</div>
+                <div className="login-err">{t("💡 你还未设置账号和密码，请按默认方式登录（admin / 12345），首次登录后在「设置 → 账户安全」中设置并绑定邮箱。")}</div>
               )}
               {stillDefault !== true && (
               <>
               <div className="field">
-                <label>绑定邮箱</label>
+                <label>{t("绑定邮箱")}</label>
                 <input type="text" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="you@example.com" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} />
               </div>
               <div className="field">
-                <label>新密码（至少 5 位）</label>
+                <label>{t("新密码（至少 5 位）")}</label>
                 <input type="password" value={resetPass} onChange={(e) => setResetPass(e.target.value)} />
               </div>
               <div className="hint">
-                本地应用仅验证邮箱地址与绑定邮箱一致即可重置（验证码验证暂未启用）。
+                {t("本地应用仅验证邮箱地址与绑定邮箱一致即可重置（验证码验证暂未启用）。")}
               </div>
               {resetErr && <div className="login-err">⚠️ {resetErr}</div>}
               </>
               )}
             </div>
             <div className="modal-foot">
-              <button className="btn" onClick={() => setResetOpen(false)}>关闭</button>
+              <button className="btn" onClick={() => setResetOpen(false)}>{t("关闭")}</button>
               {stillDefault !== true && (
-                <button className="btn primary" onClick={doReset}>重置密码</button>
+                <button className="btn primary" onClick={doReset}>{t("重置密码")}</button>
               )}
             </div>
           </div>

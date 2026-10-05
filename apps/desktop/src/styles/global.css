@@ -172,7 +172,7 @@ textarea {
   padding: 10px 10px 4px;
 }
 
-.nav-item {
+.leftnav .nav-item {
   display: flex;
   align-items: center;
   gap: 9px;
@@ -183,6 +183,16 @@ textarea {
   border: 1px solid transparent;
   font-size: 13px;
   white-space: nowrap;
+  /* v2.11.0：nav-item 从 div 改为 button（键盘可达），重置按钮默认样式 */
+  width: 100%;
+  text-align: left;
+  background: none;
+  font-family: var(--font);
+  font-weight: inherit;
+}
+.leftnav .nav-item:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: -1px;
 }
 
 .nav-item:hover {

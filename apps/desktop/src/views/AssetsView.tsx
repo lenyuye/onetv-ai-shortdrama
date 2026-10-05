@@ -11,6 +11,7 @@ import type { AssetImportKind, AssetRecord } from "../api-assets";
 import { video_understand } from "../api-extras";
 import { errMsg } from "../api";
 import { useApp } from "../store";
+import { useT } from "../i18n";
 
 /* ---------------- 常量 ---------------- */
 
@@ -105,6 +106,7 @@ function AssetCard({
   understanding: boolean;
 }) {
   const [imgFailed, setImgFailed] = useState(false);
+  const t = useT();
   const name = basename(asset.path);
   const group = kindGroup(asset);
   const showImg = group === "image" && !imgFailed;
@@ -124,21 +126,21 @@ function AssetCard({
             {group === "video" ? "🎬" : group === "audio" ? "🎵" : "📄"}
           </span>
         )}
-        {group === "video" && <span className="tag asset-dur">时长 --:--</span>}
+        {group === "video" && <span className="tag asset-dur">{t("时长 --:--")}</span>}
         {/* 悬浮操作层 */}
         <div className="asset-actions">
-          <button className="btn sm" onClick={() => onCopy(asset)}>复制路径</button>
+          <button className="btn sm" onClick={() => onCopy(asset)}>{t("复制路径")}</button>
           {group === "video" && (
             <button
               className="btn sm blue"
               disabled={understanding}
-              title="发起视频理解任务，完成后结果写入 episodes/ep01/understanding.json"
+              title={t("发起视频理解任务，完成后结果写入 episodes/ep01/understanding.json")}
               onClick={() => onUnderstand(asset)}
             >
-              {understanding ? "创建中…" : "🔍 视频理解"}
+              {understanding ? t("创建中…") : t("🔍 视频理解")}
             </button>
           )}
-          <button className="btn sm danger" onClick={() => onDelete(asset)}>删除</button>
+          <button className="btn sm danger" onClick={() => onDelete(asset)}>{t("删除")}</button>
         </div>
       </div>
       <div className="asset-meta">
@@ -156,6 +158,7 @@ function AssetCard({
 
 export default function AssetsView() {
   const { project, setView, toast } = useApp();
+  const t = useT();
   const [items, setItems] = useState<AssetRecord[]>([]);
   const [tab, setTab] = useState("all");
   const [busyKind, setBusyKind] = useState<AssetImportKind | null>(null);
@@ -178,9 +181,9 @@ export default function AssetsView() {
     return (
       <div className="empty-state" style={{ height: "100%" }}>
         <div className="big">🗂️</div>
-        <h2>尚未打开项目</h2>
-        <p>资产库属于单个项目，请先创建或打开一个项目</p>
-        <button className="btn primary" onClick={() => setView("home")}>前往工作区</button>
+        <h2>{t("尚未打开项目")}</h2>
+        <p>{t("资产库属于单个项目，请先创建或打开一个项目")}</p>
+        <button className="btn primary" onClick={() => setView("home")}>{t("前往工作区")}</button>
       </div>
     );
   }
@@ -192,11 +195,11 @@ export default function AssetsView() {
       if (!rec) return; // 用户在文件选择框点了取消
       const dedup = items.some((i) => i.id === rec.id);
       await refresh();
-      toast(dedup ? `内容已存在，SHA-256 去重：${basename(rec.path)}` : `已导入：${basename(rec.path)}`, "ok");
+      toast(dedup ? t("内容已存在，SHA-256 去重：{name}", { name: basename(rec.path) }) : t("已导入：{name}", { name: basename(rec.path) }), "ok");
     } catch (e) {
       const msg = errMsg(e);
       if (msg.includes("已取消")) return; // 用户在文件选择框取消，静默
-      toast(`导入失败：${msg}`, "err");
+      toast(t("导入失败：{msg}", { msg }), "err");
     } finally {
       setBusyKind(null);
     }
@@ -205,23 +208,23 @@ export default function AssetsView() {
   const doCopy = async (a: AssetRecord) => {
     try {
       await navigator.clipboard.writeText(a.path);
-      toast("路径已复制到剪贴板", "ok");
+      toast(t("路径已复制到剪贴板"), "ok");
     } catch (e) {
       const msg = errMsg(e);
-      if (!msg.includes("已取消")) toast(`复制失败：${msg}`, "err");
+      if (!msg.includes("已取消")) toast(t("复制失败：{msg}", { msg }), "err");
     }
   };
 
   const doDelete = async (a: AssetRecord) => {
-    if (!window.confirm(`删除资产「${basename(a.path)}」？\n文件将从项目 assets/ 中移除，此操作不可恢复。`)) return;
+    if (!window.confirm(t("删除资产「{name}」？\n文件将从项目 assets/ 中移除，此操作不可恢复。", { name: basename(a.path) }))) return;
     setDeletingId(a.id);
     try {
       await assets.assetDelete(a.id);
       await refresh();
-      toast("已删除", "ok");
+      toast(t("已删除"), "ok");
     } catch (e) {
       const msg = errMsg(e);
-      if (!msg.includes("已取消")) toast(`删除失败：${msg}`, "err");
+      if (!msg.includes("已取消")) toast(t("删除失败：{msg}", { msg }), "err");
     } finally {
       setDeletingId(null);
     }
@@ -232,13 +235,13 @@ export default function AssetsView() {
     try {
       const r = await video_understand(a.id);
       if (r.ok) {
-        toast("视频理解任务已创建，完成后结果写入 episodes/ep01/understanding.json", "ok");
+        toast(t("视频理解任务已创建，完成后结果写入 episodes/ep01/understanding.json"), "ok");
       } else {
-        toast(`视频理解任务创建失败：${r.message ?? "未知错误"}`, "err");
+        toast(t("视频理解任务创建失败：{msg}", { msg: r.message ?? t("未知错误") }), "err");
       }
     } catch (e) {
       const msg = errMsg(e);
-      if (!msg.includes("已取消")) toast(`视频理解任务创建失败：${msg}`, "err");
+      if (!msg.includes("已取消")) toast(t("视频理解任务创建失败：{msg}", { msg }), "err");
     } finally {
       setUnderstandingId(null);
     }
@@ -253,9 +256,9 @@ export default function AssetsView() {
 
       <div className="page-header">
         <div>
-          <h1>🗂️ 资产库</h1>
+          <h1>🗂️ {t("资产库")}</h1>
           <div className="desc">
-            {project.project.title} · 共 {items.length} 个资产 · Local-first，永不外发
+            {t("{title} · 共 {n} 个资产 · Local-first，永不外发", { title: project.project.title, n: items.length })}
           </div>
         </div>
         <div className="assets-toolbar">
@@ -266,23 +269,23 @@ export default function AssetsView() {
               disabled={busyKind !== null}
               onClick={() => void doImport(b.kind)}
             >
-              {busyKind === b.kind ? "导入中…" : `${b.icon} 导入${b.label}`}
+              {busyKind === b.kind ? t("导入中…") : `${b.icon} ${t("导入{label}", { label: t(b.label) })}`}
             </button>
           ))}
-          <button className="btn ghost" onClick={() => void refresh()}>⟳ 刷新</button>
+          <button className="btn ghost" onClick={() => void refresh()}>⟳ {t("刷新")}</button>
         </div>
       </div>
 
       {/* 类型筛选 tab */}
       <div className="assets-tabs">
-        {KIND_TABS.map((t) => (
+        {KIND_TABS.map((k) => (
           <button
-            key={t.key}
-            className={`assets-tab ${tab === t.key ? "active" : ""}`}
-            onClick={() => setTab(t.key)}
+            key={k.key}
+            className={`assets-tab ${tab === k.key ? "active" : ""}`}
+            onClick={() => setTab(k.key)}
           >
-            {t.label}
-            <span className="assets-tab-count">{countOf(t.key)}</span>
+            {t(k.label)}
+            <span className="assets-tab-count">{countOf(k.key)}</span>
           </button>
         ))}
       </div>
@@ -291,13 +294,13 @@ export default function AssetsView() {
       {items.length === 0 ? (
         <div className="empty-state" style={{ padding: "80px 20px" }}>
           <div className="big">🗂️</div>
-          <h2>还没有资产</h2>
-          <p>导入人物定妆照 / 场景参考 / 任何素材。相同内容自动 SHA-256 去重</p>
+          <h2>{t("还没有资产")}</h2>
+          <p>{t("导入人物定妆照 / 场景参考 / 任何素材。相同内容自动 SHA-256 去重")}</p>
         </div>
       ) : shown.length === 0 ? (
         <div className="empty-state" style={{ padding: "60px 20px" }}>
           <div className="big">🔍</div>
-          <p>该类型下暂无资产</p>
+          <p>{t("该类型下暂无资产")}</p>
         </div>
       ) : (
         <div className="assets-grid">
@@ -314,12 +317,12 @@ export default function AssetsView() {
         </div>
       )}
 
-      {deletingId && <div className="assets-busy">正在删除…</div>}
+      {deletingId && <div className="assets-busy">{t("正在删除…")}</div>}
 
       {/* 底部提示条 */}
       <div className="assets-foot">
         <span>🔒</span>
-        <span>资产保存在项目 .ytv/assets/ 内，永不外发；导入时自动计算 SHA-256 去重</span>
+        <span>{t("资产保存在项目 .ytv/assets/ 内，永不外发；导入时自动计算 SHA-256 去重")}</span>
       </div>
     </div>
   );

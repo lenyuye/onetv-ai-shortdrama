@@ -3,6 +3,7 @@
  * 而不是整个窗口白屏。重试 = 重置边界并重新渲染当前视图。
  */
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { t } from "../i18n";
 
 interface Props {
   children: ReactNode;
@@ -30,13 +31,13 @@ export class ViewErrorBoundary extends Component<Props, State> {
       return (
         <div className="empty-state" style={{ height: "100%" }}>
           <div className="big">⚠️</div>
-          <h2>页面渲染出错了</h2>
+          <h2>{t("页面渲染出错了")}</h2>
           <p style={{ maxWidth: 560, fontFamily: "var(--mono)", fontSize: 11.5, wordBreak: "break-all" }}>
             {this.state.error.message}
           </p>
           <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn primary" onClick={this.reset}>重试</button>
-            <button className="btn" onClick={() => location.reload()}>重新加载应用</button>
+            <button className="btn primary" onClick={this.reset}>{t("重试")}</button>
+            <button className="btn" onClick={() => location.reload()}>{t("重新加载应用")}</button>
           </div>
         </div>
       );

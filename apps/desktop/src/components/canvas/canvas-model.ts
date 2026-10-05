@@ -4,6 +4,7 @@
  */
 import type { Edge, Node, XYPosition } from "@xyflow/react";
 import { NODE_TYPE_DEFS } from "@onetv/node-sdk";
+import { t } from "../../i18n";
 import {
   SCHEMA_VERSION,
   type CanvasDocument,
@@ -156,7 +157,7 @@ export const PORT_CN: Record<string, string> = {
   bible: "设定", script: "剧本", shots: "镜头", image: "图片", video: "视频",
   audio: "音频", text: "文本", pass: "通过", fail: "驳回", approved: "已审",
 };
-export const portCn = (p: string): string => PORT_CN[p] ?? p;
+export const portCn = (p: string): string => t(PORT_CN[p] ?? p);
 
 /** 参数键中文映射（节点卡片摘要显示用） */
 export const PARAM_CN: Record<string, string> = {
@@ -165,21 +166,21 @@ export const PARAM_CN: Record<string, string> = {
   voice: "音色", style: "风格", shotsPerScene: "镜头数", episodeCount: "集数",
   timeline: "时间线", preset: "预设", expression: "条件", note: "备注",
 };
-export const paramCn = (k: string): string => PARAM_CN[k] ?? k;
+export const paramCn = (k: string): string => t(PARAM_CN[k] ?? k);
 
 export function configSummary(config: Record<string, unknown> | undefined, max = 2): string {
   const entries = Object.entries(config ?? {}).filter(([, v]) => {
     const sv = typeof v === "string" ? v : v == null ? "" : JSON.stringify(v);
     return sv !== "" && sv !== "null";
   });
-  if (entries.length === 0) return "参数未设置";
+  if (entries.length === 0) return t("参数未设置");
   return entries
     .slice(0, max)
     .map(([k, v]) => {
       let s = typeof v === "string" ? v : JSON.stringify(v);
       if (s === undefined) s = "";
       if (s.length > 16) s = `${s.slice(0, 16)}…`;
-      return `${paramCn(k)}：${s || "未设置"}`;
+      return t("{key}：{value}", { key: paramCn(k), value: s || t("未设置") });
     })
     .join(" · ");
 }

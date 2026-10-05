@@ -36,7 +36,9 @@ import type {
 } from "@onetv/shared-types";
 import * as api from "../api";
 import * as apiCanvas from "../api-canvas";
+// canvasRunBatch 由 apiCanvas 提供（v2.14）
 import { providerList, type ProviderDto } from "../api-providers";
+import { useT } from "../i18n";
 import { useApp } from "../store";
 import CanvasNodeCard from "../components/canvas/CanvasNodeCard";
 import NodeChatPanel from "../components/canvas/NodeChatPanel";
@@ -194,6 +196,7 @@ const MODEL_CAPS_BY_NODE: Partial<Record<NodeType, Capability[]>> = {
 };
 
 export default function CanvasView() {
+  const t = useT();
   const { project, setView, loadProject, toast } = useApp();
   const [episodes, setEpisodes] = useState<EpisodeInfo[]>([]);
   const [episodesLoaded, setEpisodesLoaded] = useState(false);
@@ -230,9 +233,9 @@ export default function CanvasView() {
       const list = await api.episodeList().catch(() => [] as EpisodeInfo[]);
       if (list.length) setEpisodes(list);
       setEpisodeId(ep.id);
-      toast("已新增一集", "ok");
+      toast(t("已新增一集"), "ok");
     } catch (e) {
-      toast(`新增失败：${errMsg(e)}`, "err");
+      toast(t("新增失败：{msg}", { msg: errMsg(e) }), "err");
     } finally {
       setCreating(false);
     }
@@ -242,10 +245,10 @@ export default function CanvasView() {
     return (
       <div className="empty-state" style={{ height: "100%" }}>
         <div className="big">🕸️</div>
-        <h2>尚未打开项目</h2>
-        <p>画布按分集组织，请先在「工作区」创建或打开一个项目</p>
+        <h2>{t("尚未打开项目")}</h2>
+        <p>{t("画布按分集组织，请先在「工作区」创建或打开一个项目")}</p>
         <button className="btn primary" onClick={() => setView("home")}>
-          前往工作区
+          {t("前往工作区")}
         </button>
       </div>
     );
@@ -255,7 +258,7 @@ export default function CanvasView() {
     return (
       <div className="empty-state" style={{ height: "100%" }}>
         <div className="big">⏳</div>
-        <p>分集加载中…</p>
+        <p>{t("分集加载中…")}</p>
       </div>
     );
   }
@@ -264,10 +267,10 @@ export default function CanvasView() {
     return (
       <div className="empty-state" style={{ height: "100%" }}>
         <div className="big">🎞️</div>
-        <h2>还没有分集</h2>
-        <p>画布挂在分集下，请先新增一集再开始编排节点</p>
+        <h2>{t("还没有分集")}</h2>
+        <p>{t("画布挂在分集下，请先新增一集再开始编排节点")}</p>
         <button className="btn primary" disabled={creating} onClick={createEpisode}>
-          {creating ? "创建中…" : "+ 新增一集"}
+          {creating ? t("创建中…") : t("+ 新增一集")}
         </button>
       </div>
     );
@@ -307,6 +310,7 @@ function CanvasWorkbench({
   onCreateEpisode,
   creating,
 }: CanvasWorkbenchProps) {
+  const t = useT();
   const { toast } = useApp();
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -390,9 +394,9 @@ function CanvasWorkbench({
       if (manual) setSaving(true);
       try {
         await apiCanvas.canvasSave(ep, doc);
-        if (manual) toast("画布已保存", "ok");
+        if (manual) toast(t("画布已保存"), "ok");
       } catch (e) {
-        toast(`保存画布失败：${errMsg(e)}`, "err");
+        toast(t("保存画布失败：{msg}", { msg: errMsg(e) }), "err");
       } finally {
         if (manual) setSaving(false);
       }
@@ -432,7 +436,7 @@ function CanvasWorkbench({
         if (cancelled) return;
         applyDoc(apiCanvas.emptyCanvasDocument(ep));
         loadedEpRef.current = ep;
-        toast(`加载画布失败，已使用空白画布：${errMsg(e)}`, "err");
+        toast(t("加载画布失败，已使用空白画布：{msg}", { msg: errMsg(e) }), "err");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -492,9 +496,14 @@ function CanvasWorkbench({
   );
 
   const deleteSelection = useCallback(() => {
-    const selNodeIds = new Set(
-      nodesRef.current.filter((n) => n.selected).map((n) => n.id)
-    );
+    const selNodes = nodesRef.current.filter((n) => n.selected);
+    // v2.14：锁定节点不可删除（FlowNode.data.cn 才是领域节点）
+    const locked = selNodes.find((n) => n.data?.cn?.config?.locked === true);
+    if (locked) {
+      toast(t("节点「{title}」已锁定：请在检查器中取消锁定后再删除", { title: locked.data.cn.title }), "warn");
+      return;
+    }
+    const selNodeIds = new Set(selNodes.map((n) => n.id));
     const hasSelEdges = edgesRef.current.some((e) => e.selected);
     if (!selNodeIds.size && !hasSelEdges) return;
     pushUndo();
@@ -550,7 +559,7 @@ function CanvasWorkbench({
           })),
       };
       setClipboardHasData(true);
-      toast(`已复制 ${targets.length} 个节点`, "ok");
+      toast(t("已复制 {count} 个节点", { count: targets.length }), "ok");
     },
     [toast]
   );
@@ -589,7 +598,7 @@ function CanvasWorkbench({
       setNodes((ns) => [...ns.map((n) => ({ ...n, selected: false })), ...newNodes]);
       if (newEdges.length) setEdges((es) => [...es, ...newEdges]);
       scheduleSave();
-      toast(`已粘贴 ${newNodes.length} 个节点`, "ok");
+      toast(t("已粘贴 {count} 个节点", { count: newNodes.length }), "ok");
     },
     [pushUndo, setNodes, setEdges, scheduleSave, toast]
   );
@@ -697,7 +706,7 @@ function CanvasWorkbench({
     (conn: Connection) => {
       if (!conn.source || !conn.target) return;
       if (conn.source === conn.target) {
-        useApp.getState().toast("不能将节点连接到自身", "err");
+        useApp.getState().toast(t("不能将节点连接到自身"), "err");
         return;
       }
       const src = nodesRef.current.find((n) => n.id === conn.source);
@@ -706,13 +715,13 @@ function CanvasWorkbench({
 
       const inPort = inputAcceptOf(tgt.data.cn.type, conn.targetHandle);
       if (!inPort) {
-        useApp.getState().toast("目标节点没有可用输入端口", "err");
+        useApp.getState().toast(t("目标节点没有可用输入端口"), "err");
         return;
       }
       const outAccept = outputAcceptOf(src.data.cn.type, conn.sourceHandle);
       const check = checkPortCompatible(inPort.accept, outAccept);
       if (!check.ok) {
-        useApp.getState().toast(check.reason ?? "端口类型不兼容", "err");
+        useApp.getState().toast(check.reason ?? t("端口类型不兼容"), "err");
         return;
       }
       const duplicated = edgesRef.current.some(
@@ -723,7 +732,7 @@ function CanvasWorkbench({
           e.targetHandle === conn.targetHandle
       );
       if (duplicated) {
-        useApp.getState().toast("该连线已存在", "warn");
+        useApp.getState().toast(t("该连线已存在"), "warn");
         return;
       }
 
@@ -813,26 +822,30 @@ function CanvasWorkbench({
 
   // 全局兜底：任务成功事件携带 nodeId 时直接回填节点（面板已关闭/切走也能收到产物）。
   // 修复前仅面板轮询回填——面板一关，生成结果就永远挂不到节点上。
+  // handler 经 ref 镜像调用（与上方 nodesRef 同一模式）：effect 保持空依赖只订阅一次，
+  // 每次渲染仅更新 ref 指向的最新 handler，消除对首帧闭包的过期依赖。
+  const onJobSucceeded = (job: { nodeId?: string | null; outputs?: string[]; reply?: string | null }) => {
+    const nid = job?.nodeId;
+    if (!nid) return;
+    const fn = nodesRef.current.find((n) => n.id === nid);
+    if (!fn) return; // 已切换分集或节点已删除
+    const out = job.outputs?.[0];
+    if (out) {
+      handleChatConfig(nid, { outputAssetId: out, status: "ready" });
+    } else if (job.reply && fn.data.cn.type === "text") {
+      handleChatConfig(nid, { text: job.reply, status: "ready" });
+    }
+  };
+  const onJobSucceededRef = useRef(onJobSucceeded);
+  onJobSucceededRef.current = onJobSucceeded;
   useEffect(() => {
     const un = api.onAppEvent<{ nodeId?: string | null; outputs?: string[]; reply?: string | null }>(
       "job.succeeded",
-      (job) => {
-        const nid = job?.nodeId;
-        if (!nid) return;
-        const fn = nodesRef.current.find((n) => n.id === nid);
-        if (!fn) return; // 已切换分集或节点已删除
-        const out = job.outputs?.[0];
-        if (out) {
-          handleChatConfig(nid, { outputAssetId: out, status: "ready" });
-        } else if (job.reply && fn.data.cn.type === "text") {
-          handleChatConfig(nid, { text: job.reply, status: "ready" });
-        }
-      }
+      (job) => onJobSucceededRef.current(job)
     );
     return () => {
       un.then((f) => f()).catch(() => {});
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const updateSelectedNode = (mut: (cn: CanvasNode) => CanvasNode) => {
     if (!selectedFlowNode) return;
@@ -881,14 +894,32 @@ function CanvasWorkbench({
     void rf.fitView({ padding: 0.2, duration: 220 });
   }, [rf]);
 
-  const runSelected = () => {
-    if (!selectedFlowNode) {
-      toast("请先选择一个节点", "warn");
+  const [batchBusy, setBatchBusy] = useState(false);
+  /** 画布批量运行（v2.14）：拓扑执行全图；review 暂停后可批准并恢复 */
+  const runBatch = async (resume = false) => {
+    if (batchBusy) return;
+    if (!episodeId) {
+      toast(t("请先打开项目并选择分集"), "warn");
       return;
     }
-    // 执行链路现状：画布级批量运行尚未接入（Phase 2 Job Queue）。
-    // 单节点运行请双击节点打开生成面板（NodeChatPanel → canvas_node_run）。
-    toast("请双击节点打开生成面板运行；画布批量运行将在后续版本接入", "info");
+    setBatchBusy(true);
+    toast(resume ? t("批次恢复运行中…") : t("画布批量运行中（生成节点会逐个等待完成）…"), "info");
+    try {
+      const r = await apiCanvas.canvasRunBatch(episodeId, resume);
+      if (r.paused) {
+        toast(t("批次在「人工审核」节点暂停（已完成 {done}/{total}）——选中该节点后可在检查器批准继续", { done: r.completed, total: r.total }), "warn");
+      } else {
+        toast(t("批量运行完成：{done} 个节点执行，{skipped} 个跳过", { done: r.completed, skipped: r.skipped }), "ok");
+      }
+      const doc = await apiCanvas.canvasGet(episodeId);
+      applyDoc(doc);
+    } catch (e) {
+      toast(t("批量运行失败：{msg}（已完成节点已保留，可点「恢复运行」继续）", { msg: api.errMsg(e) }), "err");
+      const doc = await apiCanvas.canvasGet(episodeId).catch(() => null);
+      if (doc) applyDoc(doc);
+    } finally {
+      setBatchBusy(false);
+    }
   };
 
   /* ---------- 拖拽创建（从面板拖到画布） ---------- */
@@ -956,19 +987,19 @@ function CanvasWorkbench({
           className="cv-episode-select"
           value={episodeId}
           onChange={(e) => onSelectEpisode(e.target.value)}
-          aria-label="选择分集"
+          aria-label={t("选择分集")}
         >
           <option value="" disabled>
-            选择分集
+            {t("选择分集")}
           </option>
           {episodes.map((ep) => (
             <option key={ep.id} value={ep.id}>
-              第 {ep.number} 集 · {ep.title}
+              {t("第 {n} 集 · {title}", { n: ep.number, title: ep.title })}
             </option>
           ))}
         </select>
         <button className="btn sm" disabled={creating} onClick={onCreateEpisode}>
-          + 新增一集
+          {t("+ 新增一集")}
         </button>
 
         <div className="cv-vsep" />
@@ -977,50 +1008,58 @@ function CanvasWorkbench({
           disabled={saving || !episodeId}
           onClick={() => void saveDoc(true)}
         >
-          💾 保存
+          {t("💾 保存")}
         </button>
         <button
           className="btn sm"
           disabled={histLen.u === 0}
           onClick={undo}
-          title="撤销 (Ctrl/Cmd+Z)"
+          title={t("撤销 (Ctrl/Cmd+Z)")}
         >
-          ↩ 撤销
+          {t("↩ 撤销")}
         </button>
         <button
           className="btn sm"
           disabled={histLen.r === 0}
           onClick={redo}
-          title="重做 (Ctrl/Cmd+Shift+Z)"
+          title={t("重做 (Ctrl/Cmd+Shift+Z)")}
         >
-          ↪ 重做
+          {t("↪ 重做")}
         </button>
 
         <div className="cv-vsep" />
         <button
           className="btn sm"
-          disabled={!selectedFlowNode}
-          onClick={runSelected}
-          title="双击节点打开生成面板运行"
+          disabled={batchBusy}
+          title={t("按拓扑顺序执行全图：生成节点逐个运行，条件节点自动分支，审核节点暂停等待批准")}
+          onClick={() => void runBatch(false)}
         >
-          ▶ 运行选中
+          {batchBusy ? t("⏳ 运行中…") : t("▶ 运行全图")}
+        </button>
+        <button
+          className="btn sm"
+          disabled={batchBusy}
+          title={t("从中断处恢复（已完成的节点自动跳过）")}
+          onClick={() => void runBatch(true)}
+        >
+          {t("↻ 恢复运行")}
         </button>
         <button
           className="btn sm danger"
           disabled={!selectedFlowNode && !hasSelEdges}
           onClick={deleteSelection}
         >
-          🗑 删除选中
+          {t("🗑 删除选中")}
         </button>
         <button className="btn sm" onClick={fitAll}>
-          ⤢ 适应视图
+          {t("⤢ 适应视图")}
         </button>
 
         <div className="spacer" />
-        <span className="pill ok" title="位置 / 连线 / 参数变化后 800ms 自动保存">
-          自动保存已开启
+        <span className="pill ok" title={t("位置 / 连线 / 参数变化后 800ms 自动保存")}>
+          {t("自动保存已开启")}
         </span>
-        {saving && <span className="pill">保存中…</span>}
+        {saving && <span className="pill">{t("保存中…")}</span>}
       </div>
 
       <div className="cv-body">
@@ -1086,17 +1125,17 @@ function CanvasWorkbench({
             );
           })()}
 
-          {loading && <div className="cv-loading">画布加载中…</div>}
+          {loading && <div className="cv-loading">{t("画布加载中…")}</div>}
           {!loading && !episodeId && (
             <div className="cv-empty-hint">
               <div className="big">🎞️</div>
-              <p>请先在上方选择分集</p>
+              <p>{t("请先在上方选择分集")}</p>
             </div>
           )}
           {!loading && episodeId && nodes.length === 0 && (
             <div className="cv-empty-hint">
               <div className="big">🕸️</div>
-              <p>从左侧面板点击或拖拽，创建第一个节点</p>
+              <p>{t("从左侧面板点击或拖拽，创建第一个节点")}</p>
             </div>
           )}
         </div>
@@ -1121,7 +1160,7 @@ function CanvasWorkbench({
                 flexShrink: 0,
               }}
             >
-              <div className="cv-inspector-title">生成模型</div>
+              <div className="cv-inspector-title">{t("生成模型")}</div>
               <div className="field">
                 <label>Provider</label>
                 <select
@@ -1130,19 +1169,19 @@ function CanvasWorkbench({
                   onBlur={endEdit}
                   onChange={(e) => handleProviderChange(e.target.value)}
                 >
-                  <option value="">跟随生成模型设置 / 自动路由</option>
+                  <option value="">{t("跟随生成模型设置 / 自动路由")}</option>
                   {eligibleProviders.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
                     </option>
                   ))}
                   {selProviderId && !selProvider && (
-                    <option value={selProviderId}>{selProviderId}（已不可用）</option>
+                    <option value={selProviderId}>{t("{id}（已不可用）", { id: selProviderId })}</option>
                   )}
                 </select>
               </div>
               <div className="field">
-                <label>模型</label>
+                <label>{t("模型")}</label>
                 <select
                   value={selModelId}
                   disabled={!selProviderId}
@@ -1151,7 +1190,7 @@ function CanvasWorkbench({
                   onChange={(e) => handleModelChange(e.target.value)}
                 >
                   <option value="">
-                    {selProviderId ? "自动（Provider 默认模型）" : "跟随生成模型设置 / 自动路由"}
+                    {selProviderId ? t("自动（Provider 默认模型）") : t("跟随生成模型设置 / 自动路由")}
                   </option>
                   {eligibleModels.map((m) => (
                     <option key={m.modelId} value={m.modelId}>
@@ -1161,11 +1200,11 @@ function CanvasWorkbench({
                     </option>
                   ))}
                   {selModelId && !eligibleModels.some((m) => m.modelId === selModelId) && (
-                    <option value={selModelId}>{selModelId}（已不可用）</option>
+                    <option value={selModelId}>{t("{id}（已不可用）", { id: selModelId })}</option>
                   )}
                 </select>
               </div>
-              <div className="hint">留空 = 使用模型页「生成模型设置」的默认模型</div>
+              <div className="hint">{t("留空 = 使用模型页「生成模型设置」的默认模型")}</div>
             </div>
           )}
           <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
@@ -1177,6 +1216,7 @@ function CanvasWorkbench({
               onEditStart={beginEdit}
               onEditEnd={endEdit}
               onDelete={deleteSelection}
+              onBatchResume={() => void runBatch(true)}
             />
           </div>
         </div>
@@ -1194,7 +1234,7 @@ function CanvasWorkbench({
         >
           {ctxMenu.kind === "pane" && (
             <>
-              <div className="cv-ctx-label">新建节点</div>
+              <div className="cv-ctx-label">{t("新建节点")}</div>
               {NODE_TYPE_ITEMS.map((it) => (
                 <button
                   key={it.type}
@@ -1205,21 +1245,21 @@ function CanvasWorkbench({
                   }}
                 >
                   <span className="icon">{it.icon}</span>
-                  {it.label}
+                  {t(it.label)}
                 </button>
               ))}
               <div className="cv-ctx-sep" />
               <button
                 className="cv-ctx-item"
                 disabled={!clipboardHasData}
-                title={clipboardHasData ? "粘贴复制的节点" : "剪贴板为空"}
+                title={clipboardHasData ? t("粘贴复制的节点") : t("剪贴板为空")}
                 onClick={() => {
                   pasteFromClipboard(ctxMenu.flow);
                   setCtxMenu(null);
                 }}
               >
                 <span className="icon">📋</span>
-                粘贴
+                {t("粘贴")}
               </button>
               <button
                 className="cv-ctx-item"
@@ -1229,7 +1269,7 @@ function CanvasWorkbench({
                 }}
               >
                 <span className="icon">⤢</span>
-                适应视图
+                {t("适应视图")}
               </button>
             </>
           )}
@@ -1244,7 +1284,7 @@ function CanvasWorkbench({
                 }}
               >
                 <span className="icon">⚡</span>
-                生成 / 对话…
+                {t("生成 / 对话…")}
               </button>
               <button
                 className="cv-ctx-item"
@@ -1254,19 +1294,19 @@ function CanvasWorkbench({
                 }}
               >
                 <span className="icon">⧉</span>
-                复制
+                {t("复制")}
               </button>
               <button
                 className="cv-ctx-item"
                 disabled={!clipboardHasData}
-                title={clipboardHasData ? "粘贴复制的节点" : "剪贴板为空"}
+                title={clipboardHasData ? t("粘贴复制的节点") : t("剪贴板为空")}
                 onClick={() => {
                   pasteFromClipboard(ctxMenu.flow);
                   setCtxMenu(null);
                 }}
               >
                 <span className="icon">📋</span>
-                粘贴
+                {t("粘贴")}
               </button>
               <div className="cv-ctx-sep" />
               <button
@@ -1277,7 +1317,7 @@ function CanvasWorkbench({
                 }}
               >
                 <span className="icon">🗑</span>
-                删除{nodes.filter((n) => n.selected).length > 1 ? "选中节点" : "该节点"}
+                {nodes.filter((n) => n.selected).length > 1 ? t("删除选中节点") : t("删除该节点")}
               </button>
             </>
           )}
@@ -1291,7 +1331,7 @@ function CanvasWorkbench({
               }}
             >
               <span className="icon">🗑</span>
-              删除连线
+              {t("删除连线")}
             </button>
           )}
         </div>

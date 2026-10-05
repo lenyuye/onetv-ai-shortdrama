@@ -1,0 +1,165 @@
+/**
+ * 画布相关英文翻译片段（CanvasView / CanvasNodeCard / NodePalette / InspectorPanel / canvas-model）。
+ * 键 = 中文原文（与替换处逐字一致），值 = 英文翻译。
+ */
+export default {
+  /* ---------- 节点类型显示名（右键菜单 NODE_TYPE_ITEMS） ---------- */
+  '文本': 'Text',
+  '剧本': 'Script',
+  '图片': 'Image',
+  '视频': 'Video',
+  '音频': 'Audio',
+  '分镜': 'Storyboard',
+  '视频片段': 'Video Clip',
+  '条件': 'Condition',
+  '审核': 'Review',
+  '导出': 'Export',
+
+  /* ---------- 节点类型显示名（node-sdk NODE_TYPE_DEFS.title，面板/卡片/检查器展示） ---------- */
+  '生图': 'Image Gen',
+  '生视频': 'Video Gen',
+  '配音/音频': 'Voiceover/Audio',
+  '片段合成': 'Clip Compose',
+  '条件分支': 'Condition Branch',
+  '人工审核': 'Manual Review',
+
+  /* ---------- 端口名中文映射（canvas-model PORT_CN） ---------- */
+  '输入': 'Input',
+  '输出': 'Output',
+  '提示词': 'Prompt',
+  '参考图': 'Reference Image',
+  '需求': 'Brief',
+  '设定': 'Story Bible',
+  '镜头': 'Shots',
+  '通过': 'Pass',
+  '驳回': 'Reject',
+  '已审': 'Reviewed',
+
+  /* ---------- 参数键中文映射（canvas-model PARAM_CN） ---------- */
+  '模型': 'Model',
+  '供应商': 'Provider',
+  '画幅': 'Aspect Ratio',
+  '数量': 'Count',
+  '时长': 'Duration',
+  '音色': 'Voice',
+  '风格': 'Style',
+  '镜头数': 'Shot Count',
+  '集数': 'Episodes',
+  '时间线': 'Timeline',
+  '预设': 'Preset',
+  '备注': 'Notes',
+  '参数未设置': 'No parameters set',
+  '未设置': 'Not set',
+  '{key}：{value}': '{key}: {value}',
+
+  /* ---------- 节点卡片（CanvasNodeCard） ---------- */
+  '未知节点': 'Unknown Node',
+  '已锁定': 'Locked',
+  '已禁用（批量运行跳过）': 'Disabled (skipped in batch run)',
+  '节点': 'Node',
+  '输入连接点（{port}）': 'Input port ({port})',
+  '输入连接点': 'Input port',
+  '输出连接点（{port}）': 'Output port ({port})',
+  '输出连接点': 'Output port',
+
+  /* ---------- 节点面板（NodePalette） ---------- */
+  '节点面板': 'Node Palette',
+  '点击创建，或拖拽到画布': 'Click to create, or drag onto the canvas',
+  '{title}\n输入: {inputs}\n输出: {outputs}': '{title}\nInputs: {inputs}\nOutputs: {outputs}',
+  '无': 'None',
+
+  /* ---------- 参数检查器（InspectorPanel） ---------- */
+  '模型引用，如 openai/gpt-4o': 'Model reference, e.g. openai/gpt-4o',
+  '输入提示词 / 文本内容…': 'Enter prompt / text content…',
+  '如 out.shots.length > 0': 'e.g. out.shots.length > 0',
+  '音色名称': 'Voice name',
+  '预设名称': 'Preset name',
+  '参数': 'Parameters',
+  '未选中节点。点击画布中的节点后，可在此编辑标题与参数。':
+    'No node selected. Click a node on the canvas to edit its title and parameters here.',
+  'JSON 必须是一个对象（{...}）': 'JSON must be an object ({...})',
+  'JSON 解析失败：{error}': 'JSON parse failed: {error}',
+  '⏸ 禁用（运行时跳过）': '⏸ Disabled (skipped at run time)',
+  '🔒 锁定（防删除/修改）': '🔒 Lock (prevent delete/edit)',
+  '⏸ 该审核节点正在等待批准——批准后批次将从中断处继续。':
+    '⏸ This Review node is waiting for approval — the batch will resume from where it stopped once approved.',
+  '✓ 批准并继续运行': '✓ Approve and Continue',
+  '节点标题': 'Node Title',
+  '节点标题（已锁定）': 'Node Title (Locked)',
+  '应用 JSON': 'Apply JSON',
+  '节点已锁定': 'Node is locked',
+  '🗑 删除该节点': '🗑 Delete Node',
+
+  /* ---------- 画布视图（CanvasView） ---------- */
+  '已新增一集': 'Episode added',
+  '新增失败：{msg}': 'Failed to add episode: {msg}',
+  '尚未打开项目': 'No project open',
+  '画布按分集组织，请先在「工作区」创建或打开一个项目':
+    'The Canvas is organized by episodes. Please create or open a project in "Workspace" first',
+  '前往工作区': 'Go to Workspace',
+  '分集加载中…': 'Loading episodes…',
+  '还没有分集': 'No episodes yet',
+  '画布挂在分集下，请先新增一集再开始编排节点':
+    'Canvases live under episodes. Add an episode first, then start arranging nodes',
+  '创建中…': 'Creating…',
+  '+ 新增一集': '+ Add Episode',
+  '选择分集': 'Select episode',
+  '第 {n} 集 · {title}': 'Episode {n} · {title}',
+  '💾 保存': '💾 Save',
+  '撤销 (Ctrl/Cmd+Z)': 'Undo (Ctrl/Cmd+Z)',
+  '↩ 撤销': '↩ Undo',
+  '重做 (Ctrl/Cmd+Shift+Z)': 'Redo (Ctrl/Cmd+Shift+Z)',
+  '↪ 重做': '↪ Redo',
+  '按拓扑顺序执行全图：生成节点逐个运行，条件节点自动分支，审核节点暂停等待批准':
+    'Run the whole graph in topological order: Generate nodes run one by one, Condition nodes branch automatically, Review nodes pause for approval',
+  '⏳ 运行中…': '⏳ Running…',
+  '▶ 运行全图': '▶ Run Graph',
+  '从中断处恢复（已完成的节点自动跳过）': 'Resume from where it stopped (completed nodes are skipped automatically)',
+  '↻ 恢复运行': '↻ Resume',
+  '🗑 删除选中': '🗑 Delete Selected',
+  '⤢ 适应视图': '⤢ Fit View',
+  '位置 / 连线 / 参数变化后 800ms 自动保存': 'Auto-saves 800ms after position / edge / parameter changes',
+  '自动保存已开启': 'Auto-save on',
+  '保存中…': 'Saving…',
+  '画布加载中…': 'Loading canvas…',
+  '请先在上方选择分集': 'Select an episode above first',
+  '从左侧面板点击或拖拽，创建第一个节点': 'Click or drag from the palette on the left to create your first node',
+  '生成模型': 'Generation Model',
+  '跟随生成模型设置 / 自动路由': 'Follow generation model settings / Auto route',
+  '{id}（已不可用）': '{id} (unavailable)',
+  '自动（Provider 默认模型）': 'Auto (Provider default model)',
+  '留空 = 使用模型页「生成模型设置」的默认模型':
+    'Leave empty to use the default model from "Generation Model Settings" on the Models page',
+  '新建节点': 'New Node',
+  '粘贴复制的节点': 'Paste copied nodes',
+  '剪贴板为空': 'Clipboard is empty',
+  '粘贴': 'Paste',
+  '生成 / 对话…': 'Generate / Chat…',
+  '复制': 'Copy',
+  '删除选中节点': 'Delete selected nodes',
+  '删除该节点': 'Delete this node',
+  '删除连线': 'Delete Edge',
+  '适应视图': 'Fit View',
+  '也可以选中节点后按 Delete 键删除': 'You can also select the node and press Delete to remove it',
+
+  /* ---------- 画布保存 / 加载 / 批量运行 toast ---------- */
+  '画布已保存': 'Canvas saved',
+  '保存画布失败：{msg}': 'Failed to save canvas: {msg}',
+  '加载画布失败，已使用空白画布：{msg}': 'Failed to load canvas, an empty canvas is used instead: {msg}',
+  '节点「{title}」已锁定：请在检查器中取消锁定后再删除':
+    'Node "{title}" is locked: unlock it in the Inspector before deleting',
+  '已复制 {count} 个节点': 'Copied {count} nodes',
+  '已粘贴 {count} 个节点': 'Pasted {count} nodes',
+  '不能将节点连接到自身': 'Cannot connect a node to itself',
+  '目标节点没有可用输入端口': 'The target node has no available input port',
+  '端口类型不兼容': 'Incompatible port types',
+  '该连线已存在': 'This edge already exists',
+  '请先打开项目并选择分集': 'Open a project and select an episode first',
+  '批次恢复运行中…': 'Resuming batch run…',
+  '画布批量运行中（生成节点会逐个等待完成）…': 'Running batch on canvas (each Generate node waits for completion)…',
+  '批次在「人工审核」节点暂停（已完成 {done}/{total}）——选中该节点后可在检查器批准继续':
+    'Batch paused at a "Manual Review" node ({done}/{total} completed) — select the node and approve in the Inspector to continue',
+  '批量运行完成：{done} 个节点执行，{skipped} 个跳过': 'Batch run finished: {done} nodes executed, {skipped} skipped',
+  '批量运行失败：{msg}（已完成节点已保留，可点「恢复运行」继续）':
+    'Batch run failed: {msg} (completed nodes are kept; click "Resume" to continue)',
+} as Record<string, string>;
