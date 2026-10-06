@@ -2,31 +2,14 @@
  * ℹ️ 关于卡片 —— 从 SettingsView 原样迁出（版本号连点 5 次唤出测试时钟钩子 / 软件信息）。
  * 检查更新为 v2.11.0 起的占位实现（无发布源），代码保留待接入 tauri-plugin-updater。
  */
-import { useState } from "react";
 import { useApp } from "../../store";
 import { useT } from "../../i18n";
 import { useTimeHook } from "../../hooks/useTimeHook";
 
 export function AboutCard() {
-  const { appVersion, toast } = useApp();
+  const { appVersion } = useApp();
   const t = useT();
   const { timeHookOpen, offsetInput, setOffsetInput, hookStatus, onVersionClick, applyTimeOffset } = useTimeHook();
-
-  const [checking, setChecking] = useState(false);
-  const [updateMsg, setUpdateMsg] = useState("");
-
-  const checkUpdate = async () => {
-    setChecking(true);
-    setUpdateMsg("");
-    try {
-      // v2.3.2：本地版本，无更新服务器；后续接入发布源后在此返回真实结果
-      await new Promise((r) => setTimeout(r, 600));
-      setUpdateMsg(t("这已经是最新版本"));
-      toast(t("这已经是最新版本"), "ok");
-    } finally {
-      setChecking(false);
-    }
-  };
 
   return (
     <div className="card">

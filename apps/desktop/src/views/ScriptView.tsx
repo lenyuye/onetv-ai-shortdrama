@@ -205,6 +205,14 @@ export default function ScriptView() {
     removeDialogue,
     addScene,
     removeScene,
+    // v2.24.1 场景实体操作接线(右键菜单):复制/粘贴/克隆/立即删除
+    copyScene,
+    pasteScene,
+    duplicateScene,
+    removeSceneNow,
+    sceneClipboard,
+    ctxMenu,
+    setCtxMenu,
   } = useScriptSceneOps({ doc, setDoc, persistScript });
 
   const {
@@ -421,6 +429,15 @@ export default function ScriptView() {
           onRemoveDialogue={removeDialogue}
           onAddScene={addScene}
           onRemoveScene={removeScene}
+          sceneOps={{
+            copyScene,
+            pasteScene,
+            duplicateScene,
+            removeSceneNow,
+            hasClipboard: !!sceneClipboard,
+            ctxMenu,
+            setCtxMenu,
+          }}
         />
       )}
 

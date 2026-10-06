@@ -146,4 +146,8 @@ export default {
   '🔗 连续性规则（生成时保持一致的约束，如服装/发型/时间线）': '🔗 Continuity Rules (constraints kept consistent during generation, e.g. costume / hairstyle / timeline)',
   '＋ 添加规则': '＋ Add Rule',
   '💾 保存圣经': '💾 Save Story Bible',
+  '复制场景': 'Copy scene',
+  '克隆副本': 'Duplicate scene',
+  '粘贴到末尾': 'Paste at end',
+  '删除场景（立即保存）': 'Delete scene (saves immediately)',
 } as Record<string, string>;
