@@ -11,6 +11,7 @@ import SettingsView from "./views/SettingsView";
 import ModelsView from "./views/ModelsView";
 import AssetsView from "./views/AssetsView";
 import CanvasView from "./views/CanvasView";
+import TimelineView from "./views/TimelineView";
 import ScriptView from "./views/ScriptView";
 import StoryboardView from "./views/StoryboardView";
 import JobsView from "./views/JobsView";
@@ -32,6 +33,7 @@ const NAV: { key: ViewKey; icon: string; label: string; section: string }[] = [
   { key: "script", icon: "📝", label: "剧本", section: "创作" },
   { key: "storyboard", icon: "🖼️", label: "分镜", section: "创作" },
   { key: "canvas", icon: "🕸️", label: "画布", section: "创作" },
+  { key: "timeline", icon: "🎞️", label: "时间线", section: "创作" },
   { key: "assets", icon: "🗂️", label: "资产", section: "管理" },
   { key: "models", icon: "🧠", label: "模型", section: "管理" },
   { key: "skills", icon: "🧩", label: "Skills", section: "管理" },
@@ -168,6 +170,9 @@ export default function App() {
       break;
     case "canvas":
       main = <CanvasView />;
+      break;
+    case "timeline":
+      main = <TimelineView />;
       break;
     case "script":
       main = <ScriptView />;

@@ -13,6 +13,7 @@ import enModels from "./i18n/en/models";
 import enScript from "./i18n/en/script";
 import enSettings from "./i18n/en/settings";
 import enStoryboard from "./i18n/en/storyboard";
+import enTimeline from "./i18n/en/timeline";
 import { OVERRIDES, t } from "./i18n";
 
 const FRAGMENTS: Record<string, Record<string, string>> = {
@@ -25,6 +26,7 @@ const FRAGMENTS: Record<string, Record<string, string>> = {
   "en/script.ts": enScript,
   "en/settings.ts": enSettings,
   "en/storyboard.ts": enStoryboard,
+  "en/timeline.ts": enTimeline,
 };
 
 describe("i18n 字典完整性", () => {

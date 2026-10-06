@@ -3193,6 +3193,100 @@ fn canvas_save(
     doc_save(state, episode_id, "canvas".into(), doc)
 }
 
+/* ---------------- 时间线编辑器（规格 §12.2，多轨 schemaVersion 2.0） ---------------- */
+
+#[tauri::command]
+fn timeline_get(state: TState, episode: String) -> Result<serde_json::Value, CommandError> {
+    let (root, manifest) = open_ctx(&state)?;
+    if !manifest.episodes.iter().any(|e| e.id == episode) {
+        return Err(err(format!("分集不存在: {episode}")));
+    }
+    let path = root.join("episodes").join(&episode).join("timeline.json");
+    if !path.exists() {
+        return Ok(serde_json::json!({ "exists": false, "timeline": serde_json::Value::Null }));
+    }
+    let raw = std::fs::read_to_string(&path).map_err(err)?;
+    let timeline: serde_json::Value = serde_json::from_str(&raw).map_err(err)?;
+    Ok(serde_json::json!({ "exists": true, "timeline": timeline }))
+}
+
+#[tauri::command]
+fn timeline_save(
+    state: TState,
+    episode: String,
+    timeline: serde_json::Value,
+) -> Result<(), CommandError> {
+    let (root, manifest) = open_ctx(&state)?;
+    if !manifest.episodes.iter().any(|e| e.id == episode) {
+        return Err(err(format!("分集不存在: {episode}")));
+    }
+    // 原子写复用 core 的 write_episode_doc（临时文件 + rename）
+    onetv_core::agent::handlers::write_episode_doc(&root, &episode, "timeline", &timeline)
+        .map_err(|e| err(e.message))?;
+    state.audit.record("timeline.save", &episode, None);
+    Ok(())
+}
+
+#[tauri::command]
+async fn timeline_render(
+    state: tauri::State<'_, Arc<AppState>>,
+    agent: tauri::State<'_, Arc<AgentState>>,
+    episode: String,
+) -> Result<serde_json::Value, CommandError> {
+    let (root, manifest) = open_ctx(&state)?;
+    if !manifest.episodes.iter().any(|e| e.id == episode) {
+        return Err(err(format!("分集不存在: {episode}")));
+    }
+    let _ = root;
+    // create_job 轻量（仅落库 + 入队），无需 spawn_blocking
+    let job = agent.jobs.create_job(
+        onetv_core::jobs::JobKind::TimelineRender,
+        "渲染时间线（编辑器）",
+        None,
+        None,
+        serde_json::json!({ "episode": episode, "source": "editor" }),
+        None,
+        Some(episode),
+        false,
+        None,
+    );
+    Ok(serde_json::json!({ "jobId": job.id }))
+}
+
+#[tauri::command]
+async fn timeline_probe_asset(
+    state: tauri::State<'_, Arc<AppState>>,
+    asset_id: String,
+) -> Result<serde_json::Value, CommandError> {
+    let (root, _) = open_ctx(&state)?;
+    let path = onetv_core::agent::handlers::asset_path_by_id(&root, &asset_id)
+        .ok_or_else(|| err(format!("找不到资产: {asset_id}")))?;
+    // ffprobe 是子进程阻塞调用：放阻塞线程池
+    let media = state.media.clone();
+    let probe_path = path.clone();
+    let info = tokio::task::spawn_blocking(move || onetv_media::probe(&media, &probe_path))
+        .await
+        .map_err(|e| err(e.to_string()))?
+        .map_err(err)?;
+    let is_image = matches!(
+        path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref(),
+        Some("png") | Some("jpg") | Some("jpeg") | Some("webp") | Some("gif")
+    );
+    // 图片：durationSec=0 / hasAudio=false
+    let (duration_sec, has_audio) = if is_image {
+        (0.0, false)
+    } else {
+        (info.duration_sec, info.has_audio)
+    };
+    Ok(serde_json::json!({
+        "durationSec": duration_sec,
+        "width": info.width.unwrap_or(0),
+        "height": info.height.unwrap_or(0),
+        "hasAudio": has_audio,
+    }))
+}
+
+
 /* ---------------- onetv-asset:// 本地资源协议 ---------------- */
 
 fn percent_decode(s: &str) -> String {
@@ -3699,6 +3793,10 @@ pub fn run() {
             doc_save,
             canvas_get,
             canvas_save,
+            timeline_get,
+            timeline_save,
+            timeline_render,
+            timeline_probe_asset,
             asset_import,
             asset_list,
             asset_delete,

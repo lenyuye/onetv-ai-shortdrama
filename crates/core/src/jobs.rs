@@ -1082,7 +1082,14 @@ mod tests {
         let (_tx, _rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let mgr = JobManager::with_handle(tokio::runtime::Handle::current(), Arc::new(move |_: &str, _: serde_json::Value| {}));
         mgr.set_project_root(Some(dir.path().to_path_buf()));
-        mgr.set_cost_guard(CostGuardConfig { enabled: true, daily_remote_limit: 0, project_total_limit: 0 });
+        // v2.14 金额化字段补默认（0 = 不限金额），仅测试初始化用
+        mgr.set_cost_guard(CostGuardConfig {
+            enabled: true,
+            daily_remote_limit: 0,
+            project_total_limit: 0,
+            daily_cost_limit: 0.0,
+            project_cost_limit: 0.0,
+        });
 
         // ImageGeneration 属于高成本类型：预算 0 → 执行前即被拦截
         let called = Arc::new(std::sync::atomic::AtomicBool::new(false));

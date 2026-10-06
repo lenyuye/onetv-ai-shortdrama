@@ -3,6 +3,7 @@
 //! 核心成片不依赖云端：拼接、转码、混音、字幕、封面、画幅版本全部在本机完成。
 
 pub mod render;
+pub mod timeline;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

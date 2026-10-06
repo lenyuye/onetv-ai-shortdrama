@@ -2,6 +2,15 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.18.0] — v2.18.0：多轨时间线编辑器（第一二类清单：项 19，最后一件）
+
+### 追加（规格 §12.2 时间线数据结构落地）
+- **🎞️ TimelineView 多轨编辑器**：新增「时间线」视图（创作区）——视频/音频/字幕三条泳道 + 时间标尺（缩放 20~200 px/s），片段拖拽移动（0.1s 吸附）、左右缘拖拽修剪（trimIn/duration），检查器精确编辑 start/duration/trimIn/音量(0~2)/转场(淡入淡出 0.5s)/字幕文本；轨头「+ 添加」从资产库点选（视频/音频自动 ffprobe 真实时长）；从分镜一键生成时间线（outputAssetId 镜头顺序排列 + shot.subtitle 生成字幕轨）；800ms 防抖自动保存（分集切换冲刷防串写）；渲染成片按钮建 TimelineRender 任务并轮询进度（顶栏「渲染中 p%」徽标）。
+- **后端多轨渲染引擎**：crates/media/src/timeline.rs——schemaVersion 2.0 文档走新引擎：视频轨片段归一化（-ss trimIn/淡入淡出滤镜/按 clip volume 保留或静音源音频）+ 黑场片段补隙；音频混合单 filter_complex（volume+adelay+amix 全部参与片段）；字幕轨→SRT；复用 concat_clips 流复制 + finalize（硬字幕降级/混音 mux）。
+- **四个新命令**：timeline_get / timeline_save（原子写）/ timeline_render（入任务队列，Agent 意图 timeline.render 共用）/ timeline_probe_asset（ffprobe 时长/分辨率/音轨）。timeline_render_handler 双分支：2.0 走多轨引擎，旧文档保持线性逻辑兼容。
+- **测试**：Rust 63 项全绿（含 2 个 FFmpeg 集成测试：混音+字幕+转场时间线端到端、黑场补隙时长断言）；前端 28 项 vitest（新增归一化/从分镜生成 5 项）。
+- 版本号升至 2.18.0（第一二类 10/10 完成）。
+
 ## [2.17.0] — v2.17.0：五大千行组件拆分（第一二类清单：项 30）
 
 ### 重构（行为零变化）

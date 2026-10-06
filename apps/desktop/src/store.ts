@@ -13,6 +13,7 @@ export type ViewKey =
   | "script"
   | "storyboard"
   | "canvas"
+  | "timeline"
   | "assets"
   | "models"
   | "skills"
@@ -67,6 +68,7 @@ const VIEW_KEYS: ViewKey[] = [
   "script",
   "storyboard",
   "canvas",
+  "timeline",
   "assets",
   "models",
   "skills",

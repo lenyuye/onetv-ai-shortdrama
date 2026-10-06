@@ -828,7 +828,9 @@ pub fn cancel_check(ctx: &JobContext) -> bool {
 
 /* ---------------- timeline.build + render ---------------- */
 
-fn asset_path_by_id(root: &Path, asset_id: &str) -> Option<PathBuf> {
+/// 资产 id → 本地文件路径（sqlite assets 表 path 列）。
+/// 时间线渲染的 assetId 解析与桌面端 timeline_probe_asset 共用。
+pub fn asset_path_by_id(root: &Path, asset_id: &str) -> Option<PathBuf> {
     let conn = onetv_project::db::open(&root.join("database.sqlite")).ok()?;
     conn.query_row("SELECT path FROM assets WHERE id = ?1", [asset_id], |r| r.get::<_, String>(0))
         .ok()
@@ -856,12 +858,74 @@ pub fn timeline_render_handler(env: Arc<AgentEnv>) -> JobHandler {
     Arc::new(move |ctx: JobContext| {
         let env = env.clone();
         Box::pin(async move {
-            use onetv_media::render::{compose, write_srt, ClipSource, RenderSpec};
             let episode = ctx
                 .episode_id
                 .clone()
                 .or_else(|| ctx.params.get("episode").and_then(|v| v.as_str()).map(|s| s.to_string()))
                 .ok_or_else(|| fatal("未指定分集"))?;
+
+            /* ── §12.2 schemaVersion 2.0：编辑器多轨时间线 → onetv_media::timeline 多轨引擎 ──
+             * 无 schemaVersion 或非 2.0 的旧文档走下方线性拼接逻辑，行为保持不动。 */
+            let tl_path = ctx.root.join("episodes").join(&episode).join("timeline.json");
+            let tl_doc = std::fs::read_to_string(&tl_path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
+            let is_v2 = tl_doc
+                .as_ref()
+                .and_then(|v| v.get("schemaVersion"))
+                .and_then(|v| v.as_str())
+                == Some("2.0");
+            if is_v2 {
+                use onetv_media::timeline::{render_timeline, TimelineSpec};
+                let spec: TimelineSpec = serde_json::from_value(tl_doc.unwrap())
+                    .map_err(|e| fatal(format!("时间线文档解析失败: {e}")))?;
+                if ctx.is_cancelled() {
+                    return Err(fatal("已取消"));
+                }
+                ctx.report(0.05, "多轨时间线渲染中（FFmpeg 本地，不出网）…");
+                let track_count = spec.tracks.len();
+                let locator = env.media().clone();
+                let root = ctx.root.clone();
+                let resolver = move |id: &str| asset_path_by_id(&root, id);
+                let work = ctx
+                    .root
+                    .join("renders")
+                    .join(format!("{episode}_timeline_{}", chrono::Utc::now().timestamp()));
+                let out = ctx
+                    .root
+                    .join("renders")
+                    .join(format!("{episode}_timeline_{}.mp4", chrono::Utc::now().timestamp()));
+                // 渲染是分钟级阻塞调用：放阻塞线程池；进度经 channel 转发给 ctx.report
+                let (ptx, mut prx) = tokio::sync::mpsc::unbounded_channel::<(f64, String)>();
+                let work2 = work.clone();
+                let out2 = out.clone();
+                let handle = tokio::task::spawn_blocking(move || {
+                    render_timeline(&locator, &spec, &resolver, &out2, &work2, &move |p, m| {
+                        let _ = ptx.send((p, m.to_string()));
+                    })
+                    .map_err(|e| fatal(e.to_string()))
+                });
+                while let Some((p, m)) = prx.recv().await {
+                    ctx.report(p, &m);
+                }
+                let rendered = handle.await.map_err(|e| fatal(e.to_string()))??;
+                // SRT 侧车始终输出（与线性分支一致）
+                let srt_out = out.with_extension("srt");
+                let _ = std::fs::copy(&rendered.srt, &srt_out);
+                env_agent_message(
+                    &env,
+                    &ctx.job_id,
+                    &format!(
+                        "多轨时间线渲染完成（{track_count} 轨）：{}。SRT 字幕侧车已同步输出。可在「任务」查看，或说「导出竖版」。",
+                        out.display()
+                    ),
+                    "timeline.done",
+                );
+                return Ok(vec![out.to_string_lossy().into_owned()]);
+            }
+
+            /* ── 线性拼接（旧逻辑，保持不动） ── */
+            use onetv_media::render::{compose, write_srt, ClipSource, RenderSpec};
             let sb = read_episode_doc(&ctx.root, &episode, "storyboard")?;
             let shots = sb
                 .get("shots")

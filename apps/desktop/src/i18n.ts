@@ -14,6 +14,7 @@ import enModels from './i18n/en/models';
 import enScript from './i18n/en/script';
 import enSettings from './i18n/en/settings';
 import enStoryboard from './i18n/en/storyboard';
+import enTimeline from './i18n/en/timeline';
 
 export type Lang = 'zh' | 'en';
 
@@ -86,6 +87,7 @@ const en: Record<string, string> = Object.assign(
   enScript,
   enSettings,
   enStoryboard,
+  enTimeline,
   OVERRIDES,
 );
 
