@@ -225,12 +225,12 @@ export default function JobsView() {
   useEffect(() => {
     const unlistens: (() => void)[] = [];
     let alive = true;
-    const names = ["job.created", "job.progress", "job.succeeded", "job.failed", "job.awaitingApproval"];
+    const names = ["job:created", "job:progress", "job:succeeded", "job:failed", "job:awaitingApproval"];
     void (async () => {
       for (const name of names) {
         try {
           const un = await onAppEvent(name, (payload: unknown) => {
-            if (name === "job.awaitingApproval") {
+            if (name === "job:awaitingApproval") {
               const jobId = extractJobId(payload);
               const eg = extractEgress(payload);
               if (jobId && eg) setEgressMap((m) => ({ ...m, [jobId]: eg }));

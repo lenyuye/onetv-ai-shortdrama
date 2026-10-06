@@ -334,7 +334,7 @@ export function initAgentChatBridge() {
   };
   // 流式增量：按 jobId 累加（v2.6.2）
   api
-    .onAppEvent<{ jobId?: string; delta?: string }>("agent.message.delta", (p) => {
+    .onAppEvent<{ jobId?: string; delta?: string }>("agent:message:delta", (p) => {
       if (!p?.delta) return;
       const loc = locate(p.jobId);
       if (!loc) return;
@@ -343,17 +343,31 @@ export function initAgentChatBridge() {
     .catch(() => {});
   // 完整回复：收尾对应流式气泡并把正式消息写入会话
   api
-    .onAppEvent<{ text: string; kind?: string; jobId?: string }>("agent.message", (p) => {
+    .onAppEvent<{ text: string; kind?: string; jobId?: string }>("agent:message", (p) => {
       if (!p?.text) return;
-      const loc = locate(p.jobId);
+      // 兜底定位（v2.24.2）：chat 意图在 agent_chat invoke 内联执行，事件先于 invoke 返回，
+      // jobId 归档表可能尚未登记；会话也不存在时新建，保证回复永不丢。
+      let loc = locate(p.jobId);
+      if (!loc) {
+        const root = useApp.getState().projectRoot;
+        if (root) {
+          const st = useAgentChat.getState();
+          const cur = st.currentSessionOf(root);
+          loc = { root, sessionId: cur?.id ?? st.newSession(root) };
+        }
+      }
       if (!loc) return;
-      if (p.jobId) useAgentChat.getState().finishStreaming(p.jobId);
-      useAgentChat.getState().appendTo(loc.root, loc.sessionId, {
-        id: uid(),
-        role: "assistant",
-        text: p.text,
-        time: new Date().toISOString(),
-      });
+      try {
+        if (p.jobId) useAgentChat.getState().finishStreaming(p.jobId);
+        useAgentChat.getState().appendTo(loc.root, loc.sessionId, {
+          id: uid(),
+          role: "assistant",
+          text: p.text,
+          time: new Date().toISOString(),
+        });
+      } catch (e) {
+        console.error("[agentChat] reply archive failed", e);
+      }
     })
     .catch(() => {});
 }

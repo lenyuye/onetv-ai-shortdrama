@@ -95,7 +95,7 @@ export default function HermesView() {
 
   // Hermes 回调 OneTV（反向控制调用）时实时追加到历史
   //（useTauriEvent 内部处理「卸载早于 listen promise resolve」竞态，handler 走 ref 镜像）
-  useTauriEvent<api.HermesLogEntry["payload"]>("hermes.inbound", (payload) => {
+  useTauriEvent<api.HermesLogEntry["payload"]>("hermes:inbound", (payload) => {
     setLogs((prev) => [
       { time: new Date().toISOString(), kind: "inbound", payload: payload ?? {} },
       ...prev,

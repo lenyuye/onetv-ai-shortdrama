@@ -3850,7 +3850,11 @@ pub fn run() {
             let hook_state = state.clone();
             let hook_gateway = gateway.clone();
             let sink: EventSink = Arc::new(move |name: &str, payload: serde_json::Value| {
-                let _ = h2.emit(name, payload.clone());
+                // Tauri v2 事件名只允许字母数字与 - / : _，含 '.' 的 emit 会被拒绝——
+                // 此前 job.*/agent.*/webhook.*/hermes.* 全部被静默丢弃，前端只能靠轮询兜底。
+                // 统一把 '.' 映射为 ':'；webhook_out::extract_job 仍用原始名匹配。
+                let wire = name.replace('.', ":");
+                let _ = h2.emit(&wire, payload.clone());
                 if let Some(job) = onetv_core::webhook_out::extract_job(name, &payload) {
                     let wo = hook_state.settings.get().webhook_out.clone();
                     if wo.enabled && !wo.url.trim().is_empty() {

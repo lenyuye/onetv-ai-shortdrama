@@ -87,10 +87,10 @@ export default function App() {
   }, []);
 
   // 任务事件驱动刷新：任何任务状态变化都触发一次全量列表刷新，徽标实时反映队列
-  useTauriEvent("job.created", refreshJobs);
-  useTauriEvent("job.progress", refreshJobs);
-  useTauriEvent("job.succeeded", refreshJobs);
-  useTauriEvent("job.failed", refreshJobs);
+  useTauriEvent("job:created", refreshJobs);
+  useTauriEvent("job:progress", refreshJobs);
+  useTauriEvent("job:succeeded", refreshJobs);
+  useTauriEvent("job:failed", refreshJobs);
 
   // 原生菜单入口（macOS 菜单栏 → 对应页面）
   useTauriEvent("menu:settings", () => useApp.getState().setView("settings"));
