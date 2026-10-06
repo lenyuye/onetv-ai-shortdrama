@@ -2,7 +2,7 @@
  * 剧本库多版本管理条（副标题下方、场景列表上方；自 views/ScriptView.tsx 原样迁出）。
  * 列出各版本（来源 tag / 时间 / 场景数），支持使用 / 复制副本 / 删除 / 上传 / 新建。
  */
-import { useT } from "../../i18n";
+import { getLang, useT } from "../../i18n";
 import type { ScriptVersion, ScriptVersionSource } from "../../hooks/useScriptVersions";
 
 const VERSION_SOURCE_META: Record<ScriptVersionSource, { label: string; cls: string }> = {
@@ -14,7 +14,8 @@ const VERSION_SOURCE_META: Record<ScriptVersionSource, { label: string; cls: str
 
 function fmtTime(iso: string): string {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("zh-CN", { hour12: false });
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(getLang() === "en" ? "en-US" : "zh-CN", { hour12: false });
 }
 
 interface VersionBarProps {

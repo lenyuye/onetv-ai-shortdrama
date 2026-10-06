@@ -29,6 +29,7 @@ import TrackLane from "../components/timeline/TrackLane";
 import SubtitleForm from "../components/timeline/SubtitleForm";
 import ClipInspector from "../components/timeline/ClipInspector";
 import AssetPickerModal from "../components/timeline/AssetPickerModal";
+import ExportDialog from "../components/export/ExportDialog";
 import { TL_CSS } from "../components/timeline/timeline-css";
 import {
   MIN_CLIP_DURATION,
@@ -67,6 +68,8 @@ export default function TimelineView() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [subFormOpen, setSubFormOpen] = useState(false);
   const [picker, setPicker] = useState<null | "media" | "audio">(null);
+  // 多版本导出弹窗
+  const [exportOpen, setExportOpen] = useState(false);
   const [confirm, setConfirm] = useState<null | { title: string; message: string; onConfirm: () => void }>(null);
   const [generating, setGenerating] = useState(false);
   const [savingNow, setSavingNow] = useState(false);
@@ -506,6 +509,9 @@ export default function TimelineView() {
           <button className="btn primary" disabled={rendering || !doc || docClipCount(doc) === 0} onClick={() => void renderFilm()}>
             {rendering ? t("创建中…") : t("🎬 渲染成片")}
           </button>
+          <button className="btn" disabled={!episodeId} onClick={() => setExportOpen(true)}>
+            {t("📦 多版本导出")}
+          </button>
           {renderJob && <span className="tag blue">{t("渲染中 {p}%", { p: renderJob.progress })}</span>}
           <div className="tl-zoom">
             <span>{t("缩放")}</span>
@@ -591,6 +597,9 @@ export default function TimelineView() {
 
       {/* ---------- 弹窗 ---------- */}
       {picker && <AssetPickerModal mode={picker} onPick={handlePickAsset} onClose={() => setPicker(null)} />}
+      {exportOpen && episodeId && (
+        <ExportDialog episode={episodeId} onClose={() => setExportOpen(false)} />
+      )}
       {confirm && (
         <ConfirmDialog
           title={confirm.title}

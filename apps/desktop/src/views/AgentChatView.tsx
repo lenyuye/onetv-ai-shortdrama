@@ -27,6 +27,7 @@ import {
   type AiModelRef,
   type PendingExtra,
 } from "../components/agentchat/constants";
+import ConfirmDialog from "../components/ConfirmDialog";
 import { MessageList } from "../components/agentchat/MessageList";
 import { ModelSelector } from "../components/agentchat/ModelSelector";
 import { MdBlock } from "../components/agentchat/MdBlock";
@@ -71,6 +72,8 @@ export default function AgentChatView() {
   /* ---------- 会话侧栏状态 ---------- */
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
+  /** 待删除会话：走 ConfirmDialog 二次确认后再真正删除 */
+  const [sessionToDelete, setSessionToDelete] = useState<ChatSession | null>(null);
 
   /* ---------- 输入与附件 ---------- */
   const [input, setInput] = useState("");
@@ -282,7 +285,12 @@ export default function AgentChatView() {
     setRenamingId(null);
   };
   const removeSession = (s: ChatSession) => {
-    if (!chatKey) return;
+    setSessionToDelete(s);
+  };
+  const confirmRemoveSession = () => {
+    const s = sessionToDelete;
+    setSessionToDelete(null);
+    if (!s || !chatKey) return;
     useAgentChat.getState().deleteSession(chatKey, s.id);
     toast(t("已删除会话「{title}」", { title: s.title }), "ok");
   };
@@ -420,6 +428,17 @@ export default function AgentChatView() {
 
       {/* 附件预览弹窗：文本显示内容预览，图片走 onetv-asset 协议，其他显示元信息卡 */}
       {preview && <AttachmentPreviewModal preview={preview} onClose={() => setPreview(null)} />}
+
+      {/* 删除会话二次确认（替代直接删除，防误触） */}
+      {sessionToDelete && (
+        <ConfirmDialog
+          danger
+          title={t("删除会话")}
+          message={t("确认删除会话「{title}」？", { title: sessionToDelete.title })}
+          onConfirm={confirmRemoveSession}
+          onCancel={() => setSessionToDelete(null)}
+        />
+      )}
       </div>
     </div>
   );

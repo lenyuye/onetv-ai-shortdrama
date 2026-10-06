@@ -299,7 +299,9 @@ function CanvasWorkbench({
       const outAccept = outputAcceptOf(src.data.cn.type, conn.sourceHandle);
       const check = checkPortCompatible(inPort.accept, outAccept);
       if (!check.ok) {
-        useApp.getState().toast(check.reason ?? t("端口类型不兼容"), "err");
+        // check.reason 来自 node-sdk checkPortCompatible 的动态文案（含具体 MIME 集合），
+        // 键为其完整原文（见 i18n/en/canvas.ts）；缺译时 t 自动回退原文兜底
+        useApp.getState().toast(check.reason ? t(check.reason) : t("端口类型不兼容"), "err");
         return;
       }
       const duplicated = edgesRef.current.some(

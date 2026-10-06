@@ -169,6 +169,8 @@ export function useProviderEditor() {
         },
       ],
       httpTemplateText: JSON.stringify(p.template, null, 2),
+      // 套用预设目标驱动是 custom-http，须清空 ComfyUI 工作流模板，避免残留随新 Provider 一起保存
+      workflowTemplateText: "",
     });
     toast(t("已套用预设「{name}」：填好 API Key 即可保存（模板可按平台最新文档微调）", { name: p.name }), "ok");
   };

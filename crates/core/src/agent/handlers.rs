@@ -847,6 +847,65 @@ fn latest_asset_of_kind(root: &Path, kind: &str) -> Option<(String, PathBuf)> {
     .ok()
 }
 
+/// 扫描 <root>/renders/ 下的 *.mp4（含一级子目录），按修改时间取最新的一个。
+/// 时间线渲染（timeline_render）产物只落 renders/、不进 assets 表，
+/// 该兜底保证「渲染成片」后即使 assets 表没有最新记录也能找到成片。
+fn latest_render_output(root: &Path) -> Option<PathBuf> {
+    fn consider(best: &mut Option<(std::time::SystemTime, PathBuf)>, p: PathBuf) {
+        let is_mp4 = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("mp4"))
+            .unwrap_or(false);
+        if !is_mp4 {
+            return;
+        }
+        if let Ok(mtime) = std::fs::metadata(&p).and_then(|m| m.modified()) {
+            if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+                *best = Some((mtime, p));
+            }
+        }
+    }
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(root.join("renders")).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            for sub in std::fs::read_dir(&path).ok()?.flatten() {
+                let p = sub.path();
+                if p.is_file() {
+                    consider(&mut best, p);
+                }
+            }
+        } else if path.is_file() {
+            consider(&mut best, path);
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// 导出源解析（三层兜底）：
+/// ① params.sourcePath（预留，可选，显式指定优先）；
+/// ② assets 表最新 videos（latest_asset_of_kind）；
+/// ③ <root>/renders/*.mp4 按 mtime 取最新（递归一层，覆盖未入库的时间线渲染产物）。
+/// 全部落空返回 None，由调用方给出可读报错。
+fn resolve_export_source(root: &Path, source_path: Option<&str>) -> Option<PathBuf> {
+    if let Some(p) = source_path {
+        let p = p.trim();
+        if !p.is_empty() {
+            let path = PathBuf::from(p);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    if let Some((_, path)) = latest_asset_of_kind(root, "videos") {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    latest_render_output(root)
+}
+
 fn is_image_path(p: &Path) -> bool {
     matches!(
         p.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref(),
@@ -1022,8 +1081,9 @@ pub fn export_render_handler(env: Arc<AgentEnv>) -> JobHandler {
             // 多版本导出（v2.13）：真正消费 burnSubtitle/includeSrt 参数
             let burn_subtitle = ctx.params.get("burnSubtitle").and_then(|v| v.as_bool()).unwrap_or(false);
             let include_srt = ctx.params.get("includeSrt").and_then(|v| v.as_bool()).unwrap_or(false);
-            let Some((_, src)) = latest_asset_of_kind(&ctx.root, "videos") else {
-                return Err(fatal("没有可导出的成片。请先「合成成片」"));
+            let Some(src) = resolve_export_source(&ctx.root, ctx.params.get("sourcePath").and_then(|v| v.as_str()))
+            else {
+                return Err(fatal("没有可导出的成片。请先「合成成片」或「渲染成片」"));
             };
             // 字幕源：成片旁的 SRT 侧车（合成成片时始终输出）
             let srt_src = src.with_extension("srt");
@@ -1043,7 +1103,12 @@ pub fn export_render_handler(env: Arc<AgentEnv>) -> JobHandler {
             let ffmpeg_bin = resolved.ffmpeg.clone();
             let src2 = src.clone();
             let out2 = out.clone();
-            let mut vf = format!("scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2");
+            // master 预设 (0,0) = 保持源画幅，不缩放不补边（否则会拼出 scale=0:0 非法滤镜）
+            let mut vf = if w == 0 || h == 0 {
+                "null".to_string()
+            } else {
+                format!("scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2")
+            };
             if burn_subtitle {
                 // 烧录字幕：subtitles 滤镜（机器无 libass 时 ffmpeg 会失败并给出可读错误）
                 let srt_escaped = srt_src
@@ -1076,6 +1141,11 @@ pub fn export_render_handler(env: Arc<AgentEnv>) -> JobHandler {
                 outputs.push(srt_out.to_string_lossy().into_owned());
             }
             ctx.report(0.9, "导出完成");
+            // 产物登记进 assets 表（kind=videos）：复用 import_asset（按 sha256 幂等，重复导出同内容不重录），
+            // 让「导出/合成成片」的产物可被 latest_asset_of_kind 命中，后续导出与时间线可选。
+            // 登记失败不阻断导出结果（文件已落 renders/）。
+            let _ = onetv_project::ops::import_asset(&ctx.root, &out, "videos");
+            ctx.report(0.95, "入库…");
             let sub_note = if burn_subtitle && has_srt { "含硬字幕" } else { "无硬字幕" };
             env_agent_message(&env, &ctx.job_id, &format!("已导出 {w}×{h} 版本（{sub_note}）：{}", out.display()), "export.done");
             Ok(outputs)

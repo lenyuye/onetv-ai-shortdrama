@@ -3286,6 +3286,78 @@ async fn timeline_probe_asset(
     }))
 }
 
+/* ---------------- 多版本导出（v2.13） ---------------- */
+
+/// 已知导出画幅预设（与 onetv_media::render::preset_size 的显式分支一致；
+/// preset_size 对未知键静默回退 douyin_vertical，因此命令层先显式校验）。
+const EXPORT_PRESETS: &[&str] = &["douyin_vertical", "xhs_vertical", "horizontal_1080p", "square", "master"];
+
+/// export_render 命令层参数构建与校验（纯函数，便于单测）：
+/// presets 为空报中文错误、未知 preset 报错；每个 preset 生成一份 Job params
+/// （camelCase 键，与 export_render_handler 的 params 约定逐字一致）。
+fn export_job_params(
+    episode: &str,
+    presets: &[String],
+    burn_subtitle: bool,
+    include_srt: bool,
+) -> Result<Vec<serde_json::Value>, String> {
+    if presets.is_empty() {
+        return Err("请至少选择一个画幅预设".to_string());
+    }
+    let mut out = Vec::with_capacity(presets.len());
+    for preset in presets {
+        if !EXPORT_PRESETS.contains(&preset.as_str()) {
+            return Err(format!("未知的画幅预设: {preset}"));
+        }
+        out.push(serde_json::json!({
+            "episode": episode,
+            "preset": preset,
+            "burnSubtitle": burn_subtitle,
+            "includeSrt": include_srt,
+        }));
+    }
+    Ok(out)
+}
+
+/// 多版本导出：一次为每个选中画幅预设各建一个 JobKind::Export 任务，返回 jobId 列表。
+#[tauri::command]
+async fn export_render(
+    state: tauri::State<'_, Arc<AppState>>,
+    agent: tauri::State<'_, Arc<AgentState>>,
+    episode: String,
+    presets: Vec<String>,
+    burnSubtitle: bool,
+    includeSrt: bool,
+) -> Result<serde_json::Value, CommandError> {
+    let (_, manifest) = open_ctx(&state)?;
+    if !manifest.episodes.iter().any(|e| e.id == episode) {
+        return Err(err(format!("分集不存在: {episode}")));
+    }
+    let params_list = export_job_params(&episode, &presets, burnSubtitle, includeSrt).map_err(err)?;
+    let mut jobs = Vec::with_capacity(params_list.len());
+    for params in params_list {
+        let preset = params
+            .get("preset")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        // create_job 轻量（仅落库 + 入队），无需 spawn_blocking（与 timeline_render 一致）
+        let job = agent.jobs.create_job(
+            onetv_core::jobs::JobKind::Export,
+            format!("导出成片（{preset}）"),
+            None,
+            None,
+            params,
+            None,
+            Some(episode.clone()),
+            false,
+            None,
+        );
+        jobs.push(job.id);
+    }
+    state.audit.record("export.render", &episode, None);
+    Ok(serde_json::json!({ "jobs": jobs }))
+}
 
 /* ---------------- onetv-asset:// 本地资源协议 ---------------- */
 
@@ -3797,6 +3869,7 @@ pub fn run() {
             timeline_save,
             timeline_render,
             timeline_probe_asset,
+            export_render,
             asset_import,
             asset_list,
             asset_delete,
@@ -3922,5 +3995,32 @@ mod tests {
         });
         let input: CreateProjectInput = serde_json::from_value(raw).unwrap();
         assert_eq!(input.aspect_ratio, "9:16");
+    }
+
+    /// 多版本导出（v2.13）：presets 两个 → 生成两份 Job params（键与 handler 契约逐字一致）。
+    #[test]
+    fn export_render_two_presets_build_two_job_params() {
+        let params = export_job_params(
+            "ep1",
+            &["douyin_vertical".into(), "horizontal_1080p".into()],
+            true,
+            false,
+        )
+        .expect("两个合法预设应通过校验");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0]["preset"], "douyin_vertical");
+        assert_eq!(params[0]["episode"], "ep1");
+        assert_eq!(params[0]["burnSubtitle"], true);
+        assert_eq!(params[0]["includeSrt"], false);
+        assert_eq!(params[1]["preset"], "horizontal_1080p");
+        assert_eq!(params[1]["burnSubtitle"], true);
+    }
+
+    #[test]
+    fn export_render_rejects_empty_and_unknown_presets() {
+        let empty = export_job_params("ep1", &[], false, false).unwrap_err();
+        assert!(empty.contains("至少选择一个"));
+        let unknown = export_job_params("ep1", &["vertical_x".into()], false, false).unwrap_err();
+        assert!(unknown.contains("vertical_x"));
     }
 }

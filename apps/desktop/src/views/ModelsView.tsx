@@ -47,7 +47,7 @@ import { useApp } from "../store";
 const LOCAL_DRIVERS: readonly ProviderDriver[] = ["mock", "ollama", "comfyui", "stable-diffusion"];
 const isLocalProvider = (p: ProviderDto): boolean =>
   LOCAL_DRIVERS.includes(p.driver) ||
-  /^(https?:\/\/)?(127\.0\.0\.1|localhost|192\.168\.|10\.|172\.)/i.test(p.baseUrl);
+  /^(https?:\/\/)?(127\.0\.0\.1|localhost|\[::1\]|::1|192\.168\.|10\.|172\.)/i.test(p.baseUrl);
 
 /* ---------------- 主视图 ---------------- */
 
@@ -155,9 +155,9 @@ export default function ModelsView() {
     setTestBusy((b) => ({ ...b, [p.id]: true }));
     try {
       const r = await api.providerTest(p.id);
-      setTestResults((t) => ({ ...t, [p.id]: r }));
+      setTestResults((prev) => ({ ...prev, [p.id]: r }));
     } catch (e) {
-      setTestResults((t) => ({ ...t, [p.id]: { ok: false, message: errMsg(e) } }));
+      setTestResults((prev) => ({ ...prev, [p.id]: { ok: false, message: errMsg(e) } }));
     } finally {
       setTestBusy((b) => ({ ...b, [p.id]: false }));
     }

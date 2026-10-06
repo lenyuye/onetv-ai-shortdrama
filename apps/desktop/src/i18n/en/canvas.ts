@@ -153,6 +153,10 @@ export default {
   '不能将节点连接到自身': 'Cannot connect a node to itself',
   '目标节点没有可用输入端口': 'The target node has no available input port',
   '端口类型不兼容': 'Incompatible port types',
+  /* checkPortCompatible 动态 reason 的完整原文键（当前节点定义下仅文本节点的 text/* 输入端口可能触发） */
+  '端口类型不兼容：需要 text/*，来源输出 image/*': 'Incompatible port types: requires text/*, source output is image/*',
+  '端口类型不兼容：需要 text/*，来源输出 video/*': 'Incompatible port types: requires text/*, source output is video/*',
+  '端口类型不兼容：需要 text/*，来源输出 audio/*': 'Incompatible port types: requires text/*, source output is audio/*',
   '该连线已存在': 'This edge already exists',
   '请先打开项目并选择分集': 'Open a project and select an episode first',
   '批次恢复运行中…': 'Resuming batch run…',

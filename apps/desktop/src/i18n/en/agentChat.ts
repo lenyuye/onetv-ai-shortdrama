@@ -75,6 +75,7 @@ export default {
   "新建一个独立上下文的对话": "Start a conversation with its own context",
   "{title}（双击重命名）": "{title} (double-click to rename)",
   "删除会话": "Delete session",
+  "确认删除会话「{title}」？": "Delete session \"{title}\"?",
   "已删除会话「{title}」": "Deleted session \"{title}\"",
   "当前会话已清空": "Current session cleared",
   "双击重命名 · 各会话独立上下文": "Double-click to rename · each session keeps its own context",

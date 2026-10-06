@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import enAgentChat from "./i18n/en/agentChat";
 import enApi from "./i18n/en/api";
 import enCanvas from "./i18n/en/canvas";
+import enExport from "./i18n/en/export";
 import enJobs from "./i18n/en/jobs";
 import enMisc from "./i18n/en/misc";
 import enModels from "./i18n/en/models";
@@ -20,6 +21,7 @@ const FRAGMENTS: Record<string, Record<string, string>> = {
   "en/agentChat.ts": enAgentChat,
   "en/api.ts": enApi,
   "en/canvas.ts": enCanvas,
+  "en/export.ts": enExport,
   "en/jobs.ts": enJobs,
   "en/misc.ts": enMisc,
   "en/models.ts": enModels,

@@ -2,6 +2,15 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.19.0] — v2.19.0：多版本导出 + backlog 清剿批
+
+### 追加
+- **📦 多版本导出**：新命令 `export_render(episode, presets[], burnSubtitle, includeSrt)`——按所选画幅预设(抖音竖版/小红书竖版/横版/方形/母版)批量创建导出任务；新 `ExportDialog` 弹窗（预设多选+烧录字幕+SRT 侧车），入口在分镜页与时间线页工具栏；导出源三层兜底（sourcePath 预留 → assets 最新成片 → renders/ 目录按 mtime 扫描，修复时间线渲染产物未入库导致导不到的缺口）；导出产物登记进资产库（kind videos，sha256 幂等）；**修复 master 预设 scale=0:0 非法滤镜**（保持源画幅）。
+- 前端 28 项 / Rust 74 项测试全绿（新增导出参数校验 2 例）。
+
+### 修复（拆分 backlog 清剿）
+- 会话删除增加二次确认（ConfirmDialog）；剧本 refreshDoc 依赖补 t；任务页/剧本版本时间格式随界面语言（en-US/zh-CN）；画布连线报错（端口类型不兼容三条完整文案）接入字典；isLocalProvider 补 IPv6 回环([::1]/::1)；applyPreset 清空残留 ComfyUI 工作流模板；MemoryRow 无效 onEdit 死代码移除；ModelsView/JobsView 多处 i18n t 变量遮蔽改名。
+
 ## [2.18.0] — v2.18.0：多轨时间线编辑器（第一二类清单：项 19，最后一件）
 
 ### 追加（规格 §12.2 时间线数据结构落地）

@@ -16,7 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api-providers";
 import type { EgressPreview, JobDto, JobEventDto } from "../api-providers";
 import { errMsg, onAppEvent } from "../api";
-import { t, useT } from "../i18n";
+import { getLang, t, useT } from "../i18n";
 import { useApp } from "../store";
 
 /* ---------------- 常量 ---------------- */
@@ -67,7 +67,7 @@ const RETRYABLE_STATES = new Set(["FAILED", "CANCELED"]);
 function formatTime(s: string): string {
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return s;
-  return d.toLocaleString("zh-CN", {
+  return d.toLocaleString(getLang() === "en" ? "en-US" : "zh-CN", {
     hour12: false,
     month: "2-digit",
     day: "2-digit",
@@ -104,9 +104,9 @@ function formatPayload(v: unknown): string {
 }
 
 /** 折叠任务标题中重复的前缀（如「生成剧本：生成剧本：xx」→「生成剧本：xx」） */
-function collapseTitle(t: string): string {
-  const m = t.match(/^([^：:]+[：:])([\s\S]*)$/);
-  if (!m) return t;
+function collapseTitle(title: string): string {
+  const m = title.match(/^([^：:]+[：:])([\s\S]*)$/);
+  if (!m) return title;
   const prefix = m[1];
   let rest = m[2];
   while (rest.startsWith(prefix)) rest = rest.slice(prefix.length);
@@ -217,8 +217,8 @@ export default function JobsView() {
      保留低频兜底是为了容错事件总线不可用 / 丢事件的场景。 */
   useEffect(() => {
     if (!autoRefresh) return;
-    const t = window.setInterval(() => void refresh(), 15000);
-    return () => window.clearInterval(t);
+    const timer = window.setInterval(() => void refresh(), 15000);
+    return () => window.clearInterval(timer);
   }, [autoRefresh, refresh]);
 
   /* 事件订阅：job.created / job.progress / job.succeeded / job.failed / job.awaitingApproval */

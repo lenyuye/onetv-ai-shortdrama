@@ -44,7 +44,6 @@ function MemoryRow({
   onCheck,
   onSave,
   onDelete,
-  onEdit,
 }: {
   rec: api.MemoryRecord;
   checked: boolean;
@@ -53,7 +52,6 @@ function MemoryRow({
   onCheck: (id: string, v: boolean) => void;
   onSave: (id: string, text: string) => Promise<void>;
   onDelete: (id: string) => void;
-  onEdit: (id: string) => void;
 }) {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
@@ -98,7 +96,7 @@ function MemoryRow({
           >
             {saving ? t("保存中…") : t("保存修改")}
           </button>
-          <button className="btn sm" onClick={stop(() => { setEditing(false); setText(rec.text); onEdit(""); })}>{t("取消")}</button>
+          <button className="btn sm" onClick={stop(() => { setEditing(false); setText(rec.text); })}>{t("取消")}</button>
         </div>
       </div>
     );
@@ -121,7 +119,7 @@ function MemoryRow({
         <span className="mem-scope tag blue">{rec.scope}</span>
         <span style={{ flex: 1 }} />
         <span className="mem-row-actions">
-          <button title={t("编辑")} onClick={stop(() => { setEditing(true); setText(rec.text); onEdit(rec.id); })}>{t("编辑")}</button>
+          <button title={t("编辑")} onClick={stop(() => { setEditing(true); setText(rec.text); })}>{t("编辑")}</button>
           <button
             title={t("复制到剪贴板")}
             onClick={stop(() => {
@@ -410,7 +408,6 @@ export function MemoryCard() {
                   onCheck={toggleCheck}
                   onSave={saveEdit}
                   onDelete={(id) => void removeMemory(id)}
-                  onEdit={() => {}}
                 />
               ))}
             </div>

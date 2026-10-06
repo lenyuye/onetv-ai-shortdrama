@@ -161,7 +161,7 @@ export default function ScriptView() {
         cancelled = true;
       };
     },
-    [toast]
+    [toast, t]
   );
 
   useEffect(() => {

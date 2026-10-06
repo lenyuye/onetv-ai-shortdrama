@@ -8,6 +8,7 @@ import { useSyncExternalStore } from 'react';
 import enAgentChat from './i18n/en/agentChat';
 import enApi from './i18n/en/api';
 import enCanvas from './i18n/en/canvas';
+import enExport from './i18n/en/export';
 import enJobs from './i18n/en/jobs';
 import enMisc from './i18n/en/misc';
 import enModels from './i18n/en/models';
@@ -81,6 +82,7 @@ const en: Record<string, string> = Object.assign(
   enApi,
   enAgentChat,
   enCanvas,
+  enExport,
   enJobs,
   enMisc,
   enModels,

@@ -13,6 +13,7 @@ import type { AgentPlanView } from "../api-story";
 import { useApp } from "../store";
 import { useT } from "../i18n";
 import { PlanPanel } from "./ScriptView";
+import ExportDialog from "../components/export/ExportDialog";
 
 /* ---------------- 常量 ---------------- */
 
@@ -52,6 +53,8 @@ export default function StoryboardView() {
   // Agent 计划弹窗
   const [aiOpen, setAiOpen] = useState(false);
   const [aiContext, setAiContext] = useState<"split" | "batch" | "compose" | "export">("split");
+  // 多版本导出弹窗
+  const [exportOpen, setExportOpen] = useState(false);
   const [plan, setPlan] = useState<AgentPlanView | null>(null);
   const [autoExecuted, setAutoExecuted] = useState(false);
   const [chatBusy, setChatBusy] = useState(false);
@@ -529,6 +532,7 @@ export default function StoryboardView() {
           <button className="btn primary" onClick={() => openAi("batch")}>{t("✨ 批量生成分镜图")}</button>
           <button className="btn blue" onClick={() => openAi("compose")}>{t("🎞️ 合成成片")}</button>
           <button className="btn" onClick={() => openAi("export")}>{t("📤 导出竖版")}</button>
+          <button className="btn" disabled={!episodeId} onClick={() => setExportOpen(true)}>{t("📦 多版本导出")}</button>
           <button className="btn" disabled={saving} onClick={() => void addShotNow()}>{t("➕ 新建镜头")}</button>
           <button
             className="btn"
@@ -759,6 +763,11 @@ export default function StoryboardView() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ---------- 多版本导出弹窗 ---------- */}
+      {exportOpen && episodeId && (
+        <ExportDialog episode={episodeId} onClose={() => setExportOpen(false)} />
       )}
 
       {/* ---------- 镜头详情编辑抽屉 ---------- */}
