@@ -53,6 +53,7 @@ export function ProviderEditorModal({
   addModelRow,
   removeModelRow,
   readModelsIntoEditor,
+  fetchModelsIntoEditor,
   editorReading,
   saving,
   onClose,
@@ -70,6 +71,7 @@ export function ProviderEditorModal({
   addModelRow: () => void;
   removeModelRow: (idx: number) => void;
   readModelsIntoEditor: () => Promise<void>;
+  fetchModelsIntoEditor: () => Promise<void>;
   editorReading: boolean;
   saving: boolean;
   onClose: () => void;
@@ -196,17 +198,22 @@ export function ProviderEditorModal({
           <div className="field">
             <div className="mv-model-head">
               <label>{t("模型管理（可配置多个：modelId + 显示名 + 能力）")}</label>
-              {editor.id ? (
-                <button
-                  className="btn sm"
-                  disabled={editorReading}
-                  title={t("拉取该 Provider 远端模型列表，按 modelId 去重后合并进下方列表（不覆盖已填内容）")}
-                  onClick={() => void readModelsIntoEditor()}
-                >
-                  {editorReading ? t("读取中…") : t("⟳ 读取模型并合并")}
-                </button>
-              ) : (
-                <span className="sub">{t("创建后将自动拉取远端模型列表并合并；也可保存后在「编辑」里手动读取")}</span>
+              {(() => {
+                const canList = PROVIDER_DRIVERS.find((x) => x.driver === editor.driver)?.supportsModelListing;
+                if (!canList) return null;
+                return (
+                  <button
+                    className="btn sm blue"
+                    disabled={editorReading}
+                    title={t("按上方 Base URL 与 API Key 拉取远端模型列表，自动填入模型 ID（按 modelId 去重，不覆盖已填内容）")}
+                    onClick={() => void fetchModelsIntoEditor()}
+                  >
+                    {editorReading ? t("获取中…") : t("⚡ 自动获取模型")}
+                  </button>
+                );
+              })()}
+              {!editor.id && (
+                <span className="sub">{t("创建后将自动拉取一次远端模型并合并")}</span>
               )}
             </div>
             {editor.driver === "stable-diffusion" ? (

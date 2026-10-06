@@ -239,6 +239,41 @@ export function useProviderEditor() {
   const removeModelRow = (idx: number) =>
     setDraftSafe((d) => ({ ...d, models: d.models.filter((_, i) => i !== idx) }));
 
+  /** 表单内「自动获取模型」（v2.26.0）：未保存也能拉——表单填了 Key 用表单 Key；
+   *  已保存且表单没填 Key 用钥匙串已存 Key；否则按无鉴权拉（本地 Ollama/SD）。 */
+  const fetchModelsIntoEditor = async () => {
+    const d = editor;
+    if (!d) return;
+    if (!d.baseUrl.trim()) {
+      toast(t("请先填写 Base URL"), "warn");
+      return;
+    }
+    setEditorReading(true);
+    try {
+      const formKey = d.apiKey.trim();
+      const r = formKey
+        ? await api.providerFetchModels(d.driver, d.baseUrl.trim(), formKey)
+        : d.id
+          ? await api.providerModels(d.id)
+          : await api.providerFetchModels(d.driver, d.baseUrl.trim(), null);
+      if (!r.ok) {
+        toast(t("读取模型失败：{msg}", { msg: r.message ?? t("未知错误") }), "err");
+        return;
+      }
+      const merged = mergeFetchedModels(d.models, r.models, d.driver);
+      if (merged.added > 0) {
+        setEditor((cur) => (cur ? { ...cur, models: merged.rows } : cur));
+        toast(t("已合并 {n} 个新模型（按 modelId 去重）", { n: merged.added }), "ok");
+      } else {
+        toast(t("远端模型均已存在于列表，无需合并"), "info");
+      }
+    } catch (e) {
+      toast(t("读取模型失败：{msg}", { msg: errMsg(e) }), "err");
+    } finally {
+      setEditorReading(false);
+    }
+  };
+
   /** 编辑表单内「读取模型并合并」：拉取远端列表按 modelId 去重后并入，不覆盖已填行 */
   const readModelsIntoEditor = async () => {
     const d = editor;
@@ -274,6 +309,7 @@ export function useProviderEditor() {
     addModelRow,
     removeModelRow,
     readModelsIntoEditor,
+    fetchModelsIntoEditor,
     editorReading,
     presets,
     presetSel,

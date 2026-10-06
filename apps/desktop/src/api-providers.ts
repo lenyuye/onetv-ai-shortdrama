@@ -285,6 +285,14 @@ export interface GenPresetDto {
 /** 内置平台预设（一键填充表单）：通用对话=OpenAI 兼容驱动，图片/视频=Custom HTTP 模板 */
 export const providerPresetList = () => invoke<GenPresetDto[]>("provider_preset_list");
 
+/** 表单内「自动获取模型」：未保存也能按 Base URL(+表单 Key) 拉取 /models（v2.26.0） */
+export const providerFetchModels = (driver: string, baseUrl: string, apiKey: string | null) =>
+  invoke<{ ok: boolean; models: string[]; message?: string }>("provider_fetch_models", {
+    driver,
+    baseUrl,
+    apiKey: apiKey || null,
+  });
+
 export const jobRetry = (id: string) => invoke<void>("job_retry", { id });
 
 export const jobApprove = (id: string) => invoke<void>("job_approve", { id });

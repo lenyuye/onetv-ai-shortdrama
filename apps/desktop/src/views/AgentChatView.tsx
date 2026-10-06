@@ -208,25 +208,28 @@ export default function AgentChatView() {
         rememberJobSession(r.jobIds, chatKey, session.id);
         useAgentChat.getState().setActiveJobs(chatKey, r.jobIds);
       }
-      useAgentChat.getState().appendTo(chatKey, session.id, {
-        id: uid(),
-        role: "assistant",
-        text: r.autoExecuted
-          ? t("已自动执行：{summary}（低风险任务自动运行，回复稍后显示在下方）", { summary: r.plan.summary })
-          : r.plan.summary,
-        plan: {
-          planId: r.plan.planId,
-          intent: r.plan.intent,
-          summary: r.plan.summary,
-          risk: String(r.plan.estimated?.risk ?? "low"),
-          remoteCalls: Number(r.plan.estimated?.remoteCalls ?? 0),
-          steps: r.plan.steps ?? [],
-          reviewNotes: r.plan.reviewNotes,
-          auto: !!r.autoExecuted,
-        },
-        time: new Date().toISOString(),
-      });
-      if (r.autoExecuted) {
+      // 对话意图（低风险自动执行）不再插入计划卡——回复气泡随后即到，双消息显得重复（用户反馈）；
+      // 隐私语义已由登录页声明与设置页覆盖。其他意图（需审批/批量任务）仍展示计划卡。
+      const isChatAuto = r.autoExecuted && r.plan.intent === "chat";
+      if (!isChatAuto) {
+        useAgentChat.getState().appendTo(chatKey, session.id, {
+          id: uid(),
+          role: "assistant",
+          text: r.autoExecuted
+            ? t("已自动执行：{summary}（低风险任务自动运行，回复稍后显示在下方）", { summary: r.plan.summary })
+            : r.plan.summary,
+          plan: {
+            planId: r.plan.planId,
+            intent: r.plan.intent,
+            summary: r.plan.summary,
+            risk: String(r.plan.estimated?.risk ?? "low"),
+            remoteCalls: Number(r.plan.estimated?.remoteCalls ?? 0),
+            steps: r.plan.steps ?? [],
+            reviewNotes: r.plan.reviewNotes,
+            auto: !!r.autoExecuted,
+          },
+          time: new Date().toISOString(),
+        });
         toast(t("对话任务已自动执行（Mock/本地模型不出公网）"), "ok");
       }
     } catch (e) {

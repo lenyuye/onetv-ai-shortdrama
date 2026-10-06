@@ -978,6 +978,90 @@ async fn provider_models(
     }
 }
 
+/// 表单内「自动获取模型」（v2.26.0）：Provider 未保存时也能按 Base URL(+Key) 直接拉取
+/// /models 列表。临时 Key 写入固定钥匙串条目后走既有 list_models 路径，用后即删
+/// （Key 短暂存在于钥匙串，绝不落盘/日志）；Base URL 主机按 provider_save 同样语义加入白名单。
+#[tauri::command]
+async fn provider_fetch_models(
+    state: tauri::State<'_, Arc<AppState>>,
+    agent: tauri::State<'_, Arc<AgentState>>,
+    driver: String,
+    base_url: String,
+    api_key: Option<String>,
+) -> Result<serde_json::Value, CommandError> {
+    use onetv_core::providers::ProviderDriverKind;
+    const TMP_ID: &str = "provider-tmp-fetch";
+    let kind = match driver.as_str() {
+        "openai-compatible" => ProviderDriverKind::OpenaiCompatible,
+        "ollama" => ProviderDriverKind::Ollama,
+        "stable-diffusion" => ProviderDriverKind::StableDiffusion,
+        "comfyui" => ProviderDriverKind::Comfyui,
+        _ => return Err(err("该驱动不支持自动获取模型，请手工填写")),
+    };
+    let base = base_url.trim().to_string();
+    if base.is_empty() {
+        return Err(err("请先填写 Base URL"));
+    }
+    let has_key = api_key.as_deref().map(|k| !k.trim().is_empty()).unwrap_or(false);
+    if has_key {
+        onetv_security::SecretStore::set(TMP_ID, api_key.as_deref().unwrap().trim())
+            .map_err(|e| err(format!("钥匙串写入失败: {e}")))?;
+    }
+    // 与 provider_save 一致：把主机加入出站白名单（用户显式输入的地址）
+    state.settings.update(|s| {
+        if !s.allowed_hosts.contains(&base) {
+            s.allowed_hosts.push(base.clone());
+        }
+    });
+    state.sync_policy();
+    let profile = onetv_core::providers::ProviderProfile {
+        id: TMP_ID.into(),
+        name: "临时拉取模型".into(),
+        driver: kind,
+        base_url: base,
+        auth: onetv_core::providers::ProviderAuth {
+            auth_type: if has_key || kind == ProviderDriverKind::OpenaiCompatible { "bearer".into() } else { "none".into() },
+            key_ref: None,
+            header_name: None,
+        },
+        models: vec![],
+        timeout_ms: 30_000,
+        concurrency: 1,
+        enabled: true,
+        network_policy_id: String::new(),
+        created_at: String::new(),
+        http_template: None,
+        workflow_template: None,
+    };
+    let models = match kind {
+        ProviderDriverKind::Ollama => {
+            onetv_core::providers::ollama::list_models(agent.env.gateway(), &profile).await
+        }
+        ProviderDriverKind::OpenaiCompatible => {
+            onetv_core::providers::openai::list_models(agent.env.gateway(), &profile).await
+        }
+        ProviderDriverKind::StableDiffusion => {
+            onetv_core::providers::sd::list_models(agent.env.gateway(), &profile).await
+        }
+        ProviderDriverKind::Comfyui => {
+            onetv_core::providers::comfyui::list_models(agent.env.gateway(), &profile).await
+        }
+        _ => Err(onetv_core::providers::gateway::GatewayError::PolicyDenied(
+            "该驱动不支持自动读取模型".into(),
+        )),
+    };
+    if has_key {
+        let _ = onetv_security::SecretStore::delete(TMP_ID);
+    }
+    match models {
+        Ok(list) => Ok(serde_json::json!({ "ok": true, "models": list })),
+        Err(e) => {
+            let _ = onetv_security::SecretStore::delete(TMP_ID);
+            Ok(serde_json::json!({ "ok": false, "models": [], "message": e.to_string() }))
+        }
+    }
+}
+
 /// API Playground（规格 §22.9）：单次测试调用，响应脱敏。
 #[tauri::command]
 async fn playground_test(
@@ -4020,6 +4104,7 @@ pub fn run() {
             agent_attach,
             canvas_node_run,
             provider_preset_list,
+            provider_fetch_models,
             bible_get,
             costs_get,
             skill_install_git,

@@ -87,6 +87,7 @@ export default function ModelsView() {
     addModelRow,
     removeModelRow,
     readModelsIntoEditor,
+  fetchModelsIntoEditor,
     editorReading,
     presets,
     presetSel,
@@ -476,6 +477,7 @@ export default function ModelsView() {
           addModelRow={addModelRow}
           removeModelRow={removeModelRow}
           readModelsIntoEditor={readModelsIntoEditor}
+          fetchModelsIntoEditor={fetchModelsIntoEditor}
           editorReading={editorReading}
           saving={saving}
           onClose={() => setEditor(null)}
