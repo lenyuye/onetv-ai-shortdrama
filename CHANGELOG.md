@@ -2,6 +2,15 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.25.0] — v2.25.0：模型接入体验批（通用对话预设 / 驱动更名 / 自动拉模型 / FFmpeg 卡布局）
+
+### 追加
+- **💬 平台预设库新增「通用（对话 / 文本）」分类**（5 个 OpenAI 兼容官方 API 预设）：DeepSeek（deepseek-chat/reasoner）、Kimi 月之暗面（kimi-k2）、通义千问 Qwen（百炼 compatible-mode）、豆包（火山方舟，与 Seedream/Seedance 同 Key）、ChatGPT（OpenAI 官方）。套用即填驱动/Base URL/默认模型/对话能力，用于剧本、拆分、结构化输出等一切文本生成。
+- **🔄 创建 Provider 后自动拉取远端模型列表并合并**（OpenAI 兼容 / Ollama / SD 驱动）：保存 + Key 写入后自动请求 /models，按 modelId 去重并入模型行并二次保存（provider_save 不触碰钥匙串）；失败静默不影响保存。配合方舟类平台可直接看到账号实际已开通的模型/接入点 ID。
+- 驱动下拉「OpenAI 兼容」更名 **「自定义 / OpenAI 兼容」**，说明列明 DeepSeek/Kimi/千问/豆包/ChatGPT 官方 API、中转站、聚合网关均可（即用户要的「自定义」选项——自定义 HTTP 模板驱动仍保留给任意非 OpenAI 形状的 API）。
+- Seedream/Seedance 预设说明刷新（补充 4.0/pro 版模型 ID 与计价说明）。
+- FFmpeg 卡：自定义路径与「保存并重新检测」上移紧随能力瓷贴，消除中部大空白（用户反馈）。
+
 ## [2.24.2] — v2.24.2：全面软件测试修复批（P0 钥匙串 + 对话回复显示）
 
 ### 修复

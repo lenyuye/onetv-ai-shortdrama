@@ -32,8 +32,8 @@ export interface ProviderDriverInfo {
 export const PROVIDER_DRIVERS: ProviderDriverInfo[] = [
   {
     driver: "openai-compatible",
-    label: "OpenAI 兼容",
-    description: "任何遵循 /chat/completions 与 /models 的服务（中转、聚合、自建网关均可）",
+    label: "自定义 / OpenAI 兼容",
+    description: "自定义接入任何遵循 /chat/completions 与 /models 的服务：DeepSeek / Kimi / 千问 / 豆包 / ChatGPT 官方 API、中转站、聚合网关、自建网关均可",
     defaultBaseUrl: "https://api.example.com/v1",
     defaultTimeoutMs: 180000,
     supportsModelListing: true,

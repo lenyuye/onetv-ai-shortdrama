@@ -148,6 +148,28 @@ export function useProviderEditor() {
   const applyPreset = (id: string) => {
     const p = presets.find((x) => x.id === id);
     if (!p || !editor) return;
+    // 通用对话类预设（v2.25.0）：填充「自定义 / OpenAI 兼容」驱动（Base URL + 默认模型 + 对话能力），无模板
+    if (p.category === "chat" || p.driver === "openai-compatible") {
+      setEditor({
+        ...editor,
+        id: null,
+        name: editor.name.trim() || p.name,
+        driver: "openai-compatible",
+        baseUrl: p.baseUrl,
+        timeoutMs: 300_000,
+        models: [
+          {
+            modelId: p.defaultModelId,
+            displayName: p.defaultModelName,
+            capabilities: ["chat"],
+          },
+        ],
+        httpTemplateText: "",
+        workflowTemplateText: "",
+      });
+      toast(t("已套用预设「{name}」：填好 API Key 即可保存（创建后自动拉取可用模型列表）", { name: p.name }), "ok");
+      return;
+    }
     let origin = "";
     try {
       origin = new URL((p.template as { url?: string }).url ?? "").origin;

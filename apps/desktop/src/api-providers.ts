@@ -267,7 +267,9 @@ export const jobCancel = (id: string) => invoke<void>("job_cancel", { id });
 /* ---------------- 生成平台预设（v2.6.4） ---------------- */
 
 export interface GenPresetDto {
-  category: "image" | "video";
+  category: "chat" | "image" | "video";
+  driver: string;
+  baseUrl: string;
   id: string;
   name: string;
   vendor: string;
@@ -280,7 +282,7 @@ export interface GenPresetDto {
   notes: string;
 }
 
-/** 内置图片/视频平台预设（一键填充 Custom HTTP Provider 表单） */
+/** 内置平台预设（一键填充表单）：通用对话=OpenAI 兼容驱动，图片/视频=Custom HTTP 模板 */
 export const providerPresetList = () => invoke<GenPresetDto[]>("provider_preset_list");
 
 export const jobRetry = (id: string) => invoke<void>("job_retry", { id });

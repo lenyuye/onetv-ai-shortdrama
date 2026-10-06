@@ -1,7 +1,8 @@
-//! 生成平台预设模板库（v2.6.4）—— 图片 + 视频（参考短剧团队常用平台清单）。
+//! 生成平台预设模板库（v2.6.4；v2.25.0 增加通用对话类）—— 通用 LLM + 图片 + 视频。
 //!
-//! 每个预设 = 一份可直接填充 Custom HTTP Provider 的配置（提交/轮询模板、默认模型），
-//! 目标是「选平台 → 填 Key → 即用」。模板 URL 一律为绝对地址（custom_http 不做 base_url 拼接）。
+//! 通用对话预设填充「自定义 / OpenAI 兼容」Provider（driver=base_url+默认模型，无模板）；
+//! 图片/视频预设填充 Custom HTTP Provider（提交/轮询模板、默认模型），
+//! 目标是「选平台 → 填 Key → 即用」。custom_http 模板 URL 一律为绝对地址（不做 base_url 拼接）。
 //!
 //! 模板变量白名单（与 custom_http.rs 一致）：`${input.*}`、`${model.id}`、
 //! `${secret.apiKey}`、`${jobId}`；视频 input 含 prompt / aspectRatio /
@@ -13,8 +14,12 @@
 use serde_json::{json, Value};
 
 pub struct GenPreset {
-    /// "image" | "video"
+    /// "chat" | "image" | "video"
     pub category: &'static str,
+    /// "custom-http"（图片/视频，带模板）| "openai-compatible"（通用对话，填 base_url）
+    pub driver: &'static str,
+    /// openai-compatible 预设的 Base URL（custom-http 时为空串，地址取模板 URL origin）
+    pub base_url: &'static str,
     pub id: &'static str,
     pub name: &'static str,
     pub vendor: &'static str,
@@ -31,10 +36,90 @@ pub struct GenPreset {
 /// 全部内置预设（顺序即 UI 展示顺序）。
 pub fn gen_presets() -> Vec<GenPreset> {
     vec![
+        /* ==================== 通用（对话 / 文本，OpenAI 兼容） ====================
+         * 填充「自定义 / OpenAI 兼容」Provider：驱动 + Base URL + 默认模型 + 对话能力。
+         * 适合剧本/拆分/结构化输出等一切文本生成用途；各平台模型 ID 会持续更新，套用后可改。 */
+        // ---------------- DeepSeek ----------------
+        GenPreset {
+            category: "chat",
+            driver: "openai-compatible",
+            base_url: "https://api.deepseek.com/v1",
+            id: "deepseek",
+            name: "DeepSeek（官方 API）",
+            vendor: "深度求索",
+            docs_url: "https://api-docs.deepseek.com",
+            auth_type: "bearer",
+            header_name: None,
+            default_model: ("deepseek-chat", "DeepSeek V3.2（对话/剧本）"),
+            notes: "在 platform.deepseek.com 创建 API Key，计价便宜适合批量文本。深度思考把模型 ID 换成 deepseek-reasoner（R1 系列）。Base URL 按官方文档为 https://api.deepseek.com（/v1 与不带均可，OpenAI 兼容）。",
+            template: json!({}),
+        },
+        // ---------------- Kimi（月之暗面）----------------
+        GenPreset {
+            category: "chat",
+            driver: "openai-compatible",
+            base_url: "https://api.moonshot.cn/v1",
+            id: "kimi",
+            name: "Kimi（月之暗面 Moonshot）",
+            vendor: "月之暗面",
+            docs_url: "https://platform.moonshot.cn/docs",
+            auth_type: "bearer",
+            header_name: None,
+            default_model: ("kimi-k2-0905-preview", "Kimi K2（长文本/剧本）"),
+            notes: "在 platform.moonshot.cn 创建 API Key；长上下文与中文创作擅长。模型 ID 可换 kimi-k2-turbo-preview（更快）等，以平台「模型列表」页为准；国际版用户把 Base URL 改为 https://api.moonshot.ai/v1。",
+            template: json!({}),
+        },
+        // ---------------- 通义千问 Qwen ----------------
+        GenPreset {
+            category: "chat",
+            driver: "openai-compatible",
+            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            id: "qwen",
+            name: "通义千问 Qwen（阿里百炼）",
+            vendor: "阿里巴巴",
+            docs_url: "https://help.aliyun.com/zh/model-studio/getting-started/models",
+            auth_type: "bearer",
+            header_name: None,
+            default_model: ("qwen3-max", "Qwen3 Max（对话/剧本）"),
+            notes: "在阿里云百炼创建 API Key（注意是百炼 DashScope 的 Key）。模型 ID 可换 qwen-plus / qwen-flash（更快更便宜）；qwen3-vl-* 系列支持图片理解（可作 Vision 能力模型用）。以百炼「模型广场」为准。",
+            template: json!({}),
+        },
+        // ---------------- 豆包（火山方舟）----------------
+        GenPreset {
+            category: "chat",
+            driver: "openai-compatible",
+            base_url: "https://ark.cn-beijing.volces.com/api/v3",
+            id: "doubao",
+            name: "豆包（火山方舟）",
+            vendor: "字节跳动",
+            docs_url: "https://www.volcengine.com/docs/82379/1330310",
+            auth_type: "bearer",
+            header_name: None,
+            default_model: ("doubao-seed-1-6-250615", "豆包 Seed 1.6（对话/视觉）"),
+            notes: "与 Seedream/Seedance 共用同一个方舟 API Key。模型 ID 以方舟「开通管理」页为准（先开通才能调用）；也支持直接填 ep-xxxx 推理接入点 ID。Doubao-Seed-1.6 自带视觉理解，可当 Vision 模型用。",
+            template: json!({}),
+        },
+        // ---------------- ChatGPT（OpenAI）----------------
+        GenPreset {
+            category: "chat",
+            driver: "openai-compatible",
+            base_url: "https://api.openai.com/v1",
+            id: "chatgpt",
+            name: "ChatGPT（OpenAI 官方 API）",
+            vendor: "OpenAI",
+            docs_url: "https://platform.openai.com/docs/models",
+            auth_type: "bearer",
+            header_name: None,
+            default_model: ("gpt-4o", "GPT-4o（对话/视觉）"),
+            notes: "在 platform.openai.com 创建 API Key（需绑定支付方式）；国内直连需自备网络或改用中转站（选「自定义 / OpenAI 兼容」驱动填中转地址即可）。模型 ID 可换 gpt-4o-mini / gpt-4.1 等，以官方模型页为准。",
+            template: json!({}),
+        },
         /* ==================== 图片生成 ==================== */
         // ---------------- Nano Banana（Google）----------------
         GenPreset {
             category: "image",
+            driver: "custom-http",
+            base_url: "",
             id: "nano-banana",
             name: "Nano Banana（Google Gemini 图像）",
             vendor: "Google",
@@ -57,6 +142,8 @@ pub fn gen_presets() -> Vec<GenPreset> {
         // ---------------- Seedream（字节）----------------
         GenPreset {
             category: "image",
+            driver: "custom-http",
+            base_url: "",
             id: "seedream",
             name: "Seedream（火山方舟）",
             vendor: "字节跳动",
@@ -64,7 +151,7 @@ pub fn gen_presets() -> Vec<GenPreset> {
             auth_type: "bearer",
             header_name: None,
             default_model: ("doubao-seedream-3-0-t2i-250415", "Seedream 3.0 T2I"),
-            notes: "国内短剧团队大量使用、人物一致性好。在火山方舟开通模型并创建 API Key；同步接口返回 data[0].url（OneTV 自动下载入库）。模型 ID 以方舟「开通管理」页为准。",
+            notes: "国内短剧团队大量使用、人物一致性好。在火山方舟开通模型并创建 API Key；同步接口返回 data[0].url（OneTV 自动下载入库）。模型 ID 以方舟「开通管理」页为准（如 doubao-seedream-4-0-250828 为 4.0 版，画质更好按量计价）。",
             template: json!({
                 "method": "POST",
                 "url": "https://ark.cn-beijing.volces.com/api/v3/images/generations",
@@ -81,6 +168,8 @@ pub fn gen_presets() -> Vec<GenPreset> {
         // ---------------- FLUX（Black Forest Labs）----------------
         GenPreset {
             category: "image",
+            driver: "custom-http",
+            base_url: "",
             id: "flux",
             name: "FLUX（BFL 官方 API）",
             vendor: "Black Forest Labs",
@@ -112,6 +201,8 @@ pub fn gen_presets() -> Vec<GenPreset> {
         // ---------------- Midjourney（经 midjourney-proxy）----------------
         GenPreset {
             category: "image",
+            driver: "custom-http",
+            base_url: "",
             id: "midjourney-proxy",
             name: "Midjourney（经 midjourney-proxy）",
             vendor: "MJ 社区",
@@ -140,6 +231,8 @@ pub fn gen_presets() -> Vec<GenPreset> {
         // ---------------- 海螺 H3（MiniMax）----------------
         GenPreset {
             category: "video",
+            driver: "custom-http",
+            base_url: "",
             id: "minimax-hailuo",
             name: "海螺 H3（MiniMax Hailuo）",
             vendor: "MiniMax",
@@ -171,6 +264,8 @@ pub fn gen_presets() -> Vec<GenPreset> {
         // ---------------- 可灵（快手）----------------
         GenPreset {
             category: "video",
+            driver: "custom-http",
+            base_url: "",
             id: "kling",
             name: "可灵 Kling（快手）",
             vendor: "快手",
@@ -204,6 +299,8 @@ pub fn gen_presets() -> Vec<GenPreset> {
         // ---------------- 即梦 Seedance（火山引擎方舟）----------------
         GenPreset {
             category: "video",
+            driver: "custom-http",
+            base_url: "",
             id: "seedance",
             name: "即梦 Seedance（火山方舟）",
             vendor: "字节跳动",
@@ -211,7 +308,7 @@ pub fn gen_presets() -> Vec<GenPreset> {
             auth_type: "bearer",
             header_name: None,
             default_model: ("doubao-seedance-1-0-lite-t2v-250428", "Seedance 1.0 Lite"),
-            notes: "国内短剧圈最主流，图生视频锁人物。在火山方舟开通模型并创建 API Key。提交返回 id，轮询同路径 /{id}，status=succeeded 时取 content.video_url。模型 ID 以方舟「开通管理」页为准（需先开通才能调用）。",
+            notes: "国内短剧圈最主流，图生视频锁人物。在火山方舟开通模型并创建 API Key。提交返回 id，轮询同路径 /{id}，status=succeeded 时取 content.video_url。模型 ID 以方舟「开通管理」页为准（需先开通才能调用；pro 版画质更高，lite 版更快更便宜）。",
             template: json!({
                 "method": "POST",
                 "url": "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks",
@@ -237,6 +334,8 @@ pub fn gen_presets() -> Vec<GenPreset> {
         // ---------------- 通义万相 Wan（阿里百炼）----------------
         GenPreset {
             category: "video",
+            driver: "custom-http",
+            base_url: "",
             id: "dashscope-wan",
             name: "通义万相 Wan（阿里百炼）",
             vendor: "阿里巴巴",
@@ -271,6 +370,8 @@ pub fn gen_presets() -> Vec<GenPreset> {
         // ---------------- Pika（经 fal.ai 队列）----------------
         GenPreset {
             category: "video",
+            driver: "custom-http",
+            base_url: "",
             id: "pika-fal",
             name: "Pika（经 fal.ai 队列）",
             vendor: "Pika Labs / fal",
@@ -301,6 +402,8 @@ pub fn gen_presets() -> Vec<GenPreset> {
         // ---------------- Runway ----------------
         GenPreset {
             category: "video",
+            driver: "custom-http",
+            base_url: "",
             id: "runway",
             name: "Runway（Gen-4 / Gen-3）",
             vendor: "Runway",
@@ -337,14 +440,20 @@ pub fn gen_presets() -> Vec<GenPreset> {
     ]
 }
 
-/// 预设序列化为前端可用的 JSON（按 图片 → 视频 排序）。
+/// 预设序列化为前端可用的 JSON（按 通用 → 图片 → 视频 排序）。
 pub fn gen_presets_json() -> Vec<Value> {
     let mut all = gen_presets();
-    all.sort_by_key(|p| if p.category == "image" { 0 } else { 1 });
+    all.sort_by_key(|p| match p.category {
+        "chat" => 0,
+        "image" => 1,
+        _ => 2,
+    });
     all.into_iter()
         .map(|p| {
             json!({
                 "category": p.category,
+                "driver": p.driver,
+                "baseUrl": p.base_url,
                 "id": p.id,
                 "name": p.name,
                 "vendor": p.vendor,
@@ -368,16 +477,39 @@ mod tests {
     #[test]
     fn presets_have_valid_templates() {
         let presets = gen_presets();
+        assert!(presets.iter().filter(|p| p.category == "chat").count() >= 5, "通用对话预设：DeepSeek/Kimi/千问/豆包/ChatGPT");
         assert!(presets.iter().filter(|p| p.category == "image").count() >= 4, "图片预设：Nano Banana/Seedream/FLUX/MJ");
         assert!(presets.iter().filter(|p| p.category == "video").count() >= 6, "视频预设：海螺/可灵/即梦/万相/Pika/Runway");
         for p in &presets {
-            let tmpl: HttpTemplate = serde_json::from_value(p.template.clone())
-                .unwrap_or_else(|e| panic!("预设 {} 模板解析失败: {e}", p.id));
-            assert!(tmpl.url.starts_with("https://"), "{} 提交 URL 必须为绝对地址", p.id);
-            if let Some(poll) = &tmpl.poll {
-                assert!(poll.url.contains("${jobId}"), "{} 轮询 URL 应引用 ${{jobId}}", p.id);
-                assert!(poll.url.starts_with("https://"), "{} 轮询 URL 必须为绝对地址", p.id);
-                assert!(!poll.success_when.is_empty());
+            match p.driver {
+                // 通用对话预设：base_url 必须是合法 https 地址，无模板
+                "openai-compatible" => {
+                    assert!(p.base_url.starts_with("https://"), "{} Base URL 必须为绝对地址", p.id);
+                    assert!(!p.default_model.0.is_empty(), "{} 必须有默认模型", p.id);
+                    assert!(p.auth_type == "bearer", "{} 对话预设走 bearer", p.id);
+                }
+                // custom-http 预设：模板必须可解析且 URL 为绝对地址
+                _ => {
+                    let tmpl: HttpTemplate = serde_json::from_value(p.template.clone())
+                        .unwrap_or_else(|e| panic!("预设 {} 模板解析失败: {e}", p.id));
+                    assert!(tmpl.url.starts_with("https://"), "{} 提交 URL 必须为绝对地址", p.id);
+                    if let Some(poll) = &tmpl.poll {
+                        assert!(poll.url.contains("${jobId}"), "{} 轮询 URL 应引用 ${{jobId}}", p.id);
+                        assert!(poll.url.starts_with("https://"), "{} 轮询 URL 必须为绝对地址", p.id);
+                        assert!(!poll.success_when.is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chat_presets_are_openai_compatible_shape() {
+        // 通用对话预设走 openai-compatible 驱动：JSON 必须带 driver/baseUrl 字段（前端 applyPreset 依赖）
+        for p in gen_presets_json() {
+            if p["category"] == "chat" {
+                assert_eq!(p["driver"], "openai-compatible");
+                assert!(p["baseUrl"].as_str().unwrap_or("").starts_with("https://"));
             }
         }
     }
@@ -408,6 +540,9 @@ mod tests {
         // ResponseMapping 是 snake_case serde 字段：job_id 键名写错会被静默忽略 → 轮询失效。
         // 这里守住：所有带 poll 的预设必须真实解析出 job_id 映射
         for p in gen_presets() {
+            if p.driver != "custom-http" {
+                continue; // 通用对话预设无模板
+            }
             let tmpl: HttpTemplate = serde_json::from_value(p.template.clone()).unwrap();
             if tmpl.poll.is_some() {
                 assert!(

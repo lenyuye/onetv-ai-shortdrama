@@ -37,6 +37,7 @@ import {
   authTypeOf,
   draftFrom,
   errMsg,
+  mergeFetchedModels,
   newDraft,
   sanitizeCaps,
   useProviderEditor,
@@ -306,6 +307,46 @@ export default function ModelsView() {
       toast(d.id ? t("Provider 已更新") : t("Provider 已新增"), "ok");
       setEditor(null);
       await refresh();
+      // 创建后自动拉取远端模型列表并合并（v2.25.0）：OpenAI 兼容/Ollama/SD 支持 /models；
+      // 失败静默（不影响保存），拉到后二次保存合并（provider_save 不触碰钥匙串，Key 不受影响）
+      if (!d.id && ["openai-compatible", "ollama", "stable-diffusion"].includes(d.driver)) {
+        try {
+          const r = await api.providerModels(saved.id);
+          if (r.ok && r.models.length > 0) {
+            const rows = models.map((m) => ({
+              modelId: m.modelId,
+              displayName: m.displayName,
+              capabilities: sanitizeCaps(m.capabilities, d.driver),
+              pricePerCall: m.pricePerCall ?? null,
+            }));
+            const merged = mergeFetchedModels(rows, r.models, d.driver);
+            if (merged.added > 0) {
+              await api.providerSave({
+                id: saved.id,
+                name: d.name.trim(),
+                driver: d.driver,
+                baseUrl: d.baseUrl.trim(),
+                models: merged.rows.map((m) => ({
+                  modelId: m.modelId,
+                  displayName: m.displayName || m.modelId,
+                  capabilities: m.capabilities,
+                  pricing: m.pricePerCall && m.pricePerCall > 0 ? { perCall: m.pricePerCall } : null,
+                })),
+                timeoutMs: Math.max(1_000, d.timeoutMs || 180_000),
+                concurrency: Math.max(1, d.concurrency || 1),
+                enabled: d.enabled,
+                httpTemplate,
+                workflowTemplate,
+                authType: authTypeOf(d.driver),
+              });
+              toast(t("已自动获取 {n} 个远端模型并合并", { n: merged.added }), "ok");
+              await refresh();
+            }
+          }
+        } catch {
+          /* 远端拉取失败不影响保存；可稍后在「编辑」里手动读取 */
+        }
+      }
     } catch (e) {
       toast(t("保存失败：{msg}", { msg: errMsg(e) }), "err");
     } finally {

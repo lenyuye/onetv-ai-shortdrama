@@ -71,7 +71,7 @@ export function FfmpegCard({ settings }: { settings: api.AppSettings }) {
         </div>
       </div>
 
-      <div className="field" style={{ marginTop: "auto" }}>
+      <div className="field" style={{ marginTop: 13 }}>
         <label>{t("自定义 ffmpeg 路径（仅当自动探测失败时填写完整路径）")}</label>
         <input
           type="text"

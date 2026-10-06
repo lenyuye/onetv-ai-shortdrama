@@ -113,7 +113,12 @@ export function ProviderEditorModal({
                   aria-label={t("选择平台预设")}
                   style={{ flex: 1 }}
                 >
-                  <option value="">{t("选择平台预设（图片 / 视频生成）…")}</option>
+                  <option value="">{t("选择平台预设（通用 / 图片 / 视频生成）…")}</option>
+                  <optgroup label={t("💬 通用（对话 / 文本）")}>
+                    {presets.filter((x) => x.category === "chat").map((x) => (
+                      <option key={x.id} value={x.id}>{x.name}</option>
+                    ))}
+                  </optgroup>
                   <optgroup label={t("🖼️ 图片生成")}>
                     {presets.filter((x) => x.category === "image").map((x) => (
                       <option key={x.id} value={x.id}>{x.name}</option>
@@ -201,7 +206,7 @@ export function ProviderEditorModal({
                   {editorReading ? t("读取中…") : t("⟳ 读取模型并合并")}
                 </button>
               ) : (
-                <span className="sub">{t("保存后再打开「编辑」即可读取远端模型并合并")}</span>
+                <span className="sub">{t("创建后将自动拉取远端模型列表并合并；也可保存后在「编辑」里手动读取")}</span>
               )}
             </div>
             {editor.driver === "stable-diffusion" ? (
