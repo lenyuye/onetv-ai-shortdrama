@@ -187,7 +187,7 @@ export default function AgentChatView() {
       id: uid(),
       role: "user",
       text: bubbleParts.join("\n"),
-      time: new Date().toLocaleTimeString(),
+      time: new Date().toISOString(),
     });
     useAgentChat.getState().setBusy(chatKey, true);
     try {
@@ -218,7 +218,7 @@ export default function AgentChatView() {
           reviewNotes: r.plan.reviewNotes,
           auto: !!r.autoExecuted,
         },
-        time: new Date().toLocaleTimeString(),
+        time: new Date().toISOString(),
       });
       if (r.autoExecuted) {
         toast(t("对话任务已自动执行（Mock/本地模型不出公网）"), "ok");
@@ -228,7 +228,7 @@ export default function AgentChatView() {
         id: uid(),
         role: "system",
         text: t("⚠️ {msg}", { msg: story.errMsg(e) }),
-        time: new Date().toLocaleTimeString(),
+        time: new Date().toISOString(),
       });
     } finally {
       useAgentChat.getState().setBusy(chatKey, false);
@@ -258,7 +258,7 @@ export default function AgentChatView() {
           id: uid(),
           role: "system",
           text: t("⛔ 已停止生成（取消任务 {ok}/{total} 个）", { ok, total: ids.length }),
-          time: new Date().toLocaleTimeString(),
+          time: new Date().toISOString(),
         });
       }
     }

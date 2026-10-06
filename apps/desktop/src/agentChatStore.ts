@@ -352,7 +352,7 @@ export function initAgentChatBridge() {
         id: uid(),
         role: "assistant",
         text: p.text,
-        time: new Date().toLocaleTimeString(),
+        time: new Date().toISOString(),
       });
     })
     .catch(() => {});

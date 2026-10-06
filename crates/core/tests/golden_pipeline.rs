@@ -183,10 +183,21 @@ async fn golden_pipeline_script_to_film() {
         .collect();
     assert!(!mp4s.is_empty(), "应产出 MP4");
 
-    // 6. 资产入库验证（TC09）
+    // 6. 资产入库验证（TC09）；成片零拷贝登记：path 指向 renders/ 唯一副本，不复制进 assets/
     let assets = ops::list_assets(&root).unwrap();
     assert!(assets.iter().any(|a| a.kind == "images"), "分镜图应入库");
-    assert!(assets.iter().any(|a| a.kind == "videos"), "成片应入库");
+    let render_asset = assets.iter().find(|a| a.kind == "videos").expect("成片应入库");
+    assert!(
+        std::path::Path::new(&render_asset.path).starts_with(root.join("renders")),
+        "成片资产应零拷贝指向 renders/: {}",
+        render_asset.path
+    );
+    assert!(
+        !assets
+            .iter()
+            .any(|a| a.kind == "videos" && std::path::Path::new(&a.path).starts_with(root.join("assets"))),
+        "成片不应复制进 assets/"
+    );
 
     // 7. 幂等：同参数任务不重复提交（规格 §11.2）
     let dup = jobs.create_job(

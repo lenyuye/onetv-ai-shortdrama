@@ -398,7 +398,7 @@ pub fn storyboard_image_batch_handler(env: Arc<AgentEnv>) -> JobHandler {
                 let (files, provider_id, model) =
                     generate_one_image(&env, &prompt, "9:16", &out_dir, pp.as_deref(), pm.as_deref(), &[]).await?;
                 ctx.set_meta(json!({ "providerId": provider_id, "model": model }));
-                if let Some(asset_id) = register_asset(&ctx.root, files.first(), "images") {
+                if let Some(asset_id) = register_generated_asset(&ctx.root, files.first(), "images") {
                     updated[i]["outputAssetId"] = json!(asset_id);
                     updated[i]["status"] = json!("ready");
                 }
@@ -449,7 +449,9 @@ fn read_bible_style(root: &Path) -> String {
     "赛博朋克霓虹，深蓝与品红撞色".into()
 }
 
-fn register_asset(root: &Path, file: Option<&PathBuf>, kind: &str) -> Option<String> {
+/// 生成类产物（图片等小文件）登记：走 import_asset 拷贝进 assets/，
+/// 与成片类的零拷贝 ops::register_asset 区分（assets/ 目录的拷贝隔离只对生成产物有意义）。
+fn register_generated_asset(root: &Path, file: Option<&PathBuf>, kind: &str) -> Option<String> {
     let f = file?;
     onetv_project::ops::import_asset(root, f, kind).ok().map(|r| r.id)
 }
@@ -971,6 +973,11 @@ pub fn timeline_render_handler(env: Arc<AgentEnv>) -> JobHandler {
                 // SRT 侧车始终输出（与线性分支一致）
                 let srt_out = out.with_extension("srt");
                 let _ = std::fs::copy(&rendered.srt, &srt_out);
+                // 成片零拷贝登记（kind=videos）：成片已在 renders/ 有唯一副本，不复制进 assets/；
+                // 失败不阻断渲染结果
+                if let Err(e) = onetv_project::ops::register_asset(&ctx.root, &out, "videos") {
+                    tracing::warn!("成片入库失败（不阻断）: {e}");
+                }
                 env_agent_message(
                     &env,
                     &ctx.job_id,
@@ -1057,6 +1064,11 @@ pub fn timeline_render_handler(env: Arc<AgentEnv>) -> JobHandler {
             // SRT 侧车始终输出（无论是否硬字幕）
             let srt_out = out.with_extension("srt");
             let _ = std::fs::copy(&srt_path, &srt_out);
+            // 成片零拷贝登记（kind=videos）：成片已在 renders/ 有唯一副本，不复制进 assets/；
+            // 失败不阻断渲染结果
+            if let Err(e) = onetv_project::ops::register_asset(&ctx.root, &out, "videos") {
+                tracing::warn!("成片入库失败（不阻断）: {e}");
+            }
             ctx.report(0.95, "入库…");
             env_agent_message(&env, &ctx.job_id, &format!("成片初剪已合成（{:.1}s，含硬字幕）。可在「任务」查看，或说「导出竖版」。", t), "timeline.done");
             Ok(vec![out.to_string_lossy().into_owned()])
@@ -1141,10 +1153,13 @@ pub fn export_render_handler(env: Arc<AgentEnv>) -> JobHandler {
                 outputs.push(srt_out.to_string_lossy().into_owned());
             }
             ctx.report(0.9, "导出完成");
-            // 产物登记进 assets 表（kind=videos）：复用 import_asset（按 sha256 幂等，重复导出同内容不重录），
-            // 让「导出/合成成片」的产物可被 latest_asset_of_kind 命中，后续导出与时间线可选。
+            // 产物零拷贝登记进 assets 表（kind=videos）：导出成片已落在 renders/（工程内唯一副本），
+            // 不再复制进 assets/ 双倍占盘；按 sha256 幂等，重复导出同内容不重录，
+            // 「导出/合成成片」的产物可被 latest_asset_of_kind 命中。
             // 登记失败不阻断导出结果（文件已落 renders/）。
-            let _ = onetv_project::ops::import_asset(&ctx.root, &out, "videos");
+            if let Err(e) = onetv_project::ops::register_asset(&ctx.root, &out, "videos") {
+                tracing::warn!("导出成片入库失败（不阻断）: {e}");
+            }
             ctx.report(0.95, "入库…");
             let sub_note = if burn_subtitle && has_srt { "含硬字幕" } else { "无硬字幕" };
             env_agent_message(&env, &ctx.job_id, &format!("已导出 {w}×{h} 版本（{sub_note}）：{}", out.display()), "export.done");

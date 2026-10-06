@@ -140,6 +140,20 @@ pub fn remove_episode(root: &Path, manifest: &mut ProjectManifest, episode_id: &
 
 /// 导入资产：复制进 assets/<kind>/，SHA-256 去重（同 hash 不重复入库，返回既有资产）。
 pub fn import_asset(root: &Path, src: &Path, kind: &str) -> ProjectResult<AssetRecord> {
+    register_asset_inner(root, src, kind, true)
+}
+
+/// 零拷贝登记资产：不复制文件，path 直接登记源文件的绝对路径。
+/// 适用于工程内已有唯一副本的大文件（如 renders/ 下的成片），避免双倍占盘；
+/// assets/ 目录的拷贝隔离只对生成类小产物（图片/音频）有意义。
+/// SHA-256 去重与 import_asset 一致：同 hash 幂等返回既有资产。
+pub fn register_asset(root: &Path, src: &Path, kind: &str) -> ProjectResult<AssetRecord> {
+    register_asset_inner(root, src, kind, false)
+}
+
+/// import_asset（copy=true，复制进 assets/<kind>/）与 register_asset（copy=false，
+/// 原地登记绝对路径）共用的登记逻辑。
+fn register_asset_inner(root: &Path, src: &Path, kind: &str, copy: bool) -> ProjectResult<AssetRecord> {
     if !src.exists() {
         return Err(ProjectError::Path(format!("文件不存在: {}", src.display())));
     }
@@ -172,19 +186,24 @@ pub fn import_asset(root: &Path, src: &Path, kind: &str) -> ProjectResult<AssetR
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_else(|| "bin".into());
     let id = format!("asset_{}", &hash[..16]);
-    let dest_dir = root.join("assets").join(kind);
-    std::fs::create_dir_all(&dest_dir)?;
-    let dest = dest_dir.join(format!("{id}.{ext}"));
-    std::fs::copy(src, &dest)?;
-
     let mime = guess_mime(&ext);
+    let stored_path: PathBuf = if copy {
+        let dest_dir = root.join("assets").join(kind);
+        std::fs::create_dir_all(&dest_dir)?;
+        let dest = dest_dir.join(format!("{id}.{ext}"));
+        std::fs::copy(src, &dest)?;
+        dest
+    } else {
+        absolute_path(src)?
+    };
+
     conn.execute(
         "INSERT INTO assets(id, sha256, path, kind, mime, size_bytes, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             id,
             hash,
-            dest.to_string_lossy(),
+            stored_path.to_string_lossy(),
             kind,
             mime,
             size,
@@ -194,11 +213,20 @@ pub fn import_asset(root: &Path, src: &Path, kind: &str) -> ProjectResult<AssetR
     Ok(AssetRecord {
         id,
         sha256: hash,
-        path: dest.to_string_lossy().into_owned(),
+        path: stored_path.to_string_lossy().into_owned(),
         kind: kind.into(),
         mime,
         size_bytes: size,
     })
+}
+
+/// 相对路径 → 绝对路径（零拷贝登记时 path 必须不依赖当前工作目录）。
+fn absolute_path(p: &Path) -> ProjectResult<PathBuf> {
+    if p.is_absolute() {
+        Ok(p.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()?.join(p))
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -228,7 +256,9 @@ fn query_asset_by_hash(conn: &Connection, hash: &str) -> Result<AssetRecord, rus
     )
 }
 
-/// 删除资产：仅允许删除位于 <root>/assets/ 内的文件，随后清理索引行。
+/// 删除资产：仅删除位于 <root>/assets/ 内的文件，随后清理索引行。
+/// 工程外的路径（如零拷贝登记的 renders/ 成片，由渲染管线与任务页管理）
+/// 只清 DB 行、不动文件。
 pub fn delete_asset(root: &Path, id: &str) -> ProjectResult<()> {
     let conn = db::open(&root.join("database.sqlite"))?;
     let path: Option<String> = conn
@@ -239,6 +269,8 @@ pub fn delete_asset(root: &Path, id: &str) -> ProjectResult<()> {
         // 防御：只删工程 assets 目录内的文件
         if pb.starts_with(root.join("assets")) {
             let _ = std::fs::remove_file(pb);
+        } else {
+            tracing::debug!(id, path = %p, "资产文件在工程 assets/ 之外，仅清理索引行");
         }
         conn.execute("DELETE FROM assets WHERE id = ?1", [id])?;
     }
@@ -481,6 +513,49 @@ mod tests {
         delete_asset(h.root(), &rec.id).unwrap();
         assert!(!p.exists());
         assert!(list_assets(h.root()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn register_asset_is_zero_copy_and_idempotent() {
+        let ws = tempfile::tempdir().unwrap();
+        let (h, _m) = create_project(ws.path(), "测试", "9:16").unwrap();
+        // 源文件放在 renders/（模拟成片：工程内已有唯一副本的大文件）
+        let src = h.root().join("renders").join("ep01_final.mp4");
+        std::fs::write(&src, b"fake mp4 bytes").unwrap();
+
+        let rec = register_asset(h.root(), &src, "videos").unwrap();
+        // 零拷贝：源文件未被移动，assets/ 下也没有出现副本
+        assert!(src.exists(), "源文件应原位保留");
+        assert_eq!(Path::new(&rec.path), src.as_path(), "path 应登记源文件绝对路径");
+        assert!(Path::new(&rec.path).is_absolute(), "path 应是绝对路径");
+        assert!(!h.root().join("assets").join("videos").join(format!("{}.mp4", rec.id)).exists(), "不应复制进 assets/");
+        assert_eq!(rec.kind, "videos");
+        assert_eq!(rec.mime, "video/mp4");
+        assert_eq!(rec.size_bytes, b"fake mp4 bytes".len() as u64);
+
+        // DB 可查
+        let all = list_assets(h.root()).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, rec.id);
+
+        // SHA-256 幂等：同内容重复登记返回既有记录，不产生新行
+        let again = register_asset(h.root(), &src, "videos").unwrap();
+        assert_eq!(again.id, rec.id);
+        assert_eq!(list_assets(h.root()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn delete_zero_copy_asset_keeps_source_file() {
+        let ws = tempfile::tempdir().unwrap();
+        let (h, _m) = create_project(ws.path(), "测试", "9:16").unwrap();
+        let src = h.root().join("renders").join("export_douyin_vertical.mp4");
+        std::fs::write(&src, b"render bytes").unwrap();
+
+        let rec = register_asset(h.root(), &src, "videos").unwrap();
+        delete_asset(h.root(), &rec.id).unwrap();
+        // 行已清理，但 renders/ 下的成片文件保留（由渲染管线管理）
+        assert!(list_assets(h.root()).unwrap().is_empty());
+        assert!(src.exists(), "工程外的源文件不应被删除");
     }
 
     #[test]

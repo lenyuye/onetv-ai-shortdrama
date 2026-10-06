@@ -4,9 +4,20 @@
  */
 import { type RefObject } from "react";
 import type { ChatMsg } from "../../agentChatStore";
-import { useT } from "../../i18n";
+import { getLang, useT } from "../../i18n";
 import { MdBlock } from "./MdBlock";
 import { PlanCard } from "./PlanCard";
+
+/** 消息时间：v2.20 起存 ISO;旧数据是创建时固化的本地时间串,无法解析则原样显示。 */
+function fmtChatTime(raw: string): string {
+  if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) {
+    const d = new Date(raw);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleTimeString(getLang() === "en" ? "en-US" : "zh-CN", { hour12: false });
+    }
+  }
+  return raw;
+}
 
 interface MessageListProps {
   msgs: ChatMsg[];
@@ -50,7 +61,7 @@ export function MessageList({ msgs, streamingText, approving, onApprove, onRejec
             }}
           >
             <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-              <span>{m.role === "user" ? t("我") : m.role === "system" ? t("系统") : "Agent"} · {m.time}</span>
+              <span>{m.role === "user" ? t("我") : m.role === "system" ? t("系统") : "Agent"} · {fmtChatTime(m.time)}</span>
               {m.role === "assistant" && m.text && (
                 <button
                   className="agent-msg-copy"

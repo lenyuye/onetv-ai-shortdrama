@@ -2,6 +2,16 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.20.0] — v2.20.0：省盘入库 + UI 冒烟脚本化 + i18n 收尾 + 开源准备（backlog 批一）
+
+### 追加
+- **💾 成片零拷贝入库**：新 `register_asset`（与 import_asset 共用内核，sha256 幂等）——导出成片/时间线成片（新旧两分支）登记资产不再拷贝进 assets/（renders/ 唯一副本），几十 MB 视频不再双倍占盘；delete 零拷贝资产只删 DB 行不删 renders/ 文件；生成类小文件仍走拷贝隔离。golden_pipeline 断言强化（成片 path 指向 renders/ 且 assets/ 无副本）。
+- **🤖 UI 冒烟脚本化**：scripts/smoke/onetv_smoke.py——Quartz 遍历 13 视图（动态标定表+--calibrate 一键重测、登录页检测、点击后切换断言、空白页方差检测），产出 screenshots/ 与 smoke_report.json；本轮实测 13/13 通过，并借此修正了旧手工标定的整体行位偏移。
+- **.privacy**：补 PRIVACY.md（README 引用缺失）；README 功能清单/测试/目录结构更新到 v2.20 现状；打 tag v2.16.0~v2.19.0。
+
+### 修复
+- 聊天消息时间戳改存 ISO、显示侧按界面语言格式化（en-US/zh-CN），旧会话持久化时间串容错原样显示。
+
 ## [2.19.0] — v2.19.0：多版本导出 + backlog 清剿批
 
 ### 追加
