@@ -114,7 +114,7 @@ export function ProviderEditorModal({
                   style={{ flex: 1 }}
                 >
                   <option value="">{t("选择平台预设（通用 / 图片 / 视频生成）…")}</option>
-                  <optgroup label={t("💬 通用（对话 / 文本）")}>
+                  <optgroup label={t("通用功能")}>
                     {presets.filter((x) => x.category === "chat").map((x) => (
                       <option key={x.id} value={x.id}>{x.name}</option>
                     ))}

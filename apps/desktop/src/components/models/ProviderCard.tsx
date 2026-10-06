@@ -81,7 +81,7 @@ export function ProviderCard({
         <span className="pv-url-more">{" · "}{t("超时 {n}s · 并发 {c}", { n: Math.round(p.timeoutMs / 1000), c: p.concurrency })}</span>
       </div>
 
-      <div className="pv-models">
+      <div className="pv-models" style={p.models.length > 8 ? { maxHeight: 220, overflowY: "auto" } : undefined}>
         {p.models.length === 0 ? (
           <span className="hint">{t("未配置模型，可「编辑」添加或「读取模型」后手工填入")}</span>
         ) : (
