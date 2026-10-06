@@ -153,7 +153,7 @@ pub fn finalize(
         args.push("aac".into());
         args.push("-shortest".into());
     }
-    if let Some(s) = srt_input {
+    if srt_input.is_some() {
         if !has_audio {
             args.push("-map".into());
             args.push("0:v:0".into());

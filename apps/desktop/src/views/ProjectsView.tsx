@@ -45,6 +45,13 @@ export default function ProjectsView() {
   const [epStats, setEpStats] = useState<Record<string, EpStats>>({});
   const [bibleOpen, setBibleOpen] = useState(false);
   const [recreateBusy, setRecreateBusy] = useState(false);
+  // 工程包密码弹窗：export = 导出加密包（密码可选）；import = 加密包导入（密码必填，带重试路径）
+  const [passModal, setPassModal] = useState<
+    | { mode: "export" }
+    | { mode: "import"; zipPath: string; parentPath: string; error?: string }
+    | null
+  >(null);
+  const [passInput, setPassInput] = useState("");
   const doRecreate = async () => {
     const ep = episodes[0];
     if (!ep) return;
@@ -133,12 +140,14 @@ export default function ProjectsView() {
     }
   };
 
-  const exportPkg = async () => {
+  // passphrase 非空 → 加密导出（ONETVENC1）；空 → 明文导出（历史行为不变）
+  const doExport = async (passphrase?: string) => {
+    setPassModal(null);
     setPkgBusy(true);
     try {
-      const r = await project_export_pkg();
+      const r = await project_export_pkg(passphrase);
       if (r.ok) {
-        toast(r.path ? t("工程包已导出: {path}", { path: r.path }) : t("工程包已导出"), "ok");
+        toast(r.encrypted ? t("已导出加密工程包：{path}", { path: r.path ?? "" }) : r.path ? t("工程包已导出: {path}", { path: r.path }) : t("工程包已导出"), "ok");
       } else if ((r.message ?? "").includes("已取消")) {
         /* 用户取消保存对话框，静默 */
       } else {
@@ -152,25 +161,51 @@ export default function ProjectsView() {
     }
   };
 
-  const importPkg = async () => {
+  // opts 缺省 = 直接走文件选择；带 zipPath/parentPath/passphrase = needsPassphrase 后的密码重试
+  const doImport = async (opts?: { passphrase?: string; zipPath?: string; parentPath?: string }) => {
+    const isRetry = !!opts?.zipPath;
     setPkgBusy(true);
     try {
-      const r = await project_import_pkg();
+      const r = await project_import_pkg(opts);
+      if (r.needsPassphrase) {
+        setPassInput("");
+        setPassModal({ mode: "import", zipPath: r.zipPath ?? "", parentPath: r.parentPath ?? "" });
+        return;
+      }
       if (r.ok) {
+        setPassModal(null);
         // 工程包可能替换/更新当前项目，刷新全局项目态与分集列表
         await useApp.getState().loadProject();
         refresh();
         toast(r.path ? t("工程包已导入: {path}", { path: r.path }) : t("工程包已导入"), "ok");
       } else if ((r.message ?? "").includes("已取消")) {
-        /* 用户取消文件选择，静默 */
+        setPassModal(null);
+      } else if (isRetry) {
+        setPassModal((prev) => (prev && prev.mode === "import" ? { ...prev, error: r.message ?? t("未知错误") } : prev));
       } else {
         toast(t("导入失败：{msg}", { msg: r.message ?? t("未知错误") }), "err");
       }
     } catch (e) {
       const msg = api.errMsg(e);
-      if (!msg.includes("已取消")) toast(t("导入失败：{msg}", { msg }), "err");
+      if (msg.includes("已取消")) {
+        setPassModal(null);
+      } else if (isRetry) {
+        setPassModal((prev) => (prev && prev.mode === "import" ? { ...prev, error: msg } : prev));
+      } else {
+        toast(t("导入失败：{msg}", { msg }), "err");
+      }
     } finally {
       setPkgBusy(false);
+    }
+  };
+
+  const confirmPass = () => {
+    if (!passModal || pkgBusy) return;
+    if (passModal.mode === "export") {
+      void doExport(passInput.trim() || undefined);
+    } else if (passInput) {
+      setPassModal({ ...passModal, error: undefined });
+      void doImport({ passphrase: passInput, zipPath: passModal.zipPath, parentPath: passModal.parentPath });
     }
   };
 
@@ -184,10 +219,21 @@ export default function ProjectsView() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <button className="btn" disabled={pkgBusy} title={t("把当前项目打包导出为一个工程包文件")} onClick={() => void exportPkg()}>
+          <button className="btn" disabled={pkgBusy} title={t("把当前项目打包导出为一个工程包文件")} onClick={() => void doExport()}>
             📦 {t("导出工程包")}
           </button>
-          <button className="btn" disabled={pkgBusy} title={t("从工程包文件导入项目（成功后刷新当前项目）")} onClick={() => void importPkg()}>
+          <button
+            className="btn"
+            disabled={pkgBusy}
+            title={t("导出带密码加密的工程包（AES-256-GCM，导入时需输入密码）")}
+            onClick={() => {
+              setPassInput("");
+              setPassModal({ mode: "export" });
+            }}
+          >
+            🔐 {t("加密")}
+          </button>
+          <button className="btn" disabled={pkgBusy} title={t("从工程包文件导入项目（成功后刷新当前项目）")} onClick={() => void doImport()}>
             📂 {t("导入工程包")}
           </button>
           <button className="btn primary" disabled={busy} onClick={addEpisode}>+ {t("新增一集")}</button>
@@ -259,6 +305,48 @@ export default function ProjectsView() {
       )}
 
       {bibleOpen && <BibleEditor onClose={() => setBibleOpen(false)} />}
+
+      {passModal && (
+        <div className="modal-overlay" onClick={() => setPassModal(null)}>
+          <div className="modal" style={{ width: "min(420px, 92vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <span>{passModal.mode === "export" ? t("加密导出工程包") : t("此工程包已加密")}</span>
+              <button className="btn sm ghost" onClick={() => setPassModal(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="hint">
+                {passModal.mode === "export"
+                  ? t("可选设置密码：留空则导出普通（未加密）工程包；设置密码后导入时需输入该密码。")
+                  : t("请输入导出时设置的密码：")}
+              </div>
+              {passModal.mode === "import" && passModal.error && (
+                <div className="hint" style={{ color: "#e5484d", marginTop: 6 }}>⚠️ {passModal.error}</div>
+              )}
+              <input
+                type="password"
+                autoFocus
+                value={passInput}
+                placeholder={passModal.mode === "export" ? t("密码（留空则不加密）") : t("密码")}
+                style={{ width: "100%", marginTop: 10 }}
+                onChange={(e) => setPassInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") confirmPass();
+                }}
+              />
+            </div>
+            <div className="modal-foot">
+              <button className="btn" onClick={() => setPassModal(null)}>{t("取消")}</button>
+              <button
+                className="btn primary"
+                disabled={pkgBusy || (passModal.mode === "import" && !passInput)}
+                onClick={confirmPass}
+              >
+                {passModal.mode === "export" ? t("导出") : t("确定")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

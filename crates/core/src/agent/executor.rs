@@ -58,7 +58,7 @@ impl Executor {
     async fn run_step(
         &self,
         step: &PlanStep,
-        root: &std::path::Path,
+        _root: &std::path::Path,
         episode_id: Option<String>,
     ) -> Result<Vec<String>, String> {
         let jobs = &self.jobs;

@@ -74,13 +74,82 @@ export interface ProjectPkgResult {
   ok: boolean;
   path?: string;
   message?: string;
+  /** 导出：是否加密落盘（ONETVENC1） */
+  encrypted?: boolean;
+  /** 导入：加密包未带密码时的结构化应答，携带已选路径供密码框重试 */
+  needsPassphrase?: boolean;
+  zipPath?: string;
+  parentPath?: string;
 }
 
-/** 导出当前项目为工程包（弹出保存位置选择框） */
-export const project_export_pkg = () => invoke<ProjectPkgResult>("project_export_pkg");
+/** 导出当前项目为工程包（弹出保存位置选择框）；passphrase 非空则 AES-256-GCM 加密 */
+export const project_export_pkg = (passphrase?: string) =>
+  invoke<ProjectPkgResult>("project_export_pkg", { passphrase: passphrase ?? null });
 
-/** 导入工程包（弹出文件选择框）；成功后需要 loadProject() 刷新全局项目态 */
-export const project_import_pkg = () => invoke<ProjectPkgResult>("project_import_pkg");
+/** 导入工程包选项：zipPath/parentPath 用于 needsPassphrase 后带路径重试（跳过文件选择框） */
+export interface ProjectImportOptions {
+  passphrase?: string;
+  zipPath?: string;
+  parentPath?: string;
+}
+
+/**
+ * 导入工程包；成功后需要 loadProject() 刷新全局项目态。
+ * 加密包且未带密码时返回 { needsPassphrase: true, zipPath, parentPath }（不抛错）。
+ */
+export const project_import_pkg = (opts?: ProjectImportOptions) =>
+  invoke<ProjectPkgResult>("project_import_pkg", {
+    passphrase: opts?.passphrase ?? null,
+    zipPath: opts?.zipPath ?? null,
+    parentPath: opts?.parentPath ?? null,
+  });
+
+/* ---------------- Plugins（规格 §22：prompt-pack 提示词包插件，最小完整版） ---------------- */
+
+/** plugin_list 返回行 —— 合法插件带摘要；坏清单 valid=false 且带 error（后端跳过不崩）。
+ *  兼容 v2.15 框架版字段（id/name/version/description/dir 全部保留）。 */
+export interface PluginListItem {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  dir: string;
+  kind: string;
+  promptsCount: number;
+  valid: boolean;
+  /** 清单解析/校验失败原因；合法插件为空串 */
+  error: string;
+}
+
+/** plugin.json prompts[] 元素（template 支持 {{input}} / {{project.name}} / {{episode.title}}） */
+export interface PluginPromptMeta {
+  id: string;
+  name: string;
+  description?: string;
+  template: string;
+}
+
+/** plugin_get 返回 —— 完整清单（含 prompts） */
+export interface PluginManifestInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author?: string;
+  kind: string;
+  dir: string;
+  prompts: PluginPromptMeta[];
+}
+
+/** 列出 plugins/ 目录下的全部插件（后端同时确保目录存在） */
+export const plugin_list = () => invoke<PluginListItem[]>("plugin_list");
+
+/** 读取单个插件完整清单（pluginId 非法/清单非法/不存在均抛错） */
+export const pluginGet = (pluginId: string) => invoke<PluginManifestInfo>("plugin_get", { pluginId });
+
+/** 渲染插件提示词模板为纯文本（input 对应模板中的 {{input}}，缺省空串） */
+export const pluginRenderPrompt = (pluginId: string, promptId: string, input?: string) =>
+  invoke<{ text: string }>("plugin_render_prompt", { pluginId, promptId, input: input ?? null });
 
 /* ---------------- Story Bible（v2.8.0） ---------------- */
 

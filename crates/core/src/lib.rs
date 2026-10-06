@@ -6,6 +6,7 @@ pub mod jobs;
 pub mod qc;
 pub mod mail;
 pub mod pkg;
+pub mod plugins;
 pub mod skills;
 pub mod providers;
 pub mod settings;

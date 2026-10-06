@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { canvasGet } from "../api-canvas";
-import { skill_list } from "../api-extras";
+import { type PluginListItem, type PluginManifestInfo, pluginGet, pluginRenderPrompt, plugin_list, skill_list } from "../api-extras";
 import { errMsg } from "../api-story";
 import { useT } from "../i18n";
 import type { PlusMenuPane } from "../components/agentchat/constants";
@@ -22,6 +22,9 @@ export function useAgentPlusMenu({ toast }: UseAgentPlusMenuParams) {
   const [linkInput, setLinkInput] = useState("");
   const [canvasNodes, setCanvasNodes] = useState<{ id: string; title: string; type: string; summary: string }[]>([]);
   const [skillNames, setSkillNames] = useState<string[]>([]);
+  /** 插件面板：清单列表 + 当前展开（含 prompts）的插件 */
+  const [plugins, setPlugins] = useState<PluginListItem[]>([]);
+  const [activePlugin, setActivePlugin] = useState<PluginManifestInfo | null>(null);
   /** 输入工具行容器 ref：大＋菜单的定位与外部点击判定锚点 */
   const plusRef = useRef<HTMLDivElement | null>(null);
 
@@ -76,6 +79,39 @@ export function useAgentPlusMenu({ toast }: UseAgentPlusMenuParams) {
     }
   };
 
+  /* ---------- 插件面板（prompt-pack 提示词包） ---------- */
+  const loadPlugins = async () => {
+    try {
+      setActivePlugin(null); // 重新打开面板时回到插件列表（清掉上一次展开的插件）
+      setPlugins(await plugin_list());
+    } catch (e) {
+      toast(t("读取插件失败：{msg}", { msg: errMsg(e) }), "err");
+    }
+  };
+
+  /** 点开一个插件：加载完整清单（含 prompts）进入提示词子列表 */
+  const selectPlugin = async (p: PluginListItem) => {
+    if (!p.valid) return;
+    try {
+      setActivePlugin(await pluginGet(p.id));
+    } catch (e) {
+      toast(t("获取插件详情失败：{msg}", { msg: errMsg(e) }), "err");
+    }
+  };
+
+  const backToPluginList = () => setActivePlugin(null);
+
+  /** 渲染插件提示词 → 返回文本（失败 toast 并返回 null，由调用方决定插入与关闭） */
+  const renderPluginPrompt = async (pluginId: string, promptId: string, input: string): Promise<string | null> => {
+    try {
+      const r = await pluginRenderPrompt(pluginId, promptId, input);
+      return r.text;
+    } catch (e) {
+      toast(t("插件提示词渲染失败：{msg}", { msg: errMsg(e) }), "err");
+      return null;
+    }
+  };
+
   // 大＋菜单：点击外部 / Esc 关闭（与小＋完全独立，互不触发）
   useEffect(() => {
     if (!plusMenu) return;
@@ -102,6 +138,12 @@ export function useAgentPlusMenu({ toast }: UseAgentPlusMenuParams) {
     skillNames,
     loadCanvasNodes,
     loadSkills,
+    plugins,
+    activePlugin,
+    loadPlugins,
+    selectPlugin,
+    backToPluginList,
+    renderPluginPrompt,
     plusRef,
   };
 }

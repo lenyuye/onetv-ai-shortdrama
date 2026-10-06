@@ -107,6 +107,12 @@ export default function AgentChatView() {
     skillNames,
     loadCanvasNodes,
     loadSkills,
+    plugins,
+    activePlugin,
+    loadPlugins,
+    selectPlugin,
+    backToPluginList,
+    renderPluginPrompt,
     plusRef,
   } = useAgentPlusMenu({ toast });
 
@@ -300,6 +306,25 @@ export default function AgentChatView() {
     setInput((v) => (v && !v.endsWith(" ") ? `${v} ${tpl}` : v + tpl));
   };
 
+  /** 插件提示词渲染：结果插入输入框（与「调用工具」模板同路径），成功后收起菜单 */
+  const handlePluginPrompt = async (pluginId: string, promptId: string, input: string) => {
+    const text = await renderPluginPrompt(pluginId, promptId, input);
+    if (text === null) return;
+    selectToolTemplate(text);
+    setPlusMenu(null);
+    toast(t("插件提示词已插入输入框"), "ok");
+  };
+
+  /** 打开应用数据目录 plugins/ 文件夹（插件空态引导） */
+  const openPluginsDir = async () => {
+    try {
+      const info = await api.appInfo();
+      await api.assetOpen(`${info.dataDir}/plugins`);
+    } catch (e) {
+      toast(t("打开失败：{msg}", { msg: story.errMsg(e) }), "err");
+    }
+  };
+
   return (
     <div style={{ display: "flex", height: "100%", minHeight: 0 }}>
       {/* 会话侧栏（v2.6.3）：多会话新建/切换/重命名/删除，各会话独立上下文 */}
@@ -403,9 +428,16 @@ export default function AgentChatView() {
                 onLinkInputChange={setLinkInput}
                 canvasNodes={canvasNodes}
                 skillNames={skillNames}
+                plugins={plugins}
+                activePlugin={activePlugin}
                 onAddExtra={addExtra}
                 onLoadCanvasNodes={() => { void loadCanvasNodes(); }}
                 onLoadSkills={() => { void loadSkills(); }}
+                onLoadPlugins={() => { void loadPlugins(); }}
+                onSelectPlugin={(p) => { void selectPlugin(p); }}
+                onPluginBack={backToPluginList}
+                onRenderPrompt={(pluginId, promptId, input) => { void handlePluginPrompt(pluginId, promptId, input); }}
+                onOpenPluginsDir={() => { void openPluginsDir(); }}
                 onSelectTool={selectToolTemplate}
                 onPickFile={() => { void importAttachment(); }}
               />

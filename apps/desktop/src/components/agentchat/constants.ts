@@ -96,8 +96,8 @@ export type PendingExtra =
   | { kind: "skill"; name: string }
   | { kind: "tool"; name: string };
 
-/** 大＋功能菜单面板：null=关闭，root/link/node/skill/tool=对应面板 */
-export type PlusMenuPane = null | "root" | "link" | "node" | "skill" | "tool";
+/** 大＋功能菜单面板：null=关闭，root/link/node/skill/tool/plugin=对应面板 */
+export type PlusMenuPane = null | "root" | "link" | "node" | "skill" | "tool" | "plugin";
 
 /** 预置工具指令模板（Codex 式：选择即插入输入框，由 Agent 意图路由执行） */
 export const TOOL_PRESETS: { name: string; tpl: string }[] = [

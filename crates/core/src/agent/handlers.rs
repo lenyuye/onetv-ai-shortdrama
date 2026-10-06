@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use parking_lot::RwLock;
 use serde_json::json;
 
 use crate::agent::tools::{ScriptDoc, SCRIPT_SYSTEM_PROMPT};
@@ -14,7 +13,7 @@ use crate::providers::mock;
 use crate::providers::ollama;
 use crate::providers::openai::{self, ChatMessage};
 use crate::providers::router::ModelRouter;
-use crate::providers::{Capability, ProviderDriverKind, ProviderRegistry};
+use crate::providers::{Capability, ProviderDriverKind};
 
 use super::AgentEnv;
 

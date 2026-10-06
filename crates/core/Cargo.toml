@@ -27,6 +27,9 @@ zip = { workspace = true }
 sha2 = { workspace = true }
 hmac = "0.12"
 hex = { workspace = true }
+# 工程包加密（ONETVENC1）：AES-256-GCM + PBKDF2-HMAC-SHA256（v2.20）
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
 lettre = { workspace = true }
 
 [dev-dependencies]

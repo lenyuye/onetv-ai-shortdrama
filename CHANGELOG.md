@@ -2,6 +2,14 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.21.0] — v2.21.0：AES 加密工程包 + Plugin SDK 完整实现（backlog 批二）
+
+### 追加
+- **🔐 AES 加密工程包**：`ONETVENC1` 格式（PBKDF2-HMAC-SHA256 120k 轮 + AES-256-GCM）——导出可选密码加密，导入自动探测密包并弹密码框（错误密码/篡改可读报错）；无密码导出与旧版字节级兼容；加解密全在 spawn_blocking。项目页「🔐 加密」与导入密码框。
+- **🧩 Plugin SDK 最小完整版**：`plugins/` 提示词包（plugin.json：id/semver/kind 白名单/prompts 模板）——plugin_list 升级（坏插件标错不崩）+ plugin_get + plugin_render_prompt（`{{input}}`/`{{project.name}}`/`{{episode.title}}` 渲染，纯文本拼接零代码执行，路径 canonicalize 双保险）；大＋菜单恢复「插件」面板（列表/详情/{{input}} 输入/渲染插入输入框/打开插件目录）。附带示例插件一枚（app_data/plugins/demo-pack）。
+- **ComfyUI 测试扩展**：Mock 服务器新增 8 场景（error/failed/node_errors/HTTP 500/view 404/超时注入/vars 边界/seed 随机性）；**修复真 bug**：/history 返回 `failed` 状态时此前只识别 `error`，会白轮询 30 分钟才超时；轮询预算参数化（生产路径行为不变）。
+- 清理全部 unused 类 clippy warning（6 处历史遗留）。
+
 ## [2.20.0] — v2.20.0：省盘入库 + UI 冒烟脚本化 + i18n 收尾 + 开源准备（backlog 批一）
 
 ### 追加

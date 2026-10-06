@@ -276,12 +276,30 @@ async fn upload_image(
 pub async fn run_workflow(
     gw: &Gateway,
     profile: &ProviderProfile,
-    mut workflow: serde_json::Value,
+    workflow: serde_json::Value,
     image: Option<&std::path::Path>,
     out_dir: &std::path::Path,
     cancel: impl Fn() -> bool,
     // 轮询进度回调（0.0~1.0，按已用时间/超时估算；v2.9.1 接入 job progress）
     on_progress: impl Fn(f64),
+) -> GatewayResult<Vec<std::path::PathBuf>> {
+    // 轮询预算：生视频可能数十分钟，取 timeout_ms 与 30 分钟较大者。
+    // 预算独立成参传给实现（测试注入短预算以覆盖超时路径，生产行为不变）
+    run_workflow_impl(gw, profile, workflow, image, out_dir, cancel, on_progress, profile.timeout_ms.max(1_800_000))
+        .await
+}
+
+/// run_workflow 实现：`budget_ms` 为轮询超时预算（毫秒），独立成参便于测试注入。
+#[allow(clippy::too_many_arguments)]
+async fn run_workflow_impl(
+    gw: &Gateway,
+    profile: &ProviderProfile,
+    mut workflow: serde_json::Value,
+    image: Option<&std::path::Path>,
+    out_dir: &std::path::Path,
+    cancel: impl Fn() -> bool,
+    on_progress: impl Fn(f64),
+    budget_ms: u64,
 ) -> GatewayResult<Vec<std::path::PathBuf>> {
     // 首帧参考图：上传后填入所有 LoadImage 类节点（WanImageToVideo / LoadImage 等）
     if let Some(img_path) = image {
@@ -320,12 +338,10 @@ pub async fn run_workflow(
         .ok_or_else(|| GatewayError::Parse(format!("ComfyUI 响应缺少 prompt_id: {resp}")))?
         .to_string();
 
-    // 轮询（生视频可能数十分钟，取 timeout_ms 与 30 分钟较大者）
+    // 轮询（budget_ms 由 run_workflow 计算：生视频可能数十分钟，取 timeout_ms 与 30 分钟较大者）
     let history_url = api(&profile.base_url, &format!("history/{prompt_id}"));
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_millis(profile.timeout_ms.max(1_800_000));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(budget_ms);
     let started = std::time::Instant::now();
-    let budget_ms = profile.timeout_ms.max(1_800_000);
     let mut outputs: Vec<(String, String, String)> = Vec::new(); // (filename, subfolder, type)
     loop {
         if cancel() {
@@ -341,12 +357,12 @@ pub async fn run_workflow(
             .send_json(profile, reqwest::Method::GET, &history_url, vec![], None, egress)
             .await?;
         let Some(entry) = hist.get(&prompt_id) else { continue };
-        let status_err = entry
+        let status_str = entry
             .get("status")
             .and_then(|s| s.get("status_str"))
-            .and_then(|v| v.as_str())
-            == Some("error");
-        if status_err {
+            .and_then(|v| v.as_str());
+        // 修复：此前只识别 "error"，部分分支/包装层报 "failed" 时会一直轮询到超时
+        if matches!(status_str, Some("error") | Some("failed")) {
             return Err(GatewayError::Parse("ComfyUI 工作流执行失败（检查模型/节点显存）".into()));
         }
         let completed = entry
@@ -404,13 +420,40 @@ pub async fn run_workflow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::{ProviderDriverKind, ProviderProfile};
+    use parking_lot::Mutex;
     use serde_json::json;
     use std::sync::Arc;
-    use parking_lot::Mutex;
+
+    /* ---------------- Mock ComfyUI 服务器（行为可按场景配置） ---------------- */
+
+    #[derive(Default)]
+    struct MockCfg {
+        /// /history 返回空对象（任务进行中）的轮询次数；usize::MAX = 永不完成（测超时）
+        history_empty_polls: usize,
+        /// /history 就绪后返回的 (status_str, completed)；None = 成功 + 双产物
+        history_status: Option<(&'static str, bool)>,
+        /// /prompt HTTP 状态码（默认 200）
+        prompt_status: u16,
+        /// /prompt 自定义响应体（如 node_errors、缺少 prompt_id 的场景）
+        prompt_body: Option<serde_json::Value>,
+        /// /view HTTP 状态码（默认 200）
+        view_status: u16,
+    }
+
+    fn http_status_line(code: u16) -> &'static str {
+        match code {
+            200 => "200 OK",
+            404 => "404 Not Found",
+            500 => "500 Internal Server Error",
+            _ => "200 OK",
+        }
+    }
 
     /// 极简 ComfyUI Mock 服务器：真实 HTTP 全链路（upload/prompt/history/view），
-    /// 用于无 GPU 环境实测 run_workflow 管线。阻塞线程 + std TcpListener。
-    fn spawn_mock_comfy(history_empty_polls: usize) -> (String, Arc<Mutex<serde_json::Value>>, Arc<Mutex<serde_json::Value>>) {
+    /// 用于无 GPU 环境实测 run_workflow 管线。阻塞线程 + std TcpListener，
+    /// 每个测试起独立端口/实例，按 MockCfg 配置错误场景。
+    fn spawn_mock_comfy(cfg: MockCfg) -> (String, Arc<Mutex<serde_json::Value>>, Arc<Mutex<serde_json::Value>>) {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -464,19 +507,30 @@ mod tests {
                 } else if first_line.starts_with("POST /prompt") {
                     let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or(json!({}));
                     *submitted2.lock() = v.get("prompt").cloned().unwrap_or(json!({}));
-                    respond(&mut stream, "200 OK", "application/json", json!({"prompt_id": "test-job-1"}).to_string().into_bytes());
+                    let resp_body = cfg
+                        .prompt_body
+                        .clone()
+                        .unwrap_or_else(|| json!({"prompt_id": "test-job-1"}));
+                    respond(&mut stream, http_status_line(cfg.prompt_status), "application/json", resp_body.to_string().into_bytes());
                 } else if first_line.starts_with("GET /history/") {
                     let n = polls.fetch_add(1, Ordering::SeqCst);
-                    if n < history_empty_polls {
+                    if n < cfg.history_empty_polls {
                         respond(&mut stream, "200 OK", "application/json", b"{}".to_vec());
                     } else {
+                        let (status_str, completed) = cfg.history_status.unwrap_or(("success", true));
+                        // 默认成功态带双产物（SaveImage png + SaveWEBM webm）；错误态只带状态
+                        let outputs = if cfg.history_status.is_none() {
+                            json!({
+                                "11": {"images": [{"filename": "onetv_frame.png", "subfolder": "", "type": "output"}]},
+                                "12": {"gifs": [{"filename": "onetv_video.webm", "subfolder": "vhs", "type": "output"}]}
+                            })
+                        } else {
+                            json!({})
+                        };
                         let hist = json!({
                             "test-job-1": {
-                                "status": {"completed": true, "status_str": "success"},
-                                "outputs": {
-                                    "11": {"images": [{"filename": "onetv_frame.png", "subfolder": "", "type": "output"}]},
-                                    "12": {"gifs": [{"filename": "onetv_video.webm", "subfolder": "vhs", "type": "output"}]}
-                                }
+                                "status": {"completed": completed, "status_str": status_str},
+                                "outputs": outputs
                             }
                         });
                         respond(&mut stream, "200 OK", "application/json", hist.to_string().into_bytes());
@@ -484,7 +538,7 @@ mod tests {
                 } else if first_line.starts_with("GET /view") {
                     // 按 query 里的 filename 产出可区分的字节
                     let marker: &[u8] = if first_line.contains("onetv_frame.png") { b"PNG-DATA" } else { b"WEBM-DATA" };
-                    respond(&mut stream, "200 OK", "application/octet-stream", marker.to_vec());
+                    respond(&mut stream, http_status_line(cfg.view_status), "application/octet-stream", marker.to_vec());
                 } else {
                     respond(&mut stream, "200 OK", "application/json", b"{}".to_vec());
                 }
@@ -493,17 +547,26 @@ mod tests {
         (addr, submitted, uploaded)
     }
 
-    #[tokio::test]
-    async fn run_workflow_end_to_end_against_mock_comfy() {
-        use crate::providers::{ProviderDriverKind, ProviderProfile};
-
-        let (addr, submitted, uploaded) = spawn_mock_comfy(2);
-
-        let dir = tempfile::tempdir().unwrap();
-        let audit = std::sync::Arc::new(onetv_security::audit::AuditLog::new(dir.path()).unwrap());
-        let gw = Gateway::new(std::sync::Arc::new(parking_lot::RwLock::new(onetv_security::NetworkPolicy::new(false))), audit);
+    /// 测试用网关 + Local-only 策略 + ComfyUI profile（base_url 指向 Mock 端口）
+    fn test_gateway_and_profile(addr: &str, dir: &std::path::Path) -> (Gateway, ProviderProfile) {
+        let audit = std::sync::Arc::new(onetv_security::audit::AuditLog::new(dir).unwrap());
+        let gw = Gateway::new(
+            std::sync::Arc::new(parking_lot::RwLock::new(onetv_security::NetworkPolicy::new(false))),
+            audit,
+        );
         let mut profile = ProviderProfile::new("comfy-mock", ProviderDriverKind::Comfyui, &format!("http://{addr}"));
         profile.auth.auth_type = "none".into();
+        (gw, profile)
+    }
+
+    /* ---------------- run_workflow：正常双产物路径（v2.9.1 已有） ---------------- */
+
+    #[tokio::test]
+    async fn run_workflow_end_to_end_against_mock_comfy() {
+        let (addr, submitted, uploaded) = spawn_mock_comfy(MockCfg { history_empty_polls: 2, ..Default::default() });
+
+        let dir = tempfile::tempdir().unwrap();
+        let (gw, profile) = test_gateway_and_profile(&addr, dir.path());
 
         // Wan 风格工作流：占位符 + 数值占位 + LoadImage
         let mut wf = json!({
@@ -573,5 +636,152 @@ mod tests {
         let mut wf2 = json!({"3": {"class_type": "KSampler", "inputs": {"seed": 42}}});
         patch_workflow(&mut wf2, "x", "");
         assert_eq!(wf2["3"]["inputs"]["seed"], json!(42));
+    }
+
+    /* ---------------- v2.9.1 补充：run_workflow 错误路径 ---------------- */
+
+    /// /history 返回 status_str="error" → 应立即报中文可读错误（而非轮询到超时）
+    #[tokio::test]
+    async fn run_workflow_history_error_status_reports_readable_error() {
+        let (addr, _submitted, _uploaded) =
+            spawn_mock_comfy(MockCfg { history_status: Some(("error", false)), ..Default::default() });
+        let dir = tempfile::tempdir().unwrap();
+        let (gw, profile) = test_gateway_and_profile(&addr, dir.path());
+
+        let wf = json!({"9": {"class_type": "SaveWEBM", "inputs": {}}});
+        let err = run_workflow(&gw, &profile, wf, None, &dir.path().join("out"), || false, |_| {})
+            .await
+            .expect_err("status_str=error 应报错");
+        assert!(err.to_string().contains("ComfyUI 工作流执行失败"), "实际错误: {err}");
+    }
+
+    /// /history 返回 status_str="failed"（部分分支/包装层的写法）→ 同样应报可读错误
+    /// （回归：修复前只识别 "error"，"failed" 会一直轮询到 30 分钟超时）
+    #[tokio::test]
+    async fn run_workflow_history_failed_status_reports_readable_error() {
+        let (addr, _submitted, _uploaded) =
+            spawn_mock_comfy(MockCfg { history_status: Some(("failed", false)), ..Default::default() });
+        let dir = tempfile::tempdir().unwrap();
+        let (gw, profile) = test_gateway_and_profile(&addr, dir.path());
+
+        let wf = json!({"9": {"class_type": "SaveWEBM", "inputs": {}}});
+        let err = run_workflow(&gw, &profile, wf, None, &dir.path().join("out"), || false, |_| {})
+            .await
+            .expect_err("status_str=failed 应报错");
+        assert!(err.to_string().contains("ComfyUI 工作流执行失败"), "实际错误: {err}");
+    }
+
+    /// /prompt 200 但返回 node_errors（无 prompt_id）→ 应报可读错误
+    #[tokio::test]
+    async fn run_workflow_prompt_node_errors_reports_readable_error() {
+        let (addr, _submitted, _uploaded) = spawn_mock_comfy(MockCfg {
+            prompt_body: Some(json!({
+                "node_errors": {
+                    "3": {"errors": [{"type": "value_not_in_list", "message": "ckpt_name invalid"}]}
+                }
+            })),
+            ..Default::default()
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (gw, profile) = test_gateway_and_profile(&addr, dir.path());
+
+        let wf = json!({"9": {"class_type": "SaveWEBM", "inputs": {}}});
+        let err = run_workflow(&gw, &profile, wf, None, &dir.path().join("out"), || false, |_| {})
+            .await
+            .expect_err("node_errors 响应应报错");
+        assert!(err.to_string().contains("缺少 prompt_id"), "实际错误: {err}");
+    }
+
+    /// /prompt 非 200 → 应报带状态码的错误
+    #[tokio::test]
+    async fn run_workflow_prompt_http_500_reports_error() {
+        let (addr, _submitted, _uploaded) =
+            spawn_mock_comfy(MockCfg { prompt_status: 500, ..Default::default() });
+        let dir = tempfile::tempdir().unwrap();
+        let (gw, profile) = test_gateway_and_profile(&addr, dir.path());
+
+        let wf = json!({"9": {"class_type": "SaveWEBM", "inputs": {}}});
+        let err = run_workflow(&gw, &profile, wf, None, &dir.path().join("out"), || false, |_| {})
+            .await
+            .expect_err("prompt 500 应报错");
+        assert!(err.to_string().contains("HTTP 500"), "实际错误: {err}");
+    }
+
+    /// /history 正常完成但 /view 下载 404 → 应报带状态码的错误
+    #[tokio::test]
+    async fn run_workflow_view_404_reports_error() {
+        let (addr, _submitted, _uploaded) = spawn_mock_comfy(MockCfg { view_status: 404, ..Default::default() });
+        let dir = tempfile::tempdir().unwrap();
+        let (gw, profile) = test_gateway_and_profile(&addr, dir.path());
+
+        let wf = json!({"9": {"class_type": "SaveWEBM", "inputs": {}}});
+        let err = run_workflow(&gw, &profile, wf, None, &dir.path().join("out"), || false, |_| {})
+            .await
+            .expect_err("view 404 应报错");
+        assert!(err.to_string().contains("HTTP 404"), "实际错误: {err}");
+    }
+
+    /// /history 一直 running（completed 永不为 true）→ 轮询预算耗尽后报超时。
+    /// 通过 run_workflow_impl 注入 500ms 短预算（生产路径预算恒 ≥ 30 分钟，不受影响）。
+    #[tokio::test]
+    async fn run_workflow_history_timeout_reports_readable_error() {
+        let (addr, _submitted, _uploaded) =
+            spawn_mock_comfy(MockCfg { history_empty_polls: usize::MAX, ..Default::default() });
+        let dir = tempfile::tempdir().unwrap();
+        let (gw, profile) = test_gateway_and_profile(&addr, dir.path());
+
+        let wf = json!({"9": {"class_type": "SaveWEBM", "inputs": {}}});
+        let err = run_workflow_impl(&gw, &profile, wf, None, &dir.path().join("out"), || false, |_| {}, 500)
+            .await
+            .expect_err("一直 running 应超时");
+        assert!(err.to_string().contains("ComfyUI 工作流执行超时"), "实际错误: {err}");
+    }
+
+    /* ---------------- patch_workflow_vars / seed 边界 ---------------- */
+
+    #[test]
+    fn workflow_patch_vars_edge_cases() {
+        let mut wf = json!({
+            "1": {"class_type": "WanImageToVideo", "inputs": {
+                "width": "__width__",
+                "height": " __height__ ",
+                "length": "__frames__",
+                "batch": "__unknown__",
+                "prefix": "prefix__width__",
+                "steps": 20,
+                "cfg": 7.5
+            }}
+        });
+        patch_workflow_vars(&mut wf, &[("width", json!(480)), ("height", json!(832)), ("frames", json!(81))]);
+        // 整串占位符 → 替换为数值
+        assert_eq!(wf["1"]["inputs"]["width"], json!(480));
+        assert_eq!(wf["1"]["inputs"]["length"], json!(81));
+        // 前后带空白的整串占位符（trim 后匹配）→ 同样替换
+        assert_eq!(wf["1"]["inputs"]["height"], json!(832));
+        // 未知 token、部分嵌入的 token → 原样保留
+        assert_eq!(wf["1"]["inputs"]["batch"], json!("__unknown__"));
+        assert_eq!(wf["1"]["inputs"]["prefix"], json!("prefix__width__"));
+        // 非字符串输入不受影响
+        assert_eq!(wf["1"]["inputs"]["steps"], json!(20));
+        assert_eq!(wf["1"]["inputs"]["cfg"], json!(7.5));
+
+        // 非 object 工作流：不 panic、原样返回
+        let mut arr = json!([1, 2, 3]);
+        patch_workflow_vars(&mut arr, &[("width", json!(480))]);
+        assert_eq!(arr, json!([1, 2, 3]));
+    }
+
+    /// seed=0 → 每次调用随机：两次调用应得到不同的非 0 值
+    #[test]
+    fn patch_workflow_zero_seed_differs_between_calls() {
+        let mut wf1 = json!({"3": {"class_type": "KSampler", "inputs": {"seed": 0}}});
+        let mut wf2 = json!({"3": {"class_type": "KSampler", "inputs": {"seed": 0}}});
+        patch_workflow(&mut wf1, "a", "");
+        patch_workflow(&mut wf2, "a", "");
+        let s1 = wf1["3"]["inputs"]["seed"].as_u64().unwrap();
+        let s2 = wf2["3"]["inputs"]["seed"].as_u64().unwrap();
+        assert_ne!(s1, 0, "seed=0 应被随机化");
+        assert_ne!(s2, 0, "seed=0 应被随机化");
+        assert_ne!(s1, s2, "两次调用应得到不同随机 seed（s1={s1}, s2={s2}）");
     }
 }

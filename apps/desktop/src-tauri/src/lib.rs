@@ -6,9 +6,8 @@ use std::sync::Arc;
 
 use onetv_core::agent::executor::Executor;
 use onetv_core::agent::{route_intent, AgentEnv, Plan};
-use onetv_core::jobs::{EventSink, JobKind, JobManager};
+use onetv_core::jobs::{EventSink, JobManager};
 use onetv_core::providers::gateway::Gateway;
-use onetv_core::providers::router::ModelRouter;
 use onetv_core::providers::{Capability, ProviderDriverKind, ProviderRegistry};
 use onetv_core::{AppSettings, SettingsStore};
 use onetv_media::MediaLocator;
@@ -1705,39 +1704,67 @@ fn video_understand(
 async fn project_export_pkg(
     state: tauri::State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
+    passphrase: Option<String>,
 ) -> Result<serde_json::Value, CommandError> {
     let (root, manifest) = open_ctx(&state)?;
     let default_name = format!("{}.ytv.zip", manifest.project.title);
     let Some(dest) = save_path(&app, "导出工程包".into(), default_name).await else {
         return Err(err("已取消"));
     };
-    // zip 打包为重 IO：放阻塞线程池（v2.12.0）
-    let path = tokio::task::spawn_blocking(move || onetv_core::pkg::export_project(&root, &dest))
-        .await
-        .map_err(|e| err(e.to_string()))?
-        .map_err(err)?;
+    // 空串视同 None（= 明文导出）；加解密为重 CPU/IO：放阻塞线程池（v2.20）
+    let passphrase = passphrase.filter(|p| !p.trim().is_empty());
+    let encrypted = passphrase.is_some();
+    let path = tokio::task::spawn_blocking(move || {
+        onetv_core::pkg::export_project(&root, &dest, passphrase.as_deref())
+    })
+    .await
+    .map_err(|e| err(e.to_string()))?
+    .map_err(err)?;
     state.audit.record("project.export_pkg", &path.to_string_lossy(), None);
-    Ok(serde_json::json!({ "ok": true, "path": path.to_string_lossy() }))
+    Ok(serde_json::json!({ "ok": true, "path": path.to_string_lossy(), "encrypted": encrypted }))
 }
 
 #[tauri::command]
 async fn project_import_pkg(
     state: tauri::State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
+    passphrase: Option<String>,
+    zip_path: Option<String>,
+    parent_path: Option<String>,
 ) -> Result<serde_json::Value, CommandError> {
-    let Some(zip_path) = pick_path(&app, "选择 .ytv.zip 工程包".into(), false).await else {
-        return Err(err("已取消"));
+    // 重试场景：前端已拿到 zipPath/parentPath（needsPassphrase 返回），跳过文件选择框
+    let zip_path = match zip_path.filter(|p| !p.is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => pick_path(&app, "选择 .ytv.zip 工程包".into(), false)
+            .await
+            .ok_or_else(|| err("已取消"))?,
     };
-    let Some(parent) = pick_path(&app, "选择导入位置".into(), true).await else {
-        return Err(err("已取消"));
+    let parent = match parent_path.filter(|p| !p.is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => pick_path(&app, "选择导入位置".into(), true)
+            .await
+            .ok_or_else(|| err("已取消"))?,
     };
-    // zip 解压为重 IO：放阻塞线程池（v2.12.0）
+    let passphrase = passphrase.filter(|p| !p.trim().is_empty());
+    // zip 解压/解密为重 IO：放阻塞线程池（v2.12.0；v2.20 增加密包解密）
     let zip2 = zip_path.clone();
     let parent2 = parent.clone();
-    let path = tokio::task::spawn_blocking(move || onetv_core::pkg::import_project(&zip2, &parent2))
-        .await
-        .map_err(|e| err(e.to_string()))?
-        .map_err(err)?;
+    let imported =
+        tokio::task::spawn_blocking(move || onetv_core::pkg::import_project(&zip2, &parent2, passphrase.as_deref()))
+            .await
+            .map_err(|e| err(e.to_string()))?;
+    let path = match imported {
+        Ok(p) => p,
+        // 结构化返回：前端据此弹密码框并携带 zipPath/parentPath + 密码重试
+        Err(onetv_core::pkg::PkgError::PassphraseRequired) => {
+            return Ok(serde_json::json!({
+                "needsPassphrase": true,
+                "zipPath": zip_path.to_string_lossy(),
+                "parentPath": parent.to_string_lossy(),
+            }));
+        }
+        Err(e) => return Err(err(e)),
+    };
     state.audit.record("project.import_pkg", &path.to_string_lossy(), None);
     // 自动打开导入的工程
     let (handle, manifest) = ops::open_project(&path).map_err(err)?;
@@ -2190,31 +2217,64 @@ async fn webhook_dispatch(
     }
 }
 
-/* ---------------- Plugin SDK 框架（v2.15，规格 §22 占位→最小实现） ---------------- */
+/* ---------------- Plugin SDK（v2.15 框架版 → 最小完整版：prompt-pack 提示词包） ---------------- */
 
-/// 插件清单（plugin.json）：plugin-id + 入口（workflows/ 提示词包，与 Skill 同安全模型）。
-/// v2.15 框架版：注册/列举/调用（提示词包拼接），不加载任意代码（安全边界与 Skill 一致）。
+/// 插件 = 提示词包（plugin.json，契约与 Skill 对齐）。
+/// 只做清单解析/校验/模板渲染 —— 不加载任意代码、不做网络请求（安全边界与 Skill 一致）。
 #[tauri::command]
-fn plugin_list(state: TState) -> Vec<serde_json::Value> {
+async fn plugin_list(_state: TState<'_>) -> Result<Vec<serde_json::Value>, CommandError> {
     let dir = onetv_core::app_data_dir().join("plugins");
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let mf = e.path().join("plugin.json");
-            if let Ok(raw) = std::fs::read_to_string(&mf) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
-                    out.push(serde_json::json!({
-                        "id": v.get("id").and_then(|x| x.as_str()).unwrap_or_default(),
-                        "name": v.get("name").and_then(|x| x.as_str()).unwrap_or_default(),
-                        "version": v.get("version").and_then(|x| x.as_str()).unwrap_or_default(),
-                        "description": v.get("description").and_then(|x| x.as_str()).unwrap_or_default(),
-                        "dir": e.path().to_string_lossy(),
-                    }));
-                }
-            }
+    // 目录扫描是文件 IO 重活：spawn_blocking（构造 Hub 时顺带确保目录存在，供「打开插件目录」）
+    let items = tokio::task::spawn_blocking(move || onetv_core::plugins::PluginHub::new(&dir).list())
+        .await
+        .map_err(err)?;
+    Ok(items
+        .iter()
+        .map(|it| serde_json::to_value(it).unwrap_or_else(|_| serde_json::json!({ "dir": it.dir, "valid": false })))
+        .collect())
+}
+
+/// 读取单个插件完整清单（含 prompts）。pluginId 非法/清单非法/不存在均返回结构化错误。
+#[tauri::command]
+fn plugin_get(_state: TState, plugin_id: String) -> Result<serde_json::Value, CommandError> {
+    let dir = onetv_core::app_data_dir().join("plugins");
+    let hub = onetv_core::plugins::PluginHub::new(&dir);
+    let m = hub.get(&plugin_id).map_err(err)?;
+    Ok(serde_json::json!({
+        "id": m.id, "name": m.name, "version": m.version,
+        "description": m.description, "author": m.author, "kind": m.kind,
+        "dir": dir.join(&m.id).to_string_lossy(),
+        "prompts": m.prompts,
+    }))
+}
+
+/// 渲染插件提示词模板为纯文本（{{input}} / {{project.name}} / {{episode.title}}；
+/// 上下文取当前项目名与第一分集标题，取不到留空）。
+/// 安全红线：纯文本拼接，不执行插件代码、无网络；路径锁定在 plugins/ 内。
+#[tauri::command]
+fn plugin_render_prompt(
+    state: TState,
+    plugin_id: String,
+    prompt_id: String,
+    input: Option<String>,
+) -> Result<serde_json::Value, CommandError> {
+    let ctx = {
+        let p = state.project.read();
+        onetv_core::plugins::RenderContext {
+            project_name: p.manifest.as_ref().map(|m| m.project.title.clone()),
+            episode_title: p
+                .manifest
+                .as_ref()
+                .and_then(|m| m.episodes.first().map(|e| e.title.clone())),
         }
-    }
-    out
+    };
+    let dir = onetv_core::app_data_dir().join("plugins");
+    let hub = onetv_core::plugins::PluginHub::new(&dir);
+    let text = hub
+        .render_prompt(&plugin_id, &prompt_id, input.as_deref(), &ctx)
+        .map_err(err)?;
+    state.audit.record("plugin.render_prompt", &plugin_id, None);
+    Ok(serde_json::json!({ "text": text }))
 }
 
 /* ---------------- 画布批量运行（v2.14，规格 §7：condition/review 语义 + 禁用） ---------------- */
@@ -3724,7 +3784,7 @@ pub fn run() {
                 responder.respond(resp);
             });
         })
-        .register_uri_scheme_protocol("onetv-app", |ctx, request| {
+        .register_uri_scheme_protocol("onetv-app", |_ctx, request| {
             serve_app_file(request.uri())
         })
         .setup(move |app| {
@@ -3922,6 +3982,8 @@ pub fn run() {
             webhook_listen_start,
             webhook_listen_stop,
             plugin_list,
+            plugin_get,
+            plugin_render_prompt,
             provider_export,
             provider_import,
             bible_save,
