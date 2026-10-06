@@ -197,7 +197,39 @@ pub fn chat_reply_handler(env: Arc<AgentEnv>) -> JobHandler {
                     }
                 }
             }
-            messages.push(ChatMessage::user(text));
+            // 自动记忆注入（v2.26.15）：开启时把与本次消息最相关的长期记忆作为系统上下文；
+            // 关闭时与旧版行为一致（记忆仅手动 CRUD，不参与生成）。
+            if env.auto_memory() {
+                match onetv_project::ops::search_memories(&ctx.root, &text, 5) {
+                    Ok(hits) => {
+                        let mut items: Vec<String> = hits
+                            .into_iter()
+                            .filter(|(_, score)| *score >= 0.12)
+                            .map(|(m, _)| format!("- {}", m.text))
+                            .collect();
+                        if items.is_empty() {
+                            if let Ok(recent) = onetv_project::ops::list_memories(&ctx.root) {
+                                items = recent
+                                    .into_iter()
+                                    .take(3)
+                                    .map(|m| format!("- {}", m.text))
+                                    .collect();
+                            }
+                        }
+                        if !items.is_empty() {
+                            messages.insert(
+                                1,
+                                ChatMessage::system(format!(
+                                    "以下是用户的长期记忆（本机私有存储，供参考）：\n{}",
+                                    items.join("\n")
+                                )),
+                            );
+                        }
+                    }
+                    Err(e) => tracing::warn!("记忆注入失败: {e}"),
+                }
+            }
+            messages.push(ChatMessage::user(text.clone()));
             // 流式（v2.6.2）：OpenAI 兼容驱动逐 delta 经 ctx.stream_delta 推送；
             // 其他驱动仍一次性返回（前端只收完整回复，行为不变）。
             // quiet（节点面板直发）不推流，回复由面板轮询消费
@@ -219,9 +251,100 @@ pub fn chat_reply_handler(env: Arc<AgentEnv>) -> JobHandler {
             if !quiet {
                 env.events("agent.message", json!({ "text": reply, "kind": "chat", "jobId": ctx.job_id }));
             }
+            // 自动记忆提取（v2.26.15）：后台异步，不阻塞任务完成、失败不影响回复
+            if env.auto_memory() && !quiet {
+                let env2 = env.clone();
+                let root = ctx.root.clone();
+                let user_text = text.clone();
+                let reply_text = reply.clone();
+                let ex_provider = provider_id.clone();
+                let ex_model = model.clone();
+                tokio::spawn(async move {
+                    // 复用主回复的同一 Provider/模型——否则自动路由到 Mock 会解析不出记忆
+                    if let Err(e) =
+                        extract_memories(&env2, &root, &user_text, &reply_text, &ex_provider, &ex_model).await
+                    {
+                        tracing::warn!("自动记忆提取失败: {e}");
+                    }
+                });
+            }
             Ok(vec![])
         })
     })
+}
+
+/// 自动记忆提取（v2.26.15）：用当前对话模型从本轮对话中提取 0~3 条值得长期记住的事实，
+/// 与既有记忆去重（二元组余弦 > 0.55 视为重复）后写入项目记忆库。
+async fn extract_memories(
+    env: &AgentEnv,
+    root: &std::path::Path,
+    user_text: &str,
+    reply_text: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<(), String> {
+    let user_text: String = user_text.chars().take(1200).collect();
+    let reply_text: String = reply_text.chars().take(1200).collect();
+    if user_text.trim().chars().count() < 6 {
+        return Ok(()); // 过短（打招呼等）没有记忆价值
+    }
+    let messages = vec![
+        ChatMessage::system(
+            "你是记忆提取器。从用户与助手的对话中提取值得长期记住的信息（用户身份/偏好/项目设定/人物设定/工作习惯等）。             只输出一个 JSON 字符串数组，每项是一句独立、自包含的中文短句（不超过60字）；没有值得记的就输出 []。不要输出任何解释或围栏。",
+        ),
+        ChatMessage::user(format!("用户说：{}\n\n助手答：{}", user_text, reply_text)),
+    ];
+    let (reply, _, _) = llm_chat(
+        env,
+        &messages,
+        false,
+        Some(provider_id),
+        Some(model_id),
+        None,
+    )
+    .await
+    .map_err(|e| e.message)?;
+    for item in parse_memory_items(&reply).into_iter().take(3) {
+        // 去重：与最相似既有记忆比较
+        let dup = onetv_project::ops::search_memories(root, &item, 1)
+            .ok()
+            .and_then(|hits| hits.first().map(|(_, sc)| *sc > 0.55))
+            .unwrap_or(false);
+        if dup {
+            continue;
+        }
+        onetv_project::ops::add_memory(root, &item, "auto")
+            .map_err(|e| format!("写入记忆失败: {e}"))?;
+        tracing::info!("自动记忆已保存: {item}");
+    }
+    Ok(())
+}
+
+/// 宽容解析提取输出：剥围栏、截取首个 JSON 数组、过滤空串与超长项。
+fn parse_memory_items(raw: &str) -> Vec<String> {
+    let s = raw.trim();
+    let s = s
+        .strip_prefix("```json")
+        .or_else(|| s.strip_prefix("```"))
+        .unwrap_or(s)
+        .trim()
+        .strip_suffix("```")
+        .unwrap_or(s)
+        .trim();
+    // 截取首个 '[' 到最后一个 ']'（模型偶尔夹带说明文字）
+    let arr = match (s.find('['), s.rfind(']')) {
+        (Some(a), Some(b)) if b > a => &s[a..=b],
+        _ => return Vec::new(),
+    };
+    serde_json::from_str::<Vec<String>>(arr)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| {
+            let n = t.chars().count();
+            n >= 4 && n <= 80
+        })
+        .collect()
 }
 
 /* ---------------- image.generate / storyboard.image_batch ---------------- */
@@ -1380,4 +1503,34 @@ pub fn video_understand_handler(env: Arc<AgentEnv>) -> JobHandler {
             Ok(vec![out.to_string_lossy().into_owned()])
         })
     })
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::parse_memory_items;
+
+    #[test]
+    fn parse_memory_items_variants() {
+        assert_eq!(parse_memory_items("[]"), Vec::<String>::new());
+        assert_eq!(
+            parse_memory_items("[\"主角叫林晚，27岁刑警\"]"),
+            vec!["主角叫林晚，27岁刑警".to_string()]
+        );
+        // 围栏包裹
+        assert_eq!(
+            parse_memory_items("```json\n[\"用户偏好竖屏 9:16\"]\n```"),
+            vec!["用户偏好竖屏 9:16".to_string()]
+        );
+        // 夹带说明文字
+        assert_eq!(
+            parse_memory_items("提取结果如下：[\"用户在做都市情感短剧\"] 以上。"),
+            vec!["用户在做都市情感短剧".to_string()]
+        );
+        // 非法 JSON / 无数组 → 空
+        assert!(parse_memory_items("没有值得记住的").is_empty());
+        // 过短/过长过滤
+        assert!(parse_memory_items("[\"好的\"]").is_empty());
+        let long = "很".repeat(81);
+        assert!(parse_memory_items(format!("[\"{}\"]", long).as_str()).is_empty());
+    }
 }

@@ -133,6 +133,7 @@ fn settings_update(state: TState, patch: serde_json::Value) -> Result<AppSetting
     state.sync_policy();
     if let Some(agent) = AGENT.get() {
         agent.env.set_offline(out.offline_mode);
+        agent.env.set_auto_memory(out.auto_memory);
         agent.jobs.set_concurrency(out.max_concurrent_jobs);
         agent.env.set_model_defaults(model_defaults_map(&out));
         agent.jobs.set_cost_guard(onetv_core::jobs::CostGuardConfig {
@@ -3976,6 +3977,7 @@ pub fn run() {
             // 设置同步：离线模式 / 并发 / 生成模型默认 / 预算守卫 / QC 媒体定位
             let s = state.settings.get();
             env.set_offline(s.offline_mode);
+            env.set_auto_memory(s.auto_memory);
             jobs.set_concurrency(s.max_concurrent_jobs);
             env.set_model_defaults(model_defaults_map(&s));
             jobs.set_media(state.media.clone());

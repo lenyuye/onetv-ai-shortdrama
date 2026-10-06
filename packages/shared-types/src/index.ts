@@ -522,6 +522,8 @@ export interface AppSettings {
   theme: "dark" | "light";
   language: string;
   offlineMode: boolean;
+  /** 自动记忆（v2.26.15）：对话后自动提取 + 生成时注入上下文 */
+  autoMemory: boolean;
   telemetry: false;
   ffmpegPath?: string;
   ffprobePath?: string;

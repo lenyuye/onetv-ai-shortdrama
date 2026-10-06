@@ -24,6 +24,8 @@ pub struct AgentEnv {
     pub registry: Arc<RwLock<ProviderRegistry>>,
     pub media: MediaLocator,
     offline: Arc<AtomicBool>,
+    /// 自动记忆（v2.26.15）：开启时对话后自动提取记忆并注入上下文
+    auto_memory: Arc<AtomicBool>,
     events_sink: EventSink,
     /// 各能力默认生成模型（设置 → 模型 → 生成模型设置）：
     /// key = chat | image | video | tts；handlers 未显式指定模型时回退到这里。
@@ -42,6 +44,7 @@ impl AgentEnv {
             registry,
             media,
             offline: Arc::new(AtomicBool::new(false)),
+            auto_memory: Arc::new(AtomicBool::new(true)),
             events_sink,
             defaults: RwLock::new(std::collections::HashMap::new()),
         })
@@ -58,6 +61,12 @@ impl AgentEnv {
     }
     pub fn set_offline(&self, v: bool) {
         self.offline.store(v, Ordering::Relaxed);
+    }
+    pub fn auto_memory(&self) -> bool {
+        self.auto_memory.load(Ordering::Relaxed)
+    }
+    pub fn set_auto_memory(&self, v: bool) {
+        self.auto_memory.store(v, Ordering::Relaxed);
     }
     pub fn events(&self, name: &str, payload: serde_json::Value) {
         (self.events_sink)(name, payload);

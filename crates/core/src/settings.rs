@@ -89,6 +89,9 @@ pub struct AppSettings {
     /// 最近一次打开的 .ytv 工程目录绝对路径（None = 未打开过；重启后用于恢复）
     #[serde(default)]
     pub last_project: Option<String>,
+    /// 自动记忆（v2.26.15）：对话后自动提取值得记住的事实存入项目记忆库，并在后续生成时注入上下文
+    #[serde(default = "default_auto_memory", alias = "auto_memory")]
+    pub auto_memory: bool,
     /// 各能力默认生成模型（v2.3.5「生成模型设置」）：
     /// key = chat | image | video | tts（推理/文本同 chat 口），value = provider+model。
     #[serde(default, alias = "model_defaults")]
@@ -105,6 +108,10 @@ pub struct AppSettings {
     /// v2.22 出站 Webhook 回调：任务终态 POST 到用户配置的 URL
     #[serde(default, alias = "webhook_out")]
     pub webhook_out: WebhookOutConfig,
+}
+
+fn default_auto_memory() -> bool {
+    true
 }
 
 fn default_hermes_port() -> u16 {
@@ -151,6 +158,7 @@ impl Default for AppSettings {
             skin: None,
             skin_opacity: default_skin_opacity(),
             last_project: None,
+            auto_memory: default_auto_memory(),
             model_defaults: std::collections::HashMap::new(),
             hermes_url: None,
             hermes_listen_port: default_hermes_port(),

@@ -151,7 +151,7 @@ function MemoryRow({
 }
 
 export function MemoryCard() {
-  const { toast } = useApp();
+  const { toast, settings, patchSettings } = useApp();
   const t = useT();
   const [records, setRecords] = useState<api.MemoryRecord[] | null>(null);
   const [notOpen, setNotOpen] = useState(false);
@@ -310,11 +310,42 @@ export function MemoryCard() {
     setSelected((s) => { const n = new Set(s); if (v) n.add(id); else n.delete(id); return n; });
   };
 
+  const autoMemory = settings?.autoMemory ?? true;
+  const toggleAutoMemory = async (v: boolean) => {
+    try {
+      await patchSettings({ autoMemory: v });
+      toast(v ? t("自动记忆已开启：对话后自动提取，生成时注入上下文") : t("自动记忆已关闭：仅手动管理记忆"), "ok");
+    } catch (e) {
+      toast(t("保存失败：{msg}", { msg: errMsg(e) }), "err");
+    }
+  };
+
   return (
     <div className="card mem-card">
       <h3>{t("🧠 意识模块（记忆）")}</h3>
       <div className="hint" style={{ marginBottom: 8 }}>
         {t("Agent 的长期记忆，随项目保存在本机；生成时作为上下文参考。支持搜索、批量管理与导入导出。")}
+      </div>
+      {/* 自动记忆开关（v2.26.15）：对标 Codex/ZCode 的本地真记忆——提取与注入全在本机 */}
+      <div
+        className="mem-auto-row"
+        style={{
+          display: "flex", alignItems: "center", gap: 8, marginBottom: 10,
+          background: "var(--panel-2)", border: "1px solid var(--border)", borderRadius: 10, padding: "9px 12px",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={autoMemory}
+          onChange={(e) => void toggleAutoMemory(e.target.checked)}
+          id="mem-auto-switch"
+        />
+        <label htmlFor="mem-auto-switch" style={{ fontSize: 12.5 }}>
+          <b>{t("自动记忆")}</b>
+          <span className="hint" style={{ marginLeft: 6 }}>
+            {t("开启后每轮对话自动提取值得记住的信息存入本机，并在后续对话/生成时自动作为上下文（数据不出本机）")}
+          </span>
+        </label>
       </div>
 
       {notOpen ? (
