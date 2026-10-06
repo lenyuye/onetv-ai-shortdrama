@@ -425,7 +425,7 @@ function CanvasWorkbench({
           onClose={() => setBatchPanelOpen(false)}
           onRetry={() => void runBatch(true)}
         />
-        <NodePalette onAdd={addNodeAt} />
+        <NodePalette onAdd={addNodeAt} canvasRef={wrapperRef} />
 
         <CanvasFlowArea
           nodes={nodes}

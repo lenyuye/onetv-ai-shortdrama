@@ -170,7 +170,11 @@ export const useApp = create<AppState>((set, get) => ({
   toasts: [],
   toast: (text, kind = "info") => {
     const id = toastSeq++;
-    set((s) => ({ toasts: [...s.toasts, { id, kind, text }] }));
+    set((s) => {
+      // 栈上限 3:连续操作(如批量删会话)时丢最旧,防止通知堆满半屏
+      const next = [...s.toasts, { id, kind, text }].slice(-3);
+      return { toasts: next };
+    });
     window.setTimeout(() => get().dismissToast(id), 5000);
   },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),

@@ -410,7 +410,13 @@ export default function NodeChatPanel({
             : t("输入提示词")
         }
         disabled={!runnable}
-        onChange={(e) => setPrompt(e.target.value)}
+        onChange={(e) => {
+          setPrompt(e.target.value);
+          // 自适应增高(v2.23):随内容长高,CSS max-height 280px 封顶
+          const el = e.target as HTMLTextAreaElement;
+          el.style.height = "auto";
+          el.style.height = `${Math.min(el.scrollHeight, 280)}px`;
+        }}
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void send(); }
         }}

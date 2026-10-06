@@ -340,7 +340,7 @@
 .node-chat-refmenu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-chat-refthumb { width: 18px; height: 18px; border-radius: 5px; object-fit: cover; }
 .node-chat-prompt {
-  width: 100%; min-height: 52px; max-height: 180px; resize: none; overflow-y: auto;
+  width: 100%; min-height: 112px; max-height: 280px; resize: none; overflow-y: auto;
   background: var(--bg-deep); border: 1px solid var(--border); border-radius: 10px;
   color: var(--text); font-size: 12.5px; padding: 8px 10px; font-family: var(--font);
 }

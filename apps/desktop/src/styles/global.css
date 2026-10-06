@@ -477,7 +477,8 @@ textarea { resize: vertical; min-height: 64px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 900;
+  /* 高于 .toast-wrap(1000):通知绝不遮盖确认对话框 */
+  z-index: 1100;
 }
 .modal {
   background: var(--panel);
@@ -522,7 +523,9 @@ textarea { resize: vertical; min-height: 64px; }
   background-size: cover;
   background-position: center;
 }
-.app-shell > *:not(.skin-layer),
+.topbar,
+.app-body,
+.bottombar,
 .login-card {
   position: relative;
   z-index: 1;

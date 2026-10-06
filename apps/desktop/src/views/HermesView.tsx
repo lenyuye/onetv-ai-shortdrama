@@ -339,7 +339,7 @@ const HERMES_CSS = `
   border-radius: 4px; padding: 1px 5px; word-break: break-all;
 }
 .hm-help b { color: var(--text); }
-.hm-input { min-height: 88px; resize: vertical; }
+.hm-input { width: 100%; min-height: 180px; resize: vertical; }
 .hm-test {
   margin-top: 10px; font-size: 12px; padding: 7px 10px;
   border-radius: var(--radius-sm); word-break: break-all;
