@@ -300,6 +300,13 @@ textarea {
   min-width: 0;
 }
 
+
+/* v2.22 键盘可达性:统一焦点环(仅键盘导航时显示) */
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent, #d04ad8);
+  outline-offset: 1px;
+}
+
 input:focus, textarea:focus {
   border-color: var(--blue);
   box-shadow: 0 0 0 2px rgba(77, 124, 254, 0.18);

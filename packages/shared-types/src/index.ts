@@ -536,6 +536,8 @@ export interface AppSettings {
   modelDefaults?: ModelDefaults;
   /** v2.10 预算守卫：远程生成（生图/生视频/配音）调用额度 */
   costGuard?: { enabled: boolean; dailyRemoteLimit: number; projectTotalLimit: number };
+  /** v2.22 出站 Webhook 回调（任务终态 POST） */
+  webhookOut?: { enabled: boolean; url: string; secret: string };
 }
 
 /* ------------------------------------------------------------------ */

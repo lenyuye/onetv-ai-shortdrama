@@ -116,6 +116,20 @@ fn pricing_map(registry: &onetv_core::providers::ProviderRegistry) -> onetv_core
 #[tauri::command]
 fn settings_update(state: TState, patch: serde_json::Value) -> Result<AppSettings, CommandError> {
     let out = state.settings.update(|s| apply_patch(s, &patch));
+    // 出站 Webhook：启用且 URL 非空时自动把主机加入允许域名（与 provider_save 同策略）
+    if out.webhook_out.enabled {
+        if let Some(host) = onetv_core::webhook_out::host_of(&out.webhook_out.url) {
+            if !state.policy.read().allowed_hosts.contains(&host) {
+                state.policy.write().allow_base_url(&host);
+                state.settings.update(|s| {
+                    if !s.allowed_hosts.contains(&host) {
+                        s.allowed_hosts.push(host.clone());
+                    }
+                });
+                state.audit.record("webhook_out.allow_host", &host, None);
+            }
+        }
+    }
     state.sync_policy();
     if let Some(agent) = AGENT.get() {
         agent.env.set_offline(out.offline_mode);
@@ -3829,13 +3843,42 @@ pub fn run() {
             // macOS 原生菜单栏（应用菜单设「设置…」、File 功能入口、Help 帮助）
             build_app_menu(handle.clone());
 
-            // 事件桥（Rust → 前端）
+            let gateway = Arc::new(Gateway::new(state.policy.clone(), state.audit.clone()));
+
+            // 事件桥（Rust → 前端）+ 出站 Webhook 回调（v2.22：任务终态 POST 到用户配置 URL）
             let h2 = handle.clone();
+            let hook_state = state.clone();
+            let hook_gateway = gateway.clone();
             let sink: EventSink = Arc::new(move |name: &str, payload: serde_json::Value| {
-                let _ = h2.emit(name, payload);
+                let _ = h2.emit(name, payload.clone());
+                if let Some(job) = onetv_core::webhook_out::extract_job(name, &payload) {
+                    let wo = hook_state.settings.get().webhook_out.clone();
+                    if wo.enabled && !wo.url.trim().is_empty() {
+                        let hook_gateway = hook_gateway.clone();
+                        let client = hook_gateway.client().clone();
+                        let audit = hook_state.audit.clone();
+                        let event = name.to_string();
+                        let url = wo.url.trim().to_string();
+                        let secret = wo.secret.clone();
+                        tokio::spawn(async move {
+                            // 远程地址须过策略（回环/私网由策略天然放行）；失败不重试不阻塞
+                            if let Err(e) = hook_gateway.check(&url) {
+                                audit.record("webhook_out.skipped", &url, Some(serde_json::json!({ "reason": e.to_string() })));
+                                return;
+                            }
+                            let body = onetv_core::webhook_out::build_payload(&event, &job);
+                            match onetv_core::webhook_out::deliver(client, &url, &secret, &event, &body).await {
+                                Ok(()) => audit.record("webhook_out.delivered", &url, Some(serde_json::json!({ "event": event }))),
+                                Err(e) => {
+                                    tracing::warn!("出站 Webhook 投递失败 {url}: {e}");
+                                    audit.record("webhook_out.failed", &url, Some(serde_json::json!({ "event": event, "error": e })));
+                                }
+                            }
+                        });
+                    }
+                }
             });
 
-            let gateway = Arc::new(Gateway::new(state.policy.clone(), state.audit.clone()));
             let jobs = JobManager::with_handle(tauri::async_runtime::handle().inner().clone(), sink.clone());
             let env = AgentEnv::new(gateway, registry.clone(), state.media.clone(), sink);
 

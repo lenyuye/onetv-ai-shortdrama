@@ -7,6 +7,7 @@ pub mod qc;
 pub mod mail;
 pub mod pkg;
 pub mod plugins;
+pub mod webhook_out;
 pub mod skills;
 pub mod providers;
 pub mod settings;

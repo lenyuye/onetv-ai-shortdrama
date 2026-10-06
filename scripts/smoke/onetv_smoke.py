@@ -291,8 +291,10 @@ def do_login():
 # ---------------- 视图遍历 ----------------
 
 
-def goto_view(name, gx, gy, wid, prev_shot, shot_path, remark_extra):
-    """点击导航并验证界面确有切换；无变化则 +6px 重试（避开行间空隙）。最多 3 次。"""
+def goto_view(name, gx, gy, wid, prev_shot, shot_path, remark_extra, first=False):
+    """点击导航并验证界面确有切换；无变化则 +6px 重试（避开行间空隙）。最多 3 次。
+    first=True（列表第一个视图）：无变化时判 OK——启动恢复可能本就停在该视图，
+    此时"点击目标视图无变化"是预期行为而非导航失效（v2.22 修正的误报盲区）。"""
     attempt = 0
     while attempt < 3:
         click(gx, gy + attempt * 6)
@@ -305,6 +307,8 @@ def goto_view(name, gx, gy, wid, prev_shot, shot_path, remark_extra):
             return True, remark_extra
         attempt += 1
         remark_extra = f"第{attempt}次点击后界面无变化(差值<{DIFF_NOCHANGE})，y+{attempt*6}px 重试"
+    if first:
+        return True, "点击后界面无变化——启动恢复可能本就停在该视图（请人工核对截图内容）"
     return False, "点击后界面无变化：未命中导航行（标定偏移或导航失效），请人工核对截图"
 
 
@@ -314,13 +318,13 @@ def traverse_views(wid, bounds, shots_dir, report):
     nav_x = x + NAV_X_RATIO * w
     views = {}
     prev_shot = os.path.join(shots_dir, "_login_after.png")
-    for name, y_logical in CALIBRATION:
+    for i, (name, y_logical) in enumerate(CALIBRATION):
         gy = y + (y_logical / NAV_Y_BASE) * h
         print(f"[smoke] 视图[{name}] 点击 ({nav_x:.0f},{gy:.0f}) ...", flush=True)
         shot_path = os.path.join(shots_dir, f"{name}.png")
         remark = ""
         # 启动前留一份“当前界面”参照用于切换检测：直接用上一视图截图
-        ok, remark = goto_view(name, nav_x, gy, wid, prev_shot, shot_path, remark)
+        ok, remark = goto_view(name, nav_x, gy, wid, prev_shot, shot_path, remark, first=(i == 0))
         if ok:
             size, stddev = image_stats(shot_path)
             if size < MIN_PNG_BYTES:

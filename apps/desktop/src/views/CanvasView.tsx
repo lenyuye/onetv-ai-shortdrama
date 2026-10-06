@@ -36,6 +36,7 @@ import {
 import { useCanvasEpisodes } from "../hooks/useCanvasEpisodes";
 import { useCanvasDoc } from "../hooks/useCanvasDoc";
 import { useCanvasBatch } from "../hooks/useCanvasBatch";
+import { BatchRunPanel } from "../components/canvas/BatchRunPanel";
 import { useCanvasContextMenu } from "../hooks/useCanvasContextMenu";
 import { useCanvasClipboard } from "../hooks/useCanvasClipboard";
 import { useCanvasNodeChat } from "../hooks/useCanvasNodeChat";
@@ -172,7 +173,7 @@ function CanvasWorkbench({
 
   /* ---------- 画布批量运行（v2.14） ---------- */
 
-  const { batchBusy, runBatch } = useCanvasBatch(episodeId, applyDoc);
+  const { batchBusy, runBatch, batchPanelOpen, setBatchPanelOpen } = useCanvasBatch(episodeId, applyDoc);
 
   /* ---------- 右键菜单 + 内部剪贴板（复制 / 粘贴节点） ---------- */
 
@@ -417,6 +418,13 @@ function CanvasWorkbench({
       />
 
       <div className="cv-body">
+        <BatchRunPanel
+          open={batchPanelOpen}
+          episodeId={episodeId}
+          busy={batchBusy}
+          onClose={() => setBatchPanelOpen(false)}
+          onRetry={() => void runBatch(true)}
+        />
         <NodePalette onAdd={addNodeAt} />
 
         <CanvasFlowArea

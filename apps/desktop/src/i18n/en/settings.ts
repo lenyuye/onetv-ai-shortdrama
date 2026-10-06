@@ -208,4 +208,10 @@ export default {
   '软件名称': 'Product name',
   'OneTV — 本地优先的短剧创作工作台': 'OneTV — Local-first short-drama creation workbench',
   '界面语言': 'Interface language',
+  '🔗 出站 Webhook 回调': 'Outbound webhook callback',
+  '任务完成/失败时回调通知（POST JSON 到你的 URL）': 'POST a JSON notification to your URL when a job succeeds or fails',
+  '回调 URL（如 http://127.0.0.1:9000/hook）': 'Callback URL (e.g. http://127.0.0.1:9000/hook)',
+  '签名密钥（HMAC-SHA256，可选）': 'Signing secret (HMAC-SHA256, optional)',
+  '启用后主机自动加入允许域名；请求带 X-OneTV-Event 与 X-OneTV-Signature 头，失败自动重试 2 次。': 'When enabled the host is added to allowed domains automatically; requests carry X-OneTV-Event and X-OneTV-Signature headers and retry twice on failure.',
+
 } as Record<string, string>;

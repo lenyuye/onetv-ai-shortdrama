@@ -166,4 +166,10 @@ export default {
   '批量运行完成：{done} 个节点执行，{skipped} 个跳过': 'Batch run finished: {done} nodes executed, {skipped} skipped',
   '批量运行失败：{msg}（已完成节点已保留，可点「恢复运行」继续）':
     'Batch run failed: {msg} (completed nodes are kept; click "Resume" to continue)',
+  '批量运行进度': 'Batch run progress',
+  '▶ 批量运行中…': '▶ Batch running…',
+  '批量运行已结束': 'Batch run finished',
+  '关闭面板': 'Close panel',
+  '{done} 完成 · {failed} 失败 · {skipped} 跳过 · 共 {total}': '{done} done · {failed} failed · {skipped} skipped · {total} total',
+  '↻ 重试失败节点': '↻ Retry failed nodes',
 } as Record<string, string>;

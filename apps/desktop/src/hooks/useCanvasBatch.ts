@@ -14,6 +14,7 @@ export function useCanvasBatch(episodeId: string, applyDoc: (doc: CanvasDocument
   const t = useT();
   const { toast } = useApp();
   const [batchBusy, setBatchBusy] = useState(false);
+  const [batchPanelOpen, setBatchPanelOpen] = useState(false);
 
   const runBatch = async (resume = false) => {
     if (batchBusy) return;
@@ -22,6 +23,7 @@ export function useCanvasBatch(episodeId: string, applyDoc: (doc: CanvasDocument
       return;
     }
     setBatchBusy(true);
+    setBatchPanelOpen(true);
     toast(resume ? t("批次恢复运行中…") : t("画布批量运行中（生成节点会逐个等待完成）…"), "info");
     try {
       const r = await apiCanvas.canvasRunBatch(episodeId, resume);
@@ -41,5 +43,5 @@ export function useCanvasBatch(episodeId: string, applyDoc: (doc: CanvasDocument
     }
   };
 
-  return { batchBusy, runBatch };
+  return { batchBusy, runBatch, batchPanelOpen, setBatchPanelOpen };
 }

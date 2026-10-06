@@ -2,6 +2,16 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.22.0] — v2.22.0：出站 Webhook + 画布运行面板 + 性能/可达性（backlog 批三，主线程实现）
+
+### 追加
+- **🔗 出站 Webhook 回调**：任务终态（succeeded/failed，retry_wait 不回调）POST JSON 到用户配置 URL——HMAC-SHA256 签名（X-OneTV-Signature）+ X-OneTV-Event 头，失败自动重试 2 次（2s/8s）；本地/私网地址直发，公网地址经 Gateway 策略校验且启用时主机自动加入 allowed_hosts；全程审计（delivered/failed/skipped）。设置 → 任务引擎卡片新增启用/URL/密钥配置。核心逻辑在 crates/core/src/webhook_out.rs（签名/载荷/本地判定/重试投递均可单测，含本地 TcpListener 集成测试 7 项）。
+- **▶ 画布批量运行面板（Phase 2）**：运行期间左下浮层实时统计（每 2s 拉取画布文档，后端逐节点落盘）——进度条 + 完成/失败/跳过/总数 + 失败节点清单（标题+原因）；「↻ 重试失败节点」复用 resume 语义（非 done 节点自动重跑）；运行结束保留终态视图。
+- **⚡ 流式渲染隔离**：对话历史气泡抽为 memo 组件——流式 delta 只重渲染打字气泡，长会话不再整列表重放。
+
+### 可达性
+- 全局 :focus-visible 焦点环（键盘导航可见，鼠标点击不打扰）。
+
 ## [2.21.0] — v2.21.0：AES 加密工程包 + Plugin SDK 完整实现（backlog 批二）
 
 ### 追加

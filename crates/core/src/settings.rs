@@ -31,6 +31,24 @@ impl Default for CostGuardSettings {
     }
 }
 
+/// v2.22 出站 Webhook 回调配置
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WebhookOutConfig {
+    /// 总开关（默认关闭）
+    pub enabled: bool,
+    /// 回调 URL（POST；本地地址直发，远程地址须在 allowed_hosts）
+    pub url: String,
+    /// 签名密钥（HMAC-SHA256 of body → X-OneTV-Signature；空则不签名）
+    pub secret: String,
+}
+
+impl Default for WebhookOutConfig {
+    fn default() -> Self {
+        Self { enabled: false, url: String::new(), secret: String::new() }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -84,6 +102,9 @@ pub struct AppSettings {
     /// 是否启用 Hermes 反向控制监听
     #[serde(default, alias = "hermes_enabled")]
     pub hermes_enabled: bool,
+    /// v2.22 出站 Webhook 回调：任务终态 POST 到用户配置的 URL
+    #[serde(default, alias = "webhook_out")]
+    pub webhook_out: WebhookOutConfig,
 }
 
 fn default_hermes_port() -> u16 {
@@ -134,6 +155,7 @@ impl Default for AppSettings {
             hermes_url: None,
             hermes_listen_port: default_hermes_port(),
             hermes_enabled: false,
+            webhook_out: WebhookOutConfig::default(),
         }
     }
 }

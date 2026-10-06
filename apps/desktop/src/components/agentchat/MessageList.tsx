@@ -1,8 +1,9 @@
 /**
  * 消息列表：空态引导卡 / 用户·系统·助手气泡（助手走 MdBlock + 计划卡）/ 流式打字气泡。
  * 自 views/AgentChatView.tsx 原样迁出；滚动容器 ref 仍由主视图持有（自动滚动逻辑留在主视图）。
+ * v2.22 性能：历史气泡抽为 memo 组件——流式 delta 只重渲染打字气泡，不再重放整列表。
  */
-import { type RefObject } from "react";
+import { memo, type RefObject } from "react";
 import type { ChatMsg } from "../../agentChatStore";
 import { getLang, useT } from "../../i18n";
 import { MdBlock } from "./MdBlock";
@@ -29,16 +30,21 @@ interface MessageListProps {
   scrollRef: RefObject<HTMLDivElement | null>;
 }
 
-export function MessageList({ msgs, streamingText, approving, onApprove, onReject, scrollRef }: MessageListProps) {
+/** 历史消息气泡列表（memo：msgs/approving 回调引用不变时跳过重渲染） */
+const BubbleList = memo(function BubbleList({
+  msgs,
+  approving,
+  onApprove,
+  onReject,
+}: {
+  msgs: ChatMsg[];
+  approving: string | null;
+  onApprove: (planId: string) => void;
+  onReject: (planId: string) => void;
+}) {
   const t = useT();
   return (
-    <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "14px 22px", minHeight: 0 }}>
-      {msgs.length === 0 && (
-        <div className="card hint" style={{ maxWidth: 640 }}>
-          {t("和 Agent 聊聊你的短剧想法。它会先给出")}<b>{t("结构化执行计划")}</b>
-          {t("（做什么、调多少次远程 API、风险等级），你批准后才会真正执行 —— 全程可审计。对话类问题直接回答；生图/生视频任务会进入任务队列。")}
-        </div>
-      )}
+    <>
       {msgs.map((m) => (
         <div
           key={m.id}
@@ -79,6 +85,21 @@ export function MessageList({ msgs, streamingText, approving, onApprove, onRejec
           </div>
         </div>
       ))}
+    </>
+  );
+});
+
+export function MessageList({ msgs, streamingText, approving, onApprove, onReject, scrollRef }: MessageListProps) {
+  const t = useT();
+  return (
+    <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "14px 22px", minHeight: 0 }}>
+      {msgs.length === 0 && (
+        <div className="card hint" style={{ maxWidth: 640 }}>
+          {t("和 Agent 聊聊你的短剧想法。它会先给出")}<b>{t("结构化执行计划")}</b>
+          {t("（做什么、调多少次远程 API、风险等级），你批准后才会真正执行 —— 全程可审计。对话类问题直接回答；生图/生视频任务会进入任务队列。")}
+        </div>
+      )}
+      <BubbleList msgs={msgs} approving={approving} onApprove={onApprove} onReject={onReject} />
       {/* 流式进行中的回复（打字机气泡；完整回复到达后由事件桥收尾替换） */}
       {streamingText !== undefined && (
         <div className="agent-msg-bubble" style={{ display: "flex", justifyContent: "flex-start", marginBottom: 12 }}>

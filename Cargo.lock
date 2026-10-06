@@ -2722,7 +2722,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "onetv-core"
-version = "2.21.0"
+version = "2.22.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -2754,7 +2754,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-desktop"
-version = "2.21.0"
+version = "2.22.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2778,7 +2778,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-media"
-version = "2.21.0"
+version = "2.22.0"
 dependencies = [
  "parking_lot",
  "serde",
@@ -2791,7 +2791,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-project"
-version = "2.21.0"
+version = "2.22.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -2810,7 +2810,7 @@ dependencies = [
 
 [[package]]
 name = "onetv-security"
-version = "2.21.0"
+version = "2.22.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
