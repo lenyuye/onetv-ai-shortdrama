@@ -64,8 +64,6 @@ export default function ModelsView() {
 
   const [testResults, setTestResults] = useState<Record<string, ProviderTestResult>>({});
   const [testBusy, setTestBusy] = useState<Record<string, boolean>>({});
-  const [reading, setReading] = useState<Record<string, boolean>>({});
-  const [fetchedModels, setFetchedModels] = useState<Record<string, string[]>>({});
 
   const [mdBusy, setMdBusy] = useState(false);
 
@@ -86,7 +84,6 @@ export default function ModelsView() {
     patchModel,
     addModelRow,
     removeModelRow,
-    readModelsIntoEditor,
   fetchModelsIntoEditor,
     editorReading,
     presets,
@@ -165,22 +162,6 @@ export default function ModelsView() {
     }
   };
 
-  const doReadModels = async (p: ProviderDto) => {
-    setReading((r) => ({ ...r, [p.id]: true }));
-    try {
-      const r = await api.providerModels(p.id);
-      if (r.ok) {
-        setFetchedModels((f) => ({ ...f, [p.id]: r.models }));
-        toast(t("读取到 {n} 个模型；编辑该 Provider 时会自动合并进模型列表（按 modelId 去重）", { n: r.models.length }), "ok");
-      } else {
-        toast(t("读取模型失败：{msg}", { msg: r.message ?? t("未知错误") }), "err");
-      }
-    } catch (e) {
-      toast(t("读取模型失败：{msg}", { msg: errMsg(e) }), "err");
-    } finally {
-      setReading((r) => ({ ...r, [p.id]: false }));
-    }
-  };
 
   const doDelete = async (p: ProviderDto) => {
     if (!window.confirm(t("确定删除 Provider「{name}」吗？该操作不可恢复。", { name: p.name }))) return;
@@ -204,14 +185,6 @@ export default function ModelsView() {
     }
   };
 
-  const copyModelId = async (modelId: string) => {
-    try {
-      await navigator.clipboard.writeText(modelId);
-      toast(t("modelId 已复制，可粘贴到编辑表单"), "ok");
-    } catch (e) {
-      toast(t("复制失败：{msg}", { msg: errMsg(e) }), "err");
-    }
-  };
 
   // Provider 配置导入导出（v2.13）
   const [importing, setImporting] = useState(false);
@@ -308,46 +281,6 @@ export default function ModelsView() {
       toast(d.id ? t("Provider 已更新") : t("Provider 已新增"), "ok");
       setEditor(null);
       await refresh();
-      // 创建后自动拉取远端模型列表并合并（v2.25.0）：OpenAI 兼容/Ollama/SD 支持 /models；
-      // 失败静默（不影响保存），拉到后二次保存合并（provider_save 不触碰钥匙串，Key 不受影响）
-      if (!d.id && ["openai-compatible", "ollama", "stable-diffusion"].includes(d.driver)) {
-        try {
-          const r = await api.providerModels(saved.id);
-          if (r.ok && r.models.length > 0) {
-            const rows = models.map((m) => ({
-              modelId: m.modelId,
-              displayName: m.displayName,
-              capabilities: sanitizeCaps(m.capabilities, d.driver),
-              pricePerCall: m.pricePerCall ?? null,
-            }));
-            const merged = mergeFetchedModels(rows, r.models, d.driver);
-            if (merged.added > 0) {
-              await api.providerSave({
-                id: saved.id,
-                name: d.name.trim(),
-                driver: d.driver,
-                baseUrl: d.baseUrl.trim(),
-                models: merged.rows.map((m) => ({
-                  modelId: m.modelId,
-                  displayName: m.displayName || m.modelId,
-                  capabilities: m.capabilities,
-                  pricing: m.pricePerCall && m.pricePerCall > 0 ? { perCall: m.pricePerCall } : null,
-                })),
-                timeoutMs: Math.max(1_000, d.timeoutMs || 180_000),
-                concurrency: Math.max(1, d.concurrency || 1),
-                enabled: d.enabled,
-                httpTemplate,
-                workflowTemplate,
-                authType: authTypeOf(d.driver),
-              });
-              toast(t("已自动获取 {n} 个远端模型并合并", { n: merged.added }), "ok");
-              await refresh();
-            }
-          }
-        } catch {
-          /* 远端拉取失败不影响保存；可稍后在「编辑」里手动读取 */
-        }
-      }
     } catch (e) {
       toast(t("保存失败：{msg}", { msg: errMsg(e) }), "err");
     } finally {
@@ -414,16 +347,12 @@ export default function ModelsView() {
               p={p}
               test={testResults[p.id]}
               testBusy={!!testBusy[p.id]}
-              reading={!!reading[p.id]}
-              fetched={fetchedModels[p.id] ?? []}
               offlineBlocked={offlineMode && !isLocalProvider(p)}
               onToggle={() => void toggleEnabled(p)}
               onTest={() => void doTest(p)}
-              onRead={() => void doReadModels(p)}
-              onEdit={() => setEditor(draftFrom(p, fetchedModels[p.id] ?? []))}
+              onEdit={() => setEditor(draftFrom(p))}
               onDelete={() => void doDelete(p)}
               onClearKey={() => void doClearKey(p)}
-              onCopyModel={(id) => void copyModelId(id)}
             />
           ))}
         </div>
@@ -476,7 +405,6 @@ export default function ModelsView() {
           patchModel={patchModel}
           addModelRow={addModelRow}
           removeModelRow={removeModelRow}
-          readModelsIntoEditor={readModelsIntoEditor}
           fetchModelsIntoEditor={fetchModelsIntoEditor}
           editorReading={editorReading}
           saving={saving}

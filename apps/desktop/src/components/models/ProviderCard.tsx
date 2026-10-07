@@ -27,30 +27,22 @@ export function ProviderCard({
   p,
   test,
   testBusy,
-  reading,
-  fetched,
   offlineBlocked,
   onToggle,
   onTest,
-  onRead,
   onEdit,
   onDelete,
   onClearKey,
-  onCopyModel,
 }: {
   p: ProviderDto;
   test?: ProviderTestResult;
   testBusy: boolean;
-  reading: boolean;
-  fetched: string[];
   offlineBlocked: boolean;
   onToggle: () => void;
   onTest: () => void;
-  onRead: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onClearKey: () => void;
-  onCopyModel: (modelId: string) => void;
 }) {
   const t = useT();
   return (
@@ -98,23 +90,6 @@ export function ProviderCard({
         )}
       </div>
 
-      {fetched.length > 0 && (
-        <div
-          className="pv-fetched"
-          style={fetched.length > 8 ? { maxHeight: 200, overflowY: "auto" } : undefined}
-        >
-          <span className="hint">
-            {fetched.length > 8
-              ? t("远端模型 {n} 个（点击可复制 modelId；列表可滚动，编辑时自动合并进模型列表）：", { n: fetched.length })
-              : t("远端模型（点击可复制 modelId；编辑时自动合并进模型列表）：")}
-          </span>
-          {fetched.map((id) => (
-            <span key={id} className="tag blue pv-copy" title={t("点击复制 {id}", { id })} onClick={() => onCopyModel(id)}>
-              {id}
-            </span>
-          ))}
-        </div>
-      )}
 
       {test && (
         <div className={`pv-test ${test.ok ? "ok" : "err"}`}>
@@ -134,7 +109,6 @@ export function ProviderCard({
         >
           {testBusy ? t("测试中…") : t("测试连接")}
         </button>
-        <button className="btn sm" disabled={reading} onClick={onRead}>{reading ? t("读取中…") : t("读取模型")}</button>
         {p.hasKey && (
           <button className="btn sm danger" onClick={onClearKey} title={t("从钥匙串删除该 Provider 的 API Key")}>
             {t("清除密钥")}

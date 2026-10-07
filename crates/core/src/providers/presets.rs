@@ -227,36 +227,64 @@ pub fn gen_presets() -> Vec<GenPreset> {
                 }
             }),
         },
+        // ---------------- MiniMax 图片（image-01）----------------
+        GenPreset {
+            category: "image",
+            driver: "custom-http",
+            base_url: "",
+            id: "minimax-image",
+            name: "MiniMax 图片（image-01）",
+            vendor: "MiniMax",
+            docs_url: "https://www.minimax.cn/document/image_generation",
+            auth_type: "bearer",
+            header_name: None,
+            default_model: ("image-01", "MiniMax image-01"),
+            notes: "与海螺/对话共用 MiniMax API Key。同步接口直接返回 data.image_urls（OneTV 自动下载入库）；画幅取节点/任务传入的 aspectRatio。",
+            template: json!({
+                "method": "POST",
+                "url": "https://api.minimax.cn/v1/image_generation",
+                "headers": { "Content-Type": "application/json" },
+                "body": {
+                    "model": "${model.id}",
+                    "prompt": "${input.prompt}",
+                    "aspect_ratio": "${input.aspectRatio}",
+                    "response_format": "url"
+                },
+                "response": { "result_url": "$.data.image_urls" }
+            }),
+        },
         /* ==================== 视频生成 ==================== */
         // ---------------- 海螺 H3（MiniMax）----------------
         GenPreset {
             category: "video",
             driver: "custom-http",
             base_url: "",
-            id: "minimax-hailuo",
-            name: "海螺 H3（MiniMax Hailuo）",
+            id: "minimax-h3",
+            name: "海螺 H3（MiniMax 视频）",
             vendor: "MiniMax",
-            docs_url: "https://platform.minimaxi.com/document/Video%20Generation",
+            docs_url: "https://www.minimax.cn/document/video_generation",
             auth_type: "bearer",
             header_name: None,
-            default_model: ("MiniMax-Hailuo-02", "Hailuo-02（图生/文生视频）"),
-            notes: "在 platform.minimaxi.com 创建 API Key。提交后轮询查询接口，Status=Success 时取 file.download_url。Hailuo-02 支持 768p/1080p；图生视频自动携带首帧（firstFrameBase64，≤10MB）。",
+            default_model: ("MiniMax-H3", "MiniMax H3（文生/图生视频）"),
+            notes: "在 MiniMax 开放平台创建 API Key。v2 接口（api.minimax.cn，2026-10 真机验证）：提交返回 task_id，轮询 items[0].status=succeeded 时取 content.url（OneTV 自动下载入库）。⚠️ H3 等视频模型不在 /models 目录，需在模型行手动填写 modelId。分辨率 resolution 可改 720p/1080p/2K；图生视频按官方文档在 content 里加 image_url 项。",
             template: json!({
                 "method": "POST",
-                "url": "https://api.minimaxi.com/v1/video_generation",
+                "url": "https://api.minimax.cn/v2/video_generation",
                 "headers": { "Content-Type": "application/json" },
                 "body": {
                     "model": "${model.id}",
-                    "prompt": "${input.prompt}",
-                    "first_frame_image": "${input.firstFrameBase64?}"
+                    "content": [{ "type": "text", "text": "${input.prompt}" }],
+                    "resolution": "768P",
+                    "duration": 5,
+                    "ratio": "${input.aspectRatio}"
                 },
-                "response": { "job_id": "$.task_id" },
+                "response": { "job_id": "$.task_id", "result_url": "$.items[0].content.url" },
                 "poll": {
                     "method": "GET",
-                    "url": "https://api.minimaxi.com/v1/query/video_generation?task_id=${jobId}",
-                    "success_when": "$.status == \"Success\"",
-                    "failure_when": "$.status == \"Fail\"",
-                    "interval_ms": 8000,
+                    "url": "https://api.minimax.cn/v2/query/video_generation?task_id=${jobId}",
+                    "success_when": "$.items[0].status == \"succeeded\"",
+                    "failure_when": "$.items[0].status == \"failed\"",
+                    "interval_ms": 10000,
                     "timeout_ms": 1800000
                 }
             }),

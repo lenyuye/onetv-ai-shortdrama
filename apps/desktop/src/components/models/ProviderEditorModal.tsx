@@ -52,7 +52,6 @@ export function ProviderEditorModal({
   patchModel,
   addModelRow,
   removeModelRow,
-  readModelsIntoEditor,
   fetchModelsIntoEditor,
   editorReading,
   saving,
@@ -70,7 +69,6 @@ export function ProviderEditorModal({
   patchModel: (idx: number, patch: Partial<EditorDraft["models"][number]>) => void;
   addModelRow: () => void;
   removeModelRow: (idx: number) => void;
-  readModelsIntoEditor: () => Promise<void>;
   fetchModelsIntoEditor: () => Promise<void>;
   editorReading: boolean;
   saving: boolean;
@@ -241,12 +239,14 @@ export function ProviderEditorModal({
                     <input
                       type="text"
                       value={m.modelId}
+                      list={editor.fetchedIds.length > 0 ? "onetv-fetched-model-ids" : undefined}
                       placeholder={t("modelId，例如 gpt-4o / qwen2.5:7b")}
                       onChange={(e) => patchModel(i, { modelId: e.target.value })}
                     />
                     <input
                       type="text"
                       value={m.displayName}
+                      list={editor.fetchedIds.length > 0 ? "onetv-fetched-model-ids" : undefined}
                       placeholder={t("显示名（可留空）")}
                       onChange={(e) => patchModel(i, { displayName: e.target.value })}
                     />
@@ -294,7 +294,19 @@ export function ProviderEditorModal({
             })}
             <div>
               <button className="btn sm" onClick={addModelRow}>{t("➕ 添加模型")}</button>
+              {editor.fetchedIds.length > 0 && (
+                <span className="hint" style={{ marginLeft: 8 }}>
+                  {t("已获取 {n} 个远端模型：新行的 modelId / 显示名输入框可滚动选择", { n: editor.fetchedIds.length })}
+                </span>
+              )}
             </div>
+            {editor.fetchedIds.length > 0 && (
+              <datalist id="onetv-fetched-model-ids">
+                {editor.fetchedIds.map((id) => (
+                  <option key={id} value={id} />
+                ))}
+              </datalist>
+            )}
           </div>
 
           {editor.driver === "comfyui" && (

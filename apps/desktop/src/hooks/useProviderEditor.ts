@@ -38,6 +38,8 @@ export interface EditorDraft {
   models: ModelRow[];
   httpTemplateText: string; // custom-http 的 JSON 模板
   workflowTemplateText: string; // comfyui 的 API 格式工作流 JSON（FLUX/Wan）
+  /** 自动获取到的远端模型 ID（v2.26.18）：不直接进模型行，作为「添加模型」时的滚动候选 */
+  fetchedIds: string[];
 }
 
 const driverInfo = (d: ProviderDriver) => PROVIDER_DRIVERS.find((x) => x.driver === d);
@@ -61,6 +63,7 @@ export function newDraft(): EditorDraft {
     models: [{ modelId: "", displayName: "", capabilities: ["chat"] }],
     httpTemplateText: "",
     workflowTemplateText: "",
+    fetchedIds: [],
   };
 }
 
@@ -86,6 +89,7 @@ export function draftFrom(p: ProviderDto, fetched: string[] = []): EditorDraft {
     models: mergeFetchedModels(rows, fetched, p.driver).rows,
     httpTemplateText: p.httpTemplate ? JSON.stringify(p.httpTemplate, null, 2) : "",
     workflowTemplateText: p.workflowTemplate ? JSON.stringify(p.workflowTemplate, null, 2) : "",
+    fetchedIds: [],
   };
 }
 
@@ -257,16 +261,13 @@ export function useProviderEditor() {
           ? await api.providerModels(d.id)
           : await api.providerFetchModels(d.driver, d.baseUrl.trim(), null);
       if (!r.ok) {
-        toast(t("读取模型失败：{msg}", { msg: r.message ?? t("未知错误") }), "err");
+        toast(t("获取失败，请检查配置是否有误：{msg}", { msg: r.message ?? t("未知错误") }), "err");
         return;
       }
-      const merged = mergeFetchedModels(d.models, r.models, d.driver);
-      if (merged.added > 0) {
-        setEditor((cur) => (cur ? { ...cur, models: merged.rows } : cur));
-        toast(t("已合并 {n} 个新模型（按 modelId 去重）", { n: merged.added }), "ok");
-      } else {
-        toast(t("远端模型均已存在于列表，无需合并"), "info");
-      }
+      // 新交互（v2.26.18）：获取成功只提示并存为候选，点「➕ 添加模型」时在 modelId/模型名
+      // 输入框里滚动选择，不再直接全部平铺进模型行
+      setEditor((cur) => (cur ? { ...cur, fetchedIds: r.models } : cur));
+      toast(t("模型已获取成功（{n} 个）：点「➕ 添加模型」后可在输入框中滚动选择", { n: r.models.length }), "ok");
     } catch (e) {
       toast(t("读取模型失败：{msg}", { msg: errMsg(e) }), "err");
     } finally {
@@ -274,30 +275,6 @@ export function useProviderEditor() {
     }
   };
 
-  /** 编辑表单内「读取模型并合并」：拉取远端列表按 modelId 去重后并入，不覆盖已填行 */
-  const readModelsIntoEditor = async () => {
-    const d = editor;
-    if (!d?.id) return;
-    setEditorReading(true);
-    try {
-      const r = await api.providerModels(d.id);
-      if (!r.ok) {
-        toast(t("读取模型失败：{msg}", { msg: r.message ?? t("未知错误") }), "err");
-        return;
-      }
-      const merged = mergeFetchedModels(d.models, r.models, d.driver);
-      if (merged.added > 0) {
-        setEditor((cur) => (cur && cur.id === d.id ? { ...cur, models: merged.rows } : cur));
-        toast(t("已合并 {n} 个新模型（按 modelId 去重）", { n: merged.added }), "ok");
-      } else {
-        toast(t("远端模型均已存在于列表，无需合并"), "info");
-      }
-    } catch (e) {
-      toast(t("读取模型失败：{msg}", { msg: errMsg(e) }), "err");
-    } finally {
-      setEditorReading(false);
-    }
-  };
 
   return {
     editor,
@@ -308,7 +285,6 @@ export function useProviderEditor() {
     patchModel,
     addModelRow,
     removeModelRow,
-    readModelsIntoEditor,
     fetchModelsIntoEditor,
     editorReading,
     presets,

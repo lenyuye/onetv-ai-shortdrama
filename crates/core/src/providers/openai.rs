@@ -76,12 +76,92 @@ pub async fn chat(
         .and_then(|v| v.as_str())
         .ok_or_else(|| GatewayError::Parse(format!("响应缺少 choices[0].message.content: {}", resp)))?
         .to_string();
+    // MiniMax M3 等模型内联 <think> 推理——最终文本同样剥离
+    let text = ThinkFilter::finish(&text);
     Ok(ChatResult { text, usage: resp.get("usage").cloned() })
 }
 
 /// 流式 chat（v2.6.2 SSE）：POST stream=true，逐 delta 回调 on_delta，
 /// 返回拼接后的完整文本。SSE 行格式：`data: {json}` / `data: [DONE]`。
 /// 网络分片可能把一行拆到多个 chunk，这里维护行缓冲后再解析。
+/// MiniMax M3/Text-01 等模型会把 `<think>…</think>` 推理过程内联在 content 里输出——
+/// 流式与最终文本都要剥离，否则对话气泡会显示整段思考（v2.26.18）。
+pub struct ThinkFilter {
+    in_think: bool,
+    /// 可能是不完整 "<think>" 前缀的尾巴，等下一个分片补全判断
+    pending: String,
+}
+
+impl ThinkFilter {
+    pub fn new() -> Self {
+        Self { in_think: false, pending: String::new() }
+    }
+
+    /// 输入一个流式分片，返回可展示的文本（可能为空）。
+    pub fn push(&mut self, delta: &str) -> String {
+        self.pending.push_str(delta);
+        let mut out = String::new();
+        loop {
+            if self.in_think {
+                match self.pending.find("</think>") {
+                    Some(pos) => {
+                        self.pending.drain(..pos + 8);
+                        self.in_think = false;
+                    }
+                    None => {
+                        // 仍可能在 think 内；保留可能是 "</think>" 前缀的尾巴
+                        let keep = self
+                            .pending
+                            .len()
+                            .saturating_sub(8)
+                            .min(self.pending.len());
+                        let emit_len = self.pending.rfind('<').map(|i| i).unwrap_or(self.pending.len());
+                        let cut = keep.min(emit_len);
+                        self.pending.drain(..cut);
+                        return out;
+                    }
+                }
+            } else {
+                match self.pending.find("<think>") {
+                    Some(pos) => {
+                        out.push_str(&self.pending[..pos]);
+                        self.pending.drain(..pos + 7);
+                        self.in_think = true;
+                    }
+                    None => {
+                        // 输出除"可能是 <think> 前缀"尾巴外的全部
+                        let tail_len = {
+                            let tail = &self.pending;
+                            (1..=7.min(tail.len()))
+                                .find(|k| "<think>".starts_with(&tail[tail.len() - k..]))
+                                .unwrap_or(0)
+                        };
+                        let cut = self.pending.len() - tail_len;
+                        out.push_str(&self.pending[..cut]);
+                        self.pending.drain(..cut);
+                        return out;
+                    }
+                }
+            }
+        }
+    }
+
+    /// 流结束：清空缓冲并返回完整文本的最终净化版（用于落库/事件）。
+    pub fn finish(full: &str) -> String {
+        let mut out = String::new();
+        let mut rest = full;
+        while let Some(a) = rest.find("<think>") {
+            out.push_str(&rest[..a]);
+            match rest.find("</think>") {
+                Some(b) => rest = &rest[b + 8..],
+                None => return out, // 未闭合：丢弃剩余
+            }
+        }
+        out.push_str(rest);
+        out.trim().to_string()
+    }
+}
+
 pub async fn chat_stream(
     gw: &Gateway,
     profile: &ProviderProfile,
@@ -113,6 +193,7 @@ pub async fn chat_stream(
     let mut byte_stream = gw.send_json_stream(profile, &url, body, egress).await?;
     let mut buf = String::new();
     let mut full = String::new();
+    let mut tf = ThinkFilter::new();
     while let Some(chunk) = byte_stream.next().await {
         let bytes = chunk.map_err(|e| GatewayError::Network(e.to_string()))?;
         buf.push_str(&String::from_utf8_lossy(&bytes));
@@ -128,7 +209,10 @@ pub async fn chat_stream(
             if let Some(delta) = v.pointer("/choices/0/delta/content").and_then(|c| c.as_str()) {
                 if !delta.is_empty() {
                     full.push_str(delta);
-                    on_delta(delta);
+                    let shown = tf.push(delta);
+                    if !shown.is_empty() {
+                        on_delta(&shown);
+                    }
                 }
             }
         }
@@ -275,4 +359,24 @@ pub async fn tts(
     }
     std::fs::write(out_path, &bytes).map_err(|e| GatewayError::Network(e.to_string()))?;
     Ok(out_path.to_path_buf())
+}
+
+#[cfg(test)]
+mod think_tests {
+    use super::ThinkFilter;
+
+    #[test]
+    fn think_filter_stream_and_finish() {
+        // 流式分片剥离：think 跨分片也要剥干净
+        let mut f = ThinkFilter::new();
+        assert_eq!(f.push("你好"), "你好");
+        assert_eq!(f.push("<th"), "");
+        assert_eq!(f.push("ink>思考"), "");
+        assert_eq!(f.push("</th"), "");
+        assert_eq!(f.push("ink>答案"), "答案");
+        // finish 兜底剥未流式剥离的整块
+        assert_eq!(ThinkFilter::finish("<think>推理</think>最终"), "最终");
+        assert_eq!(ThinkFilter::finish("无think"), "无think");
+        assert_eq!(ThinkFilter::finish("开头<think>未闭合"), "开头");
+    }
 }

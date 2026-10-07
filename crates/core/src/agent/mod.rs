@@ -148,7 +148,7 @@ pub fn route_intent(text: &str) -> Intent {
     if has(&["生成图片", "生图", "定妆照", "画一张"]) {
         return Intent::ImageGenerate;
     }
-    if has(&["生成视频镜头", "图生视频", "文生视频", "video.generate"]) {
+    if has(&["生成视频镜头", "图生视频", "文生视频", "生成视频", "做个视频", "视频生成", "video.generate"]) {
         return Intent::VideoGenerate;
     }
     Intent::Chat
