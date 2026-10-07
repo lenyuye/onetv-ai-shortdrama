@@ -23,8 +23,8 @@ function fmtChatTime(raw: string): string {
 
 /** 消息右键菜单（v2.26.19）：复制全文 / 复制选区——气泡文本可选中 */
 function MsgContextMenu({
-  x, y, text, onClose,
-}: { x: number; y: number; text: string; onClose: () => void }) {
+  x, y, text, sel, onClose,
+}: { x: number; y: number; text: string; sel: string; onClose: () => void }) {
   const t = useT();
   useEffect(() => {
     const close = () => onClose();
@@ -36,7 +36,7 @@ function MsgContextMenu({
       document.removeEventListener("keydown", onKey);
     };
   }, [onClose]);
-  const sel = (window.getSelection()?.toString() ?? "").trim();
+  const hasSel = sel.length > 0;
   return (
     <div
       className="msg-ctx-menu"
@@ -56,7 +56,8 @@ function MsgContextMenu({
         {t("复制全文")}
       </button>
       <button
-        disabled={!sel}
+        disabled={!hasSel}
+        title={hasSel ? undefined : t("右键前先在气泡里选中要复制的文字")}
         onClick={() => {
           void navigator.clipboard.writeText(sel).then(
             () => useApp.getState().toast(t("已复制到剪贴板"), "ok"),
@@ -94,7 +95,7 @@ const BubbleList = memo(function BubbleList({
   onReject: (planId: string) => void;
 }) {
   const t = useT();
-  const [ctx, setCtx] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [ctx, setCtx] = useState<{ x: number; y: number; text: string; sel: string } | null>(null);
   return (
     <>
       {msgs.map((m) => (
@@ -122,7 +123,9 @@ const BubbleList = memo(function BubbleList({
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              setCtx({ x: e.clientX, y: e.clientY, text: m.text });
+              // 选区必须在右键瞬间捕获——菜单渲染/点击过程会清掉它
+              const sel = (window.getSelection()?.toString() ?? "").trim();
+              setCtx({ x: e.clientX, y: e.clientY, text: m.text, sel });
             }}
           >
             <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
@@ -144,7 +147,9 @@ const BubbleList = memo(function BubbleList({
           </div>
         </div>
       ))}
-      {ctx && <MsgContextMenu x={ctx.x} y={ctx.y} text={ctx.text} onClose={() => setCtx(null)} />}
+      {ctx && (
+        <MsgContextMenu x={ctx.x} y={ctx.y} text={ctx.text} sel={ctx.sel} onClose={() => setCtx(null)} />
+      )}
     </>
   );
 });
