@@ -157,7 +157,7 @@ const BubbleList = memo(function BubbleList({
 export function MessageList({ msgs, streamingText, approving, onApprove, onReject, scrollRef }: MessageListProps) {
   const t = useT();
   return (
-    <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "14px 22px", minHeight: 0 }}>
+    <div ref={scrollRef} className="agent-chat-select" style={{ flex: 1, overflowY: "auto", padding: "14px 22px", minHeight: 0 }}>
       {msgs.length === 0 && (
         <div className="card hint" style={{ maxWidth: 640 }}>
           {t("和 Agent 聊聊你的短剧想法。它会先给出")}<b>{t("结构化执行计划")}</b>

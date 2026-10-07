@@ -356,7 +356,9 @@ const HERMES_CSS = `
 .hm-bubble-head { font-size: 11px; margin-bottom: 4px; }
 .hm-bubble.ok .hm-bubble-head { color: var(--green); }
 .hm-bubble.err .hm-bubble-head { color: var(--red); }
-.hm-bubble-body { font-size: 12.5px; color: var(--text); white-space: pre-wrap; word-break: break-word; user-select: text; }
+.hm-bubble-body { font-size: 12.5px; color: var(--text); white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text; }
+/* 划选粒度修复（v2.26.24）：同 Agent 对话——后代显式 text，避免 WKWebView 吸附整块 */
+.hm-bubble-body *, .hm-log-text * { user-select: text; -webkit-user-select: text; }
 .hm-log-card { margin-bottom: 14px; }
 .hm-log-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .hm-log-list { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; max-height: 420px; overflow: auto; }
@@ -367,5 +369,5 @@ const HERMES_CSS = `
 }
 .hm-log-time { font-family: var(--mono); font-size: 11px; color: var(--muted); flex-shrink: 0; padding-top: 1px; }
 .hm-log-row .tag { flex-shrink: 0; font-size: 10.5px; }
-.hm-log-text { font-size: 11.5px; color: var(--text-dim); word-break: break-all; user-select: text; min-width: 0; }
+.hm-log-text { font-size: 11.5px; color: var(--text-dim); word-break: break-all; user-select: text; -webkit-user-select: text; min-width: 0; }
 `;

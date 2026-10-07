@@ -752,3 +752,21 @@ select option {
 }
 .msg-ctx-menu button:hover:not(:disabled) { background: rgba(255,255,255,.08); }
 .msg-ctx-menu button:disabled { color: var(--muted); cursor: default; }
+
+/* 划选粒度修复（v2.26.24）：WKWebView 在祖先链存在 user-select:none（body 全局禁选）时，
+   后代重新开启 text 的划选会吸附到元素整块（选不了具体几个字）。
+   需把可选区容器及其全部后代显式开启 text（按钮/链接保持 none），恢复字符级划选。 */
+.agent-chat-select, .agent-chat-select * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+.agent-chat-select button,
+.agent-chat-select a {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.agent-chat-select input,
+.agent-chat-select textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
