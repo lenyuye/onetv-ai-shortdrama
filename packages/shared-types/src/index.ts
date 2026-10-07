@@ -224,6 +224,7 @@ export interface AssetInfo {
 /* ------------------------------------------------------------------ */
 
 export type NodeType =
+  | "asset"
   | "text"
   | "script"
   | "image"

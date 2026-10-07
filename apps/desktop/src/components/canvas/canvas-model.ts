@@ -27,6 +27,7 @@ export type FlowNode = Node<{ cn: CanvasNode }, "onetv">;
 export type FlowEdge = Edge;
 
 export const NODE_ICONS: Record<NodeType, string> = {
+  asset: "📁",
   text: "📄",
   script: "📝",
   storyboard: "🎞️",
@@ -40,6 +41,7 @@ export const NODE_ICONS: Record<NodeType, string> = {
 };
 
 export const NODE_COLORS: Record<NodeType, string> = {
+  asset: "#8f9dff",
   text: "#4d7cfe",
   script: "#ff3d9a",
   storyboard: "#b34dff",

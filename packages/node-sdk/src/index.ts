@@ -13,6 +13,16 @@ import type { NodeType, NodeTypeDef } from "@onetv/shared-types";
 const ANY_SOURCE = ["text/*", "image/*", "video/*", "audio/*", "*/*"];
 
 export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
+  // v2.26.26 素材节点（LibTV/即梦式）：本地上传图片/视频/音频/文本入项目资产库，
+  // 作为参考源连线给生成节点；config.files 存展示元数据，referenceAssetIds 存资产 id。
+  asset: {
+    nodeType: "asset",
+    title: "素材",
+    inputs: [],
+    outputs: [{ port: "out", accept: ["image/*", "video/*", "audio/*", "text/*"], multiple: true }],
+    params: {},
+    permissions: { network: "none", filesystem: "project_only" },
+  },
   text: {
     nodeType: "text",
     title: "文本",
@@ -129,6 +139,7 @@ export const NODE_TYPE_DEFS: Record<NodeType, NodeTypeDef> = {
 };
 
 export const NODE_PALETTE_ORDER: NodeType[] = [
+  "asset",
   "text",
   "script",
   "storyboard",

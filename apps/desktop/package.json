@@ -1,6 +1,6 @@
 {
   "name": "onetv-desktop",
-  "version": "2.26.25",
+  "version": "2.26.26",
   "private": true,
   "description": "OneTV 桌面端（Tauri 2 + React）",
   "type": "module",

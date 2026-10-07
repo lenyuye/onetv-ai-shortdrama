@@ -16,7 +16,7 @@ import type { CanvasNode, NodeType } from "@onetv/shared-types";
 import { useT } from "../../i18n";
 
 const TYPE_CN: Record<string, string> = {
-  text: "文本", script: "剧本", image: "生图", video: "生视频", audio: "配音",
+  asset: "素材", text: "文本", script: "剧本", image: "生图", video: "生视频", audio: "配音",
   storyboard: "分镜", "video-clip": "片段合成", condition: "条件", review: "审核", export: "导出",
 };
 
@@ -113,6 +113,11 @@ export default function NodeChatPanel({
   const [resultPath, setResultPath] = useState<string | null>(null);
   /** 文本节点的生成结果（Chat 任务回复，回填 config.text 的同时在面板展示） */
   const [resultText, setResultText] = useState<string | null>(null);
+  /** v2.26.26 文本节点行内编辑 */
+  const [editingText, setEditingText] = useState(false);
+  const [textDraft, setTextDraft] = useState("");
+  /** v2.26.26 上游连线文本节点的文字约束（发送时并入提示词） */
+  const [edgeTexts, setEdgeTexts] = useState<{ from: string; text: string }[]>([]);
   const pollRef = useRef<number | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const pickerRef = useRef<HTMLDivElement | null>(null);
@@ -191,6 +196,50 @@ export default function NodeChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // v2.26.26 连线即参考（LibTV/即梦式）：打开面板时自动把上游连线节点的
+  // 产物（outputAssetId）与已挂参考（referenceAssetIds / 素材节点 files）绑定为参考；
+  // 上游文本节点内容作为文字约束在发送时自动并入提示词。
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const doc = await canvasGet(episodeId);
+        if (!alive) return;
+        const edges = (doc.edges ?? []) as { source: string; target: string }[];
+        const incoming = edges.filter((e) => e.target === node.id).map((e) => e.source);
+        if (incoming.length === 0) return;
+        const wanted = new Map<string, string>(); // assetId → 来源节点标题
+        const texts: { from: string; text: string }[] = [];
+        for (const n of doc.nodes ?? []) {
+          if (!incoming.includes(n.id)) continue;
+          const cfg = (n.config ?? {}) as Record<string, unknown>;
+          const from = `${n.title || n.id}`;
+          const out = typeof cfg.outputAssetId === "string" ? cfg.outputAssetId : "";
+          if (out) wanted.set(out, from);
+          for (const rid of (Array.isArray(cfg.referenceAssetIds) ? cfg.referenceAssetIds : []) as string[]) {
+            if (rid) wanted.set(rid, from);
+          }
+          if (n.type === "text") {
+            const ut = typeof cfg.text === "string" ? cfg.text.trim() : "";
+            if (ut) texts.push({ from, text: ut });
+          }
+        }
+        if (wanted.size > 0) {
+          const list = await assetList().catch(() => []);
+          if (!alive) return;
+          for (const a of list) {
+            const from = wanted.get(a.id);
+            if (!from) continue;
+            bindRef({ id: a.id, name: baseName(a.path), path: a.path, kind: a.kind, from: `@${from}` });
+          }
+        }
+        if (alive && texts.length > 0) setEdgeTexts(texts);
+      } catch { /* 画布读取失败不阻塞面板 */ }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.id, episodeId]);
+
   // 卸载时停止轮询
   useEffect(() => {
     return () => {
@@ -205,10 +254,12 @@ export default function NodeChatPanel({
     setJobError("");
     setJobState(t("排队中…"));
     try {
+      // v2.26.26 上游文本节点的文字约束自动并入提示词（节点输入在前，约束在后）
+      const fullPrompt = edgeTexts.length > 0 ? [text, ...edgeTexts.map((x) => x.text)].join("\n") : text;
       const r = await api.canvasNodeRun({
         episodeId,
         nodeId: node.id,
-        prompt: text,
+        prompt: fullPrompt,
         aspect: node.type === "image" || node.type === "video" || node.type === "video-clip" ? aspect : undefined,
         providerId: providerId || undefined,
         modelId: modelId || undefined,
@@ -260,6 +311,17 @@ export default function NodeChatPanel({
     try {
       const att = await api.agentAttach();
       bindRef({ id: att.assetId, name: att.name, path: att.path, kind: att.kind, from: t("本地上传") });
+      // v2.26.26 素材节点：上传同时写入节点 config（files/referenceAssetIds），供卡片缩略图与下游连线调用
+      if (node.type === "asset") {
+        const cfg = (node.config ?? {}) as Record<string, unknown>;
+        const files = (Array.isArray(cfg.files) ? cfg.files : []) as { id: string; name: string; path: string; kind: string }[];
+        const refIds = (Array.isArray(cfg.referenceAssetIds) ? cfg.referenceAssetIds : []) as string[];
+        onConfig(node.id, {
+          files: [...files, { id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
+          referenceAssetIds: [...refIds, att.assetId],
+          status: "ready",
+        });
+      }
     } catch (e) {
       const msg = api.errMsg(e);
       if (!msg.includes("已取消")) useApp.getState().toast(t("参考上传失败：{msg}", { msg }), "err");
@@ -284,14 +346,74 @@ export default function NodeChatPanel({
         <button className="node-chat-close" title={t("关闭")} onClick={onClose}>×</button>
       </div>
 
-      {/* 预览区：文本节点显示文本产物；媒体节点显示已有产物；否则给出尝试快捷项 */}
+      {/* 预览区：文本节点显示文本产物（可行内编辑）；素材节点显示已传文件；媒体节点显示已有产物；否则给出尝试快捷项 */}
       <div className="node-chat-preview">
-        {node.type === "text" ? (
+        {node.type === "asset" ? (
+          // v2.26.26 素材节点：展示已上传文件，提示连线用法
           <div className="node-chat-text">
-            {resultText ?? ((node.config as { text?: string }).text || "") ? (
-              <pre className="node-chat-text-body">
-                {resultText ?? (node.config as { text?: string }).text}
-              </pre>
+            {((node.config as { files?: { id: string; name: string; path: string; kind: string }[] }).files ?? []).length > 0 ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {((node.config as { files: { id: string; name: string; path: string; kind: string }[] }).files).map((f) =>
+                  f.kind === "images" || /\.(png|jpe?g|webp|gif)$/i.test(f.path) ? (
+                    <img key={f.id} className="node-chat-refthumb" src={assetUrl(f.path)} alt={f.name} title={f.name} />
+                  ) : (
+                    <span key={f.id} className="node-chat-chip has-ref" title={f.name}>
+                      <span>{refIcon(f.kind)}</span>
+                      {f.name.length > 12 ? `${f.name.slice(0, 12)}…` : f.name}
+                    </span>
+                  ),
+                )}
+              </div>
+            ) : (
+              <div className="node-chat-placeholder">
+                <span className="node-chat-try">{t("选中节点后在右侧「参数」面板点「📤 上传素材」，或用下方「＋ 参考」上传")}</span>
+              </div>
+            )}
+            <div className="node-chat-try" style={{ marginTop: 6 }}>
+              {t("💡 把本节点的输出连线到 生图/生视频 等节点，打开对方面板时会自动绑定为参考。")}
+            </div>
+          </div>
+        ) : node.type === "text" ? (
+          <div className="node-chat-text">
+            {editingText ? (
+              <>
+                <textarea
+                  className="node-chat-prompt"
+                  style={{ minHeight: 90, maxHeight: 220 }}
+                  value={textDraft}
+                  placeholder={t("输入文本内容，保存后连线给生成节点即可作为提示词/文字约束")}
+                  onChange={(e) => setTextDraft(e.target.value)}
+                />
+                <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                  <button
+                    className="node-chat-try-item"
+                    onClick={() => {
+                      onConfig(node.id, { text: textDraft });
+                      setResultText(textDraft);
+                      setEditingText(false);
+                    }}
+                  >
+                    💾 {t("保存")}
+                  </button>
+                  <button className="node-chat-try-item" onClick={() => setEditingText(false)}>{t("取消")}</button>
+                </div>
+              </>
+            ) : (resultText ?? ((node.config as { text?: string }).text || "")) ? (
+              <>
+                <pre className="node-chat-text-body">
+                  {resultText ?? (node.config as { text?: string }).text}
+                </pre>
+                <button
+                  className="node-chat-try-item"
+                  style={{ marginTop: 6 }}
+                  onClick={() => {
+                    setTextDraft((node.config as { text?: string }).text ?? "");
+                    setEditingText(true);
+                  }}
+                >
+                  ✏️ {t("编辑内容（作为下游节点的文字约束）")}
+                </button>
+              </>
             ) : (
               <div className="node-chat-placeholder">
                 <div className="node-chat-try">{t("尝试：")}</div>
@@ -301,6 +423,13 @@ export default function NodeChatPanel({
                     {t(a.label)}
                   </button>
                 ))}
+                <button
+                  className="node-chat-try-item"
+                  onClick={() => { setTextDraft(""); setEditingText(true); }}
+                >
+                  <span className="node-chat-try-ic">✏️</span>
+                  {t("手动输入内容（连线给生成节点作文字约束）")}
+                </button>
               </div>
             )}
           </div>
@@ -382,6 +511,12 @@ export default function NodeChatPanel({
             )}
             {r.name.length > 12 ? `${r.name.slice(0, 12)}…` : r.name}
             <button title={t("移除参考")} onClick={() => setRefs((rs) => rs.filter((_, j) => j !== i))}>×</button>
+          </span>
+        ))}
+        {edgeTexts.map((et, i) => (
+          <span key={`et${i}`} className="node-chat-chip has-ref" title={et.text}>
+            📝 {t("文字约束")} @{et.from}
+            <button title={t("移除该文字约束（本轮发送）")} onClick={() => setEdgeTexts((ts) => ts.filter((_, j) => j !== i))}>×</button>
           </span>
         ))}
         {STYLE_PRESETS.map((st) => (

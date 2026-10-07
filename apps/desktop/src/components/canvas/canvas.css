@@ -142,6 +142,28 @@
   white-space: nowrap;
 }
 .cv-node-type { font-size: 9.5px; color: var(--muted); font-family: var(--mono); }
+/* 素材节点缩略图条（v2.26.26） */
+.cv-node-thumbs {
+  position: absolute;
+  left: 8px; right: 8px; bottom: 34px;
+  height: 36px;
+  display: flex; align-items: center; gap: 4px;
+  overflow: hidden;
+}
+.cv-node-thumbs img {
+  height: 34px; width: 46px; object-fit: cover;
+  border-radius: 5px; border: 1px solid var(--border);
+}
+.cv-node-thumb-more {
+  font-size: 10px; color: var(--muted);
+  background: var(--bg-deep); border: 1px solid var(--border);
+  border-radius: 5px; padding: 8px 5px; line-height: 1;
+}
+.cv-node-thumb-count {
+  margin-left: auto; font-size: 9.5px; color: var(--muted);
+  background: var(--bg-deep); border: 1px solid var(--border);
+  border-radius: 99px; padding: 2px 7px; flex-shrink: 0;
+}
 .cv-node-summary {
   position: absolute;
   left: 10px;

@@ -7,12 +7,23 @@ import type { NodeProps } from "@xyflow/react";
 import { NODE_TYPE_DEFS } from "@onetv/node-sdk";
 import type { CanvasNode } from "@onetv/shared-types";
 import { useT } from "../../i18n";
+import { assetUrl } from "../../api-assets";
 import { NODE_ICONS, configSummary, portCn } from "./canvas-model";
 
 /** 与 canvas.css 中 .cv-node-head 高度保持一致。 */
 const HEAD_H = 40;
 const ROW_H = 22;
 const SUMMARY_H = 30;
+/** 素材节点缩略图条高度（v2.26.26） */
+const THUMB_H = 46;
+
+/** 素材节点 config.files 元数据（上传时写入） */
+interface AssetFileMeta {
+  id: string;
+  name: string;
+  path: string;
+  kind: string;
+}
 
 export default function CanvasNodeCard(props: NodeProps) {
   const t = useT();
@@ -36,10 +47,17 @@ export default function CanvasNodeCard(props: NodeProps) {
   const outputs = def?.outputs ?? [];
   const rows = Math.max(inputs.length, outputs.length, 1);
 
+  // v2.26.26 素材节点：缩略图条（最多 3 张图片缩略 + 计数）
+  const files = Array.isArray(cn.config?.files)
+    ? ((cn.config?.files as unknown) as AssetFileMeta[])
+    : [];
+  const isAsset = cn.type === "asset";
+  const imgFiles = files.filter((f) => f.kind === "images" || /\.(png|jpe?g|webp|gif)$/i.test(f.path));
+
   return (
     <div
       className={`cv-node${props.selected ? " selected" : ""}`}
-      style={{ height: HEAD_H + rows * ROW_H + SUMMARY_H }}
+      style={{ height: HEAD_H + rows * ROW_H + SUMMARY_H + (isAsset && files.length > 0 ? THUMB_H : 0) }}
     >
       <div className="cv-node-head">
         <span className="cv-node-icon">{NODE_ICONS[cn.type] ?? "⬜"}</span>
@@ -73,8 +91,23 @@ export default function CanvasNodeCard(props: NodeProps) {
           title={t("输出连接点（可接出多条连线，类型自动匹配）")}
         />
       )}
+      {isAsset && files.length > 0 && (
+        <div className="cv-node-thumbs" title={files.map((f) => f.name).join("\n")}>
+          {imgFiles.slice(0, 3).map((f) => (
+            <img key={f.id} src={assetUrl(f.path)} alt={f.name} />
+          ))}
+          {imgFiles.length < files.length && (
+            <span className="cv-node-thumb-more">📎{files.length - imgFiles.length}</span>
+          )}
+          <span className="cv-node-thumb-count">{files.length} 个素材</span>
+        </div>
+      )}
       <div className="cv-node-summary" title={JSON.stringify(cn.config ?? {})}>
-        {configSummary(cn.config)}
+        {isAsset
+          ? files.length > 0
+            ? t("{n} 个素材文件（连线给生成节点作参考）", { n: files.length })
+            : t("点击「上传素材」选择本地文件")
+          : configSummary(cn.config)}
       </div>
     </div>
   );

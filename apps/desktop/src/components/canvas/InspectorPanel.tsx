@@ -10,6 +10,17 @@ import { NODE_TYPE_DEFS } from "@onetv/node-sdk";
 import type { CanvasNode } from "@onetv/shared-types";
 import { t, useT } from "../../i18n";
 import { NODE_ICONS, type NodeParamDef } from "./canvas-model";
+import { agentAttach, errMsg } from "../../api";
+import { assetUrl } from "../../api-assets";
+import { useApp } from "../../store";
+
+/** 素材节点 config.files 元数据（v2.26.26） */
+interface AssetFileMeta {
+  id: string;
+  name: string;
+  path: string;
+  kind: string;
+}
 
 interface InspectorPanelProps {
   node: CanvasNode | null;
@@ -39,8 +50,50 @@ export default function InspectorPanel(props: InspectorPanelProps) {
   const locked = node?.config?.locked === true;
   const disabled = node?.config?.disabled === true;
   const isReviewAwaiting = node?.type === "review" && node?.config?.status === "awaiting_review";
+  const isAsset = node?.type === "asset";
+  const assetFiles: AssetFileMeta[] = isAsset && Array.isArray(node?.config?.files)
+    ? ((node?.config?.files as unknown) as AssetFileMeta[])
+    : [];
+  const [uploading, setUploading] = useState(false);
   const [draft, setDraft] = useState("");
   const [draftErr, setDraftErr] = useState<string | null>(null);
+
+  /** 上传本地素材（v2.26.26）：agentAttach 落盘入资产库，id/path 记入节点 config */
+  const uploadAssetFile = async () => {
+    if (!node) return;
+    setUploading(true);
+    try {
+      const att = await agentAttach();
+      onEditStart();
+      onConfigChange({
+        files: [...assetFiles, { id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
+        referenceAssetIds: [
+          ...((node.config?.referenceAssetIds as string[]) ?? []),
+          att.assetId,
+        ],
+        status: "ready",
+      });
+      onEditEnd();
+      useApp.getState().toast(t("已上传 {name}（连线给生成节点即可作为参考）", { name: att.name }), "ok");
+    } catch (e) {
+      const msg = errMsg(e);
+      if (!msg.includes("已取消") && !msg.includes("取消")) {
+        useApp.getState().toast(t("上传失败：{msg}", { msg }), "err");
+      }
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const removeAssetFile = (id: string) => {
+    if (!node) return;
+    onEditStart();
+    onConfigChange({
+      files: assetFiles.filter((f) => f.id !== id),
+      referenceAssetIds: ((node.config?.referenceAssetIds as string[]) ?? []).filter((x) => x !== id),
+    });
+    onEditEnd();
+  };
 
   // 选中节点变化（或 config 从外部变化，如应用 JSON / 表单编辑）时同步 JSON 草稿
   useEffect(() => {
@@ -97,6 +150,38 @@ export default function InspectorPanel(props: InspectorPanelProps) {
           {t("🔒 锁定（防删除/修改）")}
         </label>
       </div>
+
+      {/* v2.26.26 素材节点：本地上传图片/视频/音频/文本，作为参考源连线给生成节点 */}
+      {isAsset && (
+        <div className="field">
+          <label>{t("素材文件（本地上传，存入项目资产库）")}</label>
+          <button className="btn sm primary" disabled={uploading || locked} style={{ width: "100%" }} onClick={() => void uploadAssetFile()}>
+            {uploading ? t("上传中…") : t("📤 上传素材（图片/视频/音频/文本）")}
+          </button>
+          {assetFiles.length === 0 ? (
+            <div className="hint" style={{ marginTop: 6 }}>
+              {t("上传后把本节点的输出连线到 生图/生视频/片段合成 等节点，即可作为参考图/参考视频/文字约束。")}
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+              {assetFiles.map((f) => (
+                <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {f.kind === "images" || /\.(png|jpe?g|webp|gif)$/i.test(f.path) ? (
+                    <img src={assetUrl(f.path)} alt={f.name} style={{ width: 40, height: 30, objectFit: "cover", borderRadius: 5, border: "1px solid var(--border)", flexShrink: 0 }} />
+                  ) : (
+                    <span style={{ fontSize: 18, flexShrink: 0, width: 40, textAlign: "center" }}>
+                      {f.kind === "videos" ? "🎬" : f.kind === "audio" ? "🎵" : "📄"}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={f.path}>{f.name}</span>
+                  <button className="btn sm danger" title={t("移除该素材")} onClick={() => removeAssetFile(f.id)}>✕</button>
+                </div>
+              ))}
+              <div className="hint">{t("把本节点输出连线到生成节点，即自动作为其参考项。")}</div>
+            </div>
+          )}
+        </div>
+      )}
 
       {isReviewAwaiting && (
         <div style={{ background: "rgba(255,181,71,.12)", border: "1px solid rgba(255,181,71,.4)", borderRadius: 8, padding: 10, margin: "8px 0" }}>

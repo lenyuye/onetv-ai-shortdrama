@@ -2132,7 +2132,7 @@ fn canvas_node_run(
             }),
             format!("文本生成（节点 {title}）"),
         ),
-        "script" | "storyboard" | "condition" | "review" | "export" => {
+        "script" | "storyboard" | "asset" | "condition" | "review" | "export" => {
             return Err(err(format!(
                 "节点类型「{node_type}」暂不支持面板直发生成；文本/图片/视频/音频节点可直接生成"
             )));
@@ -2506,9 +2506,20 @@ async fn canvas_run_batch(
         let nid_str = nid.clone();
 
         match ntype.as_str() {
-            "text" => {
+            "text" | "asset" => {
+                // 文本/素材节点：无需执行（内容即产物）；上游连线语义在下游生成节点聚合
+                let asset_count = if ntype == "asset" {
+                    node.pointer("/config/referenceAssetIds").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)
+                } else {
+                    0
+                };
                 if let Some(cfg) = node.get_mut("config").and_then(|v| v.as_object_mut()) {
                     cfg.insert("batchStatus".into(), serde_json::json!("done"));
+                    if ntype == "asset" {
+                        cfg.insert("batchNote".into(), serde_json::json!(format!(
+                            "素材就绪（{asset_count} 个文件，供下游节点作参考）"
+                        )));
+                    }
                 }
                 nodes_arr[idx] = node;
                 completed += 1;
@@ -2624,6 +2635,57 @@ async fn canvas_run_batch(
                     .and_then(|v| v.as_array())
                     .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
                     .unwrap_or_default();
+                // v2.26.26 连线即参考（LibTV/即梦式）：聚合上游连线节点的产物与参考；
+                // 上游文本节点内容作为文字约束并入提示词。
+                let mut refs = refs;
+                let mut upstream_texts: Vec<String> = Vec::new();
+                for (src, tgt, _) in &edges {
+                    if tgt != &nid_str {
+                        continue;
+                    }
+                    if let Some(src_node) = nodes_arr
+                        .iter()
+                        .find(|n| n.get("id").and_then(|v| v.as_str()) == Some(src.as_str()))
+                    {
+                        let scfg = src_node.get("config");
+                        let out = scfg
+                            .and_then(|c| c.get("outputAssetId"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        if !out.is_empty() && !refs.contains(&out) {
+                            refs.push(out);
+                        }
+                        if let Some(arr) = scfg.and_then(|c| c.get("referenceAssetIds")).and_then(|v| v.as_array()) {
+                            for rid in arr.iter().filter_map(|x| x.as_str()) {
+                                if !rid.is_empty() && !refs.contains(&rid.to_string()) {
+                                    refs.push(rid.to_string());
+                                }
+                            }
+                        }
+                        if src_node.get("type").and_then(|v| v.as_str()) == Some("text") {
+                            let ut = scfg
+                                .and_then(|c| c.get("text"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.trim().to_string())
+                                .unwrap_or_default();
+                            if !ut.is_empty() {
+                                upstream_texts.push(ut);
+                            }
+                        }
+                    }
+                }
+                let prompt = if !upstream_texts.is_empty() {
+                    // 上游文本并入提示词（文字约束）：节点自身提示词在前，上游文本按连线顺序在后
+                    let mut parts = Vec::new();
+                    if !prompt.is_empty() {
+                        parts.push(prompt);
+                    }
+                    parts.extend(upstream_texts);
+                    parts.join("\n")
+                } else {
+                    prompt
+                };
                 let (kind, params, title_full) = match ntype.as_str() {
                     "image" => (
                         onetv_core::jobs::JobKind::ImageGeneration,
