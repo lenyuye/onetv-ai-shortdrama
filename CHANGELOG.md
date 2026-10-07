@@ -2,6 +2,19 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.26.23] — v2.26.23：评估发布版（10月6-7日工作批收口）
+
+### 修复
+- **🔴 ThinkFilter 流式剥离多字节中文 panic**：非 think 分支的 `<think>` 尾窗匹配与 think 内保留窗均按字节切片、未检查 UTF-8 字符边界——流式分片含中文时 `push` 直接 panic（`start byte index 5 is not a char boundary`）。改为边界感知切片，并补多字节中文分片回归用例（跨分片 `<th`/`ink>`/`</th` 与中文交错）。
+- **🧪 webhook 出站投递测试读取竞态**：测试桩单次 `read` 可能只收到头、body 在后续 TCP 段到达，导致断言偶发失败——改为循环读满 Content-Length 声明的 body。
+- **🧹 workspace 编译警告清零**：mail.rs 多余 `mut`；ScriptDocStub/渲染命令 camelCase 字段为前端 JSON 契约（`#[allow(non_snake_case)]` 标注）；测试连接 match 中 Comfyui 不可达重复分支删除。
+
+### 评估（发版前体检）
+- **测试**：Rust 108 项全绿（core 78 + golden 1 + security 4 + media 7/9/9），前端 vitest 30 项全绿；`session_lifecycle` 在一次全量并行跑中失败一次、单独与复跑均绿（偶发，未复现，持续观察）。
+- **构建**：`tsc --noEmit` 无错；vite 构建 10.5s 通过；`cargo build` 0 warning。
+- **遗留确认**：① v2.26.15 记录的「jobs 终态落库丢 result.reply」已修复（set_meta 运行期增量落库 reply，job_list/终态 payload 均含 reply 字段）；②「重装后 ad-hoc 签名变化触发钥匙串授权弹窗」为 macOS 对 ad-hoc 签名应用的固有行为，根治需开发者证书签名，维持环境级已知限制。
+- **工作区收口**：v2.26.22 已入库打 tag；无未提交代码；无与项目相关的后台进程/自动化在运行。
+
 ## [2.26.22] — v2.26.22：项目重命名 / 剧本版本编辑 / 分镜查看（用户反馈）
 
 ### 追加
