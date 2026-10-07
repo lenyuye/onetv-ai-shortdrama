@@ -129,36 +129,36 @@ function AssetCard({
           </span>
         )}
         {group === "video" && <span className="tag asset-dur">{t("时长 --:--")}</span>}
-        {/* 悬浮操作层 */}
-        <div className="asset-actions">
-          <button className="btn sm" onClick={() => onCopy(asset)}>{t("复制路径")}</button>
-          <button className="btn sm" onClick={() => onPreview(asset)} title={t("在 OneTV 内直接查看（视频/图片/音频/文本）")}>
-            {t("👁 预览")}
-          </button>
+      </div>
+      {/* 操作栏（v2.26.25）：常显于缩略图下方，flex-wrap 自动换行——不再悬浮裁切 */}
+      <div className="asset-actions">
+        <button className="btn sm" onClick={() => onCopy(asset)}>{t("复制路径")}</button>
+        <button className="btn sm" onClick={() => onPreview(asset)} title={t("在 OneTV 内直接查看（视频/图片/音频/文本）")}>
+          {t("👁 预览")}
+        </button>
+        <button
+          className="btn sm"
+          title={t("在 Finder 中打开所在文件夹并选中该文件")}
+          onClick={() => {
+            void assets.assetReveal(asset.path).then(
+              () => useApp.getState().toast(t("已在 Finder 中定位"), "ok"),
+              (e) => useApp.getState().toast(t("打开失败：{msg}", { msg: errMsg(e) }), "err"),
+            );
+          }}
+        >
+          {t("📁 文件夹")}
+        </button>
+        {group === "video" && (
           <button
-            className="btn sm"
-            title={t("在 Finder 中打开所在文件夹并选中该文件")}
-            onClick={() => {
-              void assets.assetReveal(asset.path).then(
-                () => useApp.getState().toast(t("已在 Finder 中定位"), "ok"),
-                (e) => useApp.getState().toast(t("打开失败：{msg}", { msg: errMsg(e) }), "err"),
-              );
-            }}
+            className="btn sm blue"
+            disabled={understanding}
+            title={t("发起视频理解任务，完成后结果写入 episodes/ep01/understanding.json")}
+            onClick={() => onUnderstand(asset)}
           >
-            {t("📁 文件夹")}
+            {understanding ? t("创建中…") : t("🔍 视频理解")}
           </button>
-          {group === "video" && (
-            <button
-              className="btn sm blue"
-              disabled={understanding}
-              title={t("发起视频理解任务，完成后结果写入 episodes/ep01/understanding.json")}
-              onClick={() => onUnderstand(asset)}
-            >
-              {understanding ? t("创建中…") : t("🔍 视频理解")}
-            </button>
-          )}
-          <button className="btn sm danger" onClick={() => onDelete(asset)}>{t("删除")}</button>
-        </div>
+        )}
+        <button className="btn sm danger" onClick={() => onDelete(asset)}>{t("删除")}</button>
       </div>
       <div className="asset-meta">
         <div className="asset-name" title={name}>{name}</div>
@@ -447,13 +447,12 @@ const ASSETS_CSS = `
 .asset-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .asset-icon { font-size: 34px; opacity: 0.75; }
 .asset-dur { position: absolute; top: 6px; left: 6px; background: rgba(4, 6, 14, 0.7); }
+/* 操作栏：卡片内常显（v2.26.25）——flex-wrap 换行 + 居中，窄卡也不裁切 */
 .asset-actions {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  display: flex; gap: 6px; justify-content: center; padding: 8px;
-  background: linear-gradient(transparent, rgba(4, 6, 14, 0.88));
-  opacity: 0; transition: opacity 0.12s ease;
+  display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;
+  padding: 7px 8px; border-top: 1px solid var(--border); background: var(--panel);
 }
-.asset-card:hover .asset-actions { opacity: 1; }
+.asset-actions .btn { padding: 2px 8px; font-size: 10.5px; border-radius: 7px; }
 .asset-meta { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .asset-name {
   font-size: 12px; color: var(--text);
