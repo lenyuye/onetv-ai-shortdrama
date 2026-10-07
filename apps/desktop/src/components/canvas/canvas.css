@@ -380,3 +380,24 @@
 .node-chat-send:disabled { opacity: 0.4; cursor: default; }
 .node-chat-status { font-size: 11.5px; color: var(--cyan); }
 .node-chat-status.err { color: var(--red); }
+
+/* 连线 hover 删除按钮（v2.26.27 即梦式） */
+.cv-edge-del {
+  position: absolute;
+  width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--panel-3);
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  font-size: 12px; line-height: 1;
+  cursor: pointer;
+  pointer-events: all;
+  z-index: 1;
+  padding: 0;
+}
+.cv-edge-del:hover {
+  background: rgba(255, 84, 112, 0.16);
+  border-color: var(--red);
+  color: var(--red);
+}

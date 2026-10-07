@@ -12,17 +12,19 @@ import {
   ReactFlow,
   useReactFlow,
 } from "@xyflow/react";
-import type { Connection, Edge, NodeTypes, OnEdgesChange, OnNodesChange } from "@xyflow/react";
+import type { Connection, Edge, EdgeTypes, NodeTypes, OnEdgesChange, OnNodesChange } from "@xyflow/react";
 import type { CanvasNode } from "@onetv/shared-types";
 import type { ProviderDto } from "../../api-providers";
 import { useT } from "../../i18n";
 import CanvasNodeCard from "./CanvasNodeCard";
+import CanvasEdge, { EdgeDeleteContext } from "./CanvasEdge";
 import NodeChatPanel from "./NodeChatPanel";
 import { NODE_COLORS, type FlowNode } from "./canvas-model";
 import { FIT_VIEW_OPTIONS } from "../../hooks/useCanvasDoc";
 import type { NodeChatState } from "../../hooks/useCanvasNodeChat";
 
 const nodeTypes: NodeTypes = { onetv: CanvasNodeCard };
+const edgeTypes: EdgeTypes = { onetv: CanvasEdge };
 
 export interface CanvasFlowAreaProps {
   nodes: FlowNode[];
@@ -35,6 +37,8 @@ export interface CanvasFlowAreaProps {
   onPaneContextMenu: (e: ReactMouseEvent | MouseEvent) => void;
   onNodeContextMenu: (e: ReactMouseEvent, node: FlowNode) => void;
   onEdgeContextMenu: (e: ReactMouseEvent, edge: Edge) => void;
+  /** v2.26.27 连线 hover × 删除（走画布 deleteEdgeById，含撤销） */
+  onDeleteEdge: (edgeId: string) => void;
   /** 双击节点 → 打开生成面板 */
   onNodeDoubleClick: (node: FlowNode) => void;
   /** 画布平移开始 → 关闭右键菜单 */
@@ -63,6 +67,7 @@ export default function CanvasFlowArea({
   onPaneContextMenu,
   onNodeContextMenu,
   onEdgeContextMenu,
+  onDeleteEdge,
   onNodeDoubleClick,
   onMoveStart,
   wrapperRef,
@@ -87,6 +92,7 @@ export default function CanvasFlowArea({
       onDrop={onDrop}
       onWheel={onWheel}
     >
+      <EdgeDeleteContext.Provider value={onDeleteEdge}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -94,6 +100,8 @@ export default function CanvasFlowArea({
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        defaultEdgeOptions={{ type: "onetv" }}
         onNodeDragStart={onNodeDragStart}
         onNodeDragStop={onNodeDragStop}
         onPaneContextMenu={onPaneContextMenu}
@@ -119,6 +127,7 @@ export default function CanvasFlowArea({
         />
         <Controls showInteractive={false} />
       </ReactFlow>
+      </EdgeDeleteContext.Provider>
 
       {/* LibTV 式节点生成面板：双击/右键节点打开；位置随节点实时计算 */}
       {nodeChat &&

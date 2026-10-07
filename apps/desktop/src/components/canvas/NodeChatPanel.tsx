@@ -283,9 +283,10 @@ export default function NodeChatPanel({
             } else {
               const outId = (j.outputs ?? [])[0];
               if (outId) {
-                onConfig(node.id, { outputAssetId: outId, status: "ready" });
                 const list = await assetList().catch(() => []);
                 const hit = list.find((a) => a.id === outId);
+                // v2.26.27：路径一并写入 config，节点卡片可直接显示产物缩略图
+                onConfig(node.id, { outputAssetId: outId, outputAssetPath: hit?.path ?? "", status: "ready" });
                 setResultPath(hit?.path ?? null);
               }
             }

@@ -17,6 +17,7 @@ import type { Connection, Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { NODE_TYPE_DEFS, checkPortCompatible } from "@onetv/node-sdk";
 import type { CanvasNode, EpisodeInfo, NodeType } from "@onetv/shared-types";
+import * as api from "../api";
 import { providerList, type ProviderDto } from "../api-providers";
 import { useT } from "../i18n";
 import { useApp } from "../store";
@@ -370,19 +371,72 @@ function CanvasWorkbench({
     void rf.fitView({ padding: 0.2, duration: 220 });
   }, [rf]);
 
-  /* ---------- 拖拽创建（从面板拖到画布） ---------- */
+  /* ---------- 拖拽创建（从面板拖到画布）+ 拖文件上传建素材节点（v2.26.27 即梦式） ---------- */
 
   const onDragOver = (e: ReactDragEvent<HTMLDivElement>) => {
-    if (e.dataTransfer.types.includes(NODE_DND_MIME)) {
+    const hasFiles = Array.from(e.dataTransfer.types).includes("Files");
+    if (e.dataTransfer.types.includes(NODE_DND_MIME) || hasFiles) {
       e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
+      e.dataTransfer.dropEffect = hasFiles && !e.dataTransfer.types.includes(NODE_DND_MIME) ? "copy" : "move";
     }
   };
-  const onDrop = (e: ReactDragEvent<HTMLDivElement>) => {
+
+  /** 读取 File 为 base64（agentAttachData 落盘入资产库，单文件上限 50MB） */
+  const fileToB64 = (f: File) =>
+    new Promise<string>((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result).split(",")[1] ?? "");
+      r.onerror = () => rej(r.error ?? new Error("读取失败"));
+      r.readAsDataURL(f);
+    });
+
+  const onDrop = async (e: ReactDragEvent<HTMLDivElement>) => {
     e.preventDefault();
     const raw = e.dataTransfer.getData(NODE_DND_MIME);
-    if (!raw) return;
-    addNodeAt(raw as NodeType, { x: e.clientX, y: e.clientY });
+    if (raw) {
+      addNodeAt(raw as NodeType, { x: e.clientX, y: e.clientY });
+      return;
+    }
+    // v2.26.27：从 Finder 拖文件进画布 → 自动上传入资产库并创建素材节点（即梦式）
+    const files = Array.from(e.dataTransfer.files ?? []).slice(0, 5);
+    if (files.length === 0) return;
+    if (!episodeIdRef.current) {
+      toast(t("请先选择分集"), "warn");
+      return;
+    }
+    let created = 0;
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      if (f.size > 50 * 1024 * 1024) {
+        toast(t("{name} 超过 50MB 上限，已跳过", { name: f.name }), "warn");
+        continue;
+      }
+      try {
+        const dataB64 = await fileToB64(f);
+        const att = await api.agentAttachData({ name: f.name, dataB64 });
+        const pos = rf.screenToFlowPosition({ x: e.clientX + i * 30, y: e.clientY + i * 26 });
+        const cn = createCanvasNode("asset", episodeIdRef.current, pos);
+        cn.title = f.name.length > 24 ? `${f.name.slice(0, 24)}…` : f.name;
+        cn.config = {
+          ...cn.config,
+          files: [{ id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
+          referenceAssetIds: [att.assetId],
+          status: "ready",
+        };
+        pushUndo();
+        setNodes((ns) => [
+          ...ns.map((n) => ({ ...n, selected: false })),
+          { id: cn.id, type: "onetv", position: pos, data: { cn }, selected: true },
+        ]);
+        created++;
+      } catch (err) {
+        toast(t("{name} 上传失败：{msg}", { name: f.name, msg: api.errMsg(err) }), "err");
+      }
+    }
+    if (created > 0) {
+      scheduleSave();
+      toast(t("已从拖入文件创建 {n} 个素材节点（连线给生成节点作参考）", { n: created }), "ok");
+    }
   };
 
   const centerScreen = () => {
@@ -446,6 +500,7 @@ function CanvasWorkbench({
           onPaneContextMenu={handlePaneContextMenu}
           onNodeContextMenu={handleNodeContextMenu}
           onEdgeContextMenu={handleEdgeContextMenu}
+          onDeleteEdge={deleteEdgeById}
           onNodeDoubleClick={openNodeChat}
           onMoveStart={() => setCtxMenu(null)}
           wrapperRef={wrapperRef}

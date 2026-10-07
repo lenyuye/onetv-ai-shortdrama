@@ -11,8 +11,9 @@ import { useT } from "../../i18n";
 import { NODE_ICONS } from "./canvas-model";
 import type { CtxMenuState } from "../../hooks/useCanvasContextMenu";
 
-/** 新建节点菜单条目（10 种节点全部可建）。 */
+/** 新建节点菜单条目（11 种节点全部可建）。 */
 const NODE_TYPE_ITEMS: { type: NodeType; label: string; icon: string }[] = [
+  { type: "asset", label: "素材", icon: NODE_ICONS.asset },
   { type: "text", label: "文本", icon: NODE_ICONS.text },
   { type: "script", label: "剧本", icon: NODE_ICONS.script },
   { type: "image", label: "图片", icon: NODE_ICONS.image },
