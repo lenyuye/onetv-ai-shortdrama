@@ -187,6 +187,7 @@ export default function JobsView() {
 
   const [jobs, setJobs] = useState<JobDto[]>([]);
   const [loading, setLoading] = useState(true);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [egressMap, setEgressMap] = useState<Record<string, EgressPreview>>({});
@@ -197,9 +198,11 @@ export default function JobsView() {
   const egressCheckedRef = useRef<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
+    setLoading(true);
     try {
       const list = await api.jobList(200);
       setJobs(list);
+      setLastRefresh(new Date());
     } catch (e) {
       console.error("jobList", e);
     } finally {
@@ -351,7 +354,14 @@ export default function JobsView() {
             <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
             {t("自动刷新（15s 兜底）")}
           </label>
-          <button className="btn ghost" onClick={() => void refresh()}>{t("⟳ 刷新")}</button>
+          <button className="btn ghost" disabled={loading} onClick={() => void refresh()}>
+            {loading ? t("刷新中…") : t("⟳ 刷新")}
+          </button>
+          {lastRefresh && (
+            <span className="hint" style={{ marginLeft: 6 }}>
+              {t("已刷新 {time}", { time: lastRefresh.toLocaleTimeString("zh-CN", { hour12: false }) })}
+            </span>
+          )}
         </div>
       </div>
 

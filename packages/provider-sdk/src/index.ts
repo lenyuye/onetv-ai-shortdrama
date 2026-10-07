@@ -60,7 +60,7 @@ export const PROVIDER_DRIVERS: ProviderDriverInfo[] = [
   {
     driver: "stable-diffusion" as ProviderDriver,
     label: "Stable Diffusion（本地）",
-    description: "AUTOMATIC1111 / Forge WebUI（与 ComfyUI 同为本地直连、免鉴权、Local-only 可用），本机生图辅助资产",
+    description: "本机 SD WebUI 生图（Local-only 可用）",
     defaultBaseUrl: "http://127.0.0.1:7860",
     defaultTimeoutMs: 600000,
     supportsModelListing: true,

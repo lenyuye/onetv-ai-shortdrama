@@ -37,6 +37,9 @@ pub struct ResponseMapping {
     pub result_url: Option<String>,
     #[serde(default)]
     pub result_b64: Option<String>,
+    /// hex 编码结果（v2.26.19）：MiniMax t2a_v2 / music_generation 返回 data.audio 为 hex
+    #[serde(default)]
+    pub result_hex: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -271,6 +274,7 @@ pub async fn execute(
         status: None,
         result_url: Some("$.data.output.url".into()),
         result_b64: None,
+        result_hex: None,
     });
 
     let mut text = None;
@@ -311,6 +315,34 @@ pub async fn execute(
                         .decode(clean.trim())
                         .map_err(|e| GatewayError::Parse(format!("base64 结果解码失败: {e}")))?;
                     let dest = out_dir.join(format!("custom_{}.png", chrono::Utc::now().timestamp_millis()));
+                    std::fs::write(&dest, &bytes).map_err(|e| GatewayError::Network(e.to_string()))?;
+                    downloaded.push(dest.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    // hex 结果（v2.26.19）：MiniMax t2a_v2 / music_generation 返回 data.audio 为 hex 编码
+    if downloaded.is_empty() {
+        if let Some(p) = &mapping.result_hex {
+            if let Some(v) = json_path(&resp, p) {
+                if let Value::String(hexs) = v {
+                    let clean: String = hexs
+                        .trim()
+                        .chars()
+                        .filter(|c| c.is_ascii_hexdigit())
+                        .collect();
+                    if clean.len() % 2 != 0 {
+                        return Err(GatewayError::Parse("hex 结果长度为奇数，无法解码".into()));
+                    }
+                    let bytes = (0..clean.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(&clean[i..i + 2], 16))
+                        .collect::<Result<Vec<u8>, _>>()
+                        .map_err(|e| GatewayError::Parse(format!("hex 结果解码失败: {e}")))?;
+                    let dest = out_dir.join(format!(
+                        "custom_{}.mp3",
+                        chrono::Utc::now().timestamp_millis()
+                    ));
                     std::fs::write(&dest, &bytes).map_err(|e| GatewayError::Network(e.to_string()))?;
                     downloaded.push(dest.to_string_lossy().into_owned());
                 }

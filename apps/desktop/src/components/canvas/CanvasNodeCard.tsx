@@ -52,28 +52,27 @@ export default function CanvasNodeCard(props: NodeProps) {
         <span className="cv-node-type" title={cn.type}>{def ? t(def.title) : t("节点")}</span>
       </div>
 
-      {inputs.map((p, i) => (
+      {/* v2.26.19 单连接点（LibTV/即梦式）：每节点 1 输入点 + 1 输出点，可多连；逻辑端口由类型自动匹配 */}
+      {inputs.length > 0 && (
         <Handle
-          key={p.port}
           type="target"
           position={Position.Left}
-          id={p.port}
+          id={inputs[0].port}
           className="cv-handle"
-          style={{ top: HEAD_H + i * ROW_H + ROW_H / 2 }}
-          title={portCn(p.port) !== p.port ? t("输入连接点（{port}）", { port: portCn(p.port) }) : t("输入连接点")}
+          style={{ top: HEAD_H + (rows * ROW_H) / 2 }}
+          title={t("输入连接点（可接入多条连线，类型自动匹配）")}
         />
-      ))}
-      {outputs.map((p, i) => (
+      )}
+      {outputs.length > 0 && (
         <Handle
-          key={p.port}
           type="source"
           position={Position.Right}
-          id={p.port}
+          id={outputs[0].port}
           className="cv-handle"
-          style={{ top: HEAD_H + i * ROW_H + ROW_H / 2 }}
-          title={portCn(p.port) !== p.port ? t("输出连接点（{port}）", { port: portCn(p.port) }) : t("输出连接点")}
+          style={{ top: HEAD_H + (rows * ROW_H) / 2 }}
+          title={t("输出连接点（可接出多条连线，类型自动匹配）")}
         />
-      ))}
+      )}
       <div className="cv-node-summary" title={JSON.stringify(cn.config ?? {})}>
         {configSummary(cn.config)}
       </div>

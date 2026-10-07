@@ -3,7 +3,7 @@
  * 纯函数集合，不依赖 React。
  */
 import type { Edge, Node, XYPosition } from "@xyflow/react";
-import { NODE_TYPE_DEFS } from "@onetv/node-sdk";
+import { checkPortCompatible, NODE_TYPE_DEFS } from "@onetv/node-sdk";
 import { t } from "../../i18n";
 import {
   SCHEMA_VERSION,
@@ -199,6 +199,32 @@ export function outputAcceptOf(type: NodeType, port: string | null): string[] {
   const hit = port ? outputs.find((o) => o.port === port) : undefined;
   if (hit) return hit.accept;
   return Array.from(new Set(outputs.flatMap((o) => o.accept)));
+}
+
+/** 单连接点模式（v2.26.19，LibTV/即梦式）：节点只渲染 1 输入点 + 1 输出点，
+ * 连线时按类型兼容性自动选择实际的逻辑端口。 */
+/** 为 target 类型挑选能接受 source accept 的第一个输入端口；无则回退第一个输入。 */
+export function pickInputPort(type: NodeType, sourceAccepts: string[]): { port: NodePortDef; id: string } | null {
+  const inputs = NODE_TYPE_DEFS[type]?.inputs ?? [];
+  if (!inputs.length) return null;
+  const hit = inputs.find((i) => {
+    const r = checkPortCompatible(i.accept, sourceAccepts);
+    return r.ok;
+  });
+  const port = hit ?? inputs[0];
+  return { port, id: port.port };
+}
+
+/** 为 source 类型挑选输出端口：优先与 target accept 兼容的，否则第一个输出。 */
+export function pickOutputPort(type: NodeType, targetAccept: string[]): { port: NodePortDef; id: string } | null {
+  const outputs = NODE_TYPE_DEFS[type]?.outputs ?? [];
+  if (!outputs.length) return null;
+  const hit = outputs.find((o) => {
+    const r = checkPortCompatible(targetAccept, o.accept);
+    return r.ok;
+  });
+  const port = hit ?? outputs[0];
+  return { port, id: port.port };
 }
 
 /** 统一错误信息文本（Tauri invoke 失败多为 string）。 */

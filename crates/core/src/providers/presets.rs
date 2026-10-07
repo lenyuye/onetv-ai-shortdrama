@@ -99,6 +99,21 @@ pub fn gen_presets() -> Vec<GenPreset> {
             notes: "与 Seedream/Seedance 共用同一个方舟 API Key。模型 ID 以方舟「开通管理」页为准（先开通才能调用）；也支持直接填 ep-xxxx 推理接入点 ID。Doubao-Seed-1.6 自带视觉理解，可当 Vision 模型用。",
             template: json!({}),
         },
+        // ---------------- MiniMax 对话（海螺）----------------
+        GenPreset {
+            category: "chat",
+            driver: "openai-compatible",
+            base_url: "https://api.minimaxi.com/v1",
+            id: "minimax-chat",
+            name: "MiniMax 对话（海螺 Text-01/M3）",
+            vendor: "MiniMax",
+            docs_url: "https://www.minimax.cn/document/chat_completions",
+            auth_type: "bearer",
+            header_name: None,
+            default_model: ("MiniMax-Text-01", "MiniMax Text-01（对话/视觉）"),
+            notes: "与视频/图片/配音共用 MiniMax API Key（2026-10 真机验证）。⚠️ MiniMax 各能力接口不同：对话走本预设（/v1/chat/completions，OpenAI 兼容）；视频/图片/配音/音乐用「视频生成」「图片生成」「配音/音乐」分组的对应预设（api.minimax.cn）。模型 ID 可换 M3/M2.5 等（/models 目录可自动获取）。",
+            template: json!({}),
+        },
         // ---------------- ChatGPT（OpenAI）----------------
         GenPreset {
             category: "chat",
@@ -251,6 +266,59 @@ pub fn gen_presets() -> Vec<GenPreset> {
                     "response_format": "url"
                 },
                 "response": { "result_url": "$.data.image_urls" }
+            }),
+        },
+        /* ==================== 配音 / 音乐（MiniMax，category=audio） ==================== */
+        // ---------------- MiniMax 配音（speech-2.8-hd，t2a_v2）----------------
+        GenPreset {
+            category: "audio",
+            driver: "custom-http",
+            base_url: "",
+            id: "minimax-tts",
+            name: "MiniMax 配音（speech-2.8-hd）",
+            vendor: "MiniMax",
+            docs_url: "https://www.minimax.cn/document/t2a_v2",
+            auth_type: "bearer",
+            header_name: None,
+            default_model: ("speech-2.8-hd", "MiniMax speech-2.8-hd（台词配音）"),
+            notes: "与海螺/图片共用 MiniMax API Key。同步接口返回 data.audio 为 hex 编码（OneTV 自动解码为 mp3 入库）。音色 voice_id 可在模板 body 的 voice_setting 里改（male-qn-qingse=青涩青年音色）；情感 emotion 可填 happy/sad/angry 等。",
+            template: json!({
+                "method": "POST",
+                "url": "https://api.minimax.cn/v1/t2a_v2",
+                "headers": { "Content-Type": "application/json" },
+                "body": {
+                    "model": "${model.id}",
+                    "text": "${input.prompt}",
+                    "stream": false,
+                    "voice_setting": { "voice_id": "male-qn-qingse", "speed": 1, "vol": 1, "pitch": 0 },
+                    "audio_setting": { "sample_rate": 32000, "bitrate": 128000, "format": "mp3", "channel": 1 }
+                },
+                "response": { "result_hex": "$.data.audio" }
+            }),
+        },
+        // ---------------- MiniMax 音乐（music-3.0，music_generation）----------------
+        GenPreset {
+            category: "audio",
+            driver: "custom-http",
+            base_url: "",
+            id: "minimax-music",
+            name: "MiniMax 音乐（music-3.0）",
+            vendor: "MiniMax",
+            docs_url: "https://www.minimax.cn/document/music_generation",
+            auth_type: "bearer",
+            header_name: None,
+            default_model: ("music-3.0", "MiniMax music-3.0（配乐/BGM）"),
+            notes: "与海螺/图片共用 MiniMax API Key。prompt 填曲风关键词（如：独立民谣,忧郁,咖啡馆），lyrics 可选填歌词（模板已带 [verse]/[chorus] 结构示例位，可整体删除只留 prompt）。返回 data.audio 为 hex 编码（OneTV 自动解码 mp3 入库）。",
+            template: json!({
+                "method": "POST",
+                "url": "https://api.minimax.cn/v1/music_generation",
+                "headers": { "Content-Type": "application/json" },
+                "body": {
+                    "model": "${model.id}",
+                    "prompt": "${input.prompt}",
+                    "audio_setting": { "sample_rate": 44100, "bitrate": 256000, "format": "mp3" }
+                },
+                "response": { "result_hex": "$.data.audio" }
             }),
         },
         /* ==================== 视频生成 ==================== */
@@ -473,8 +541,9 @@ pub fn gen_presets_json() -> Vec<Value> {
     let mut all = gen_presets();
     all.sort_by_key(|p| match p.category {
         "chat" => 0,
-        "image" => 1,
-        _ => 2,
+        "audio" => 1,
+        "image" => 2,
+        _ => 3,
     });
     all.into_iter()
         .map(|p| {
@@ -505,7 +574,17 @@ mod tests {
     #[test]
     fn presets_have_valid_templates() {
         let presets = gen_presets();
-        assert!(presets.iter().filter(|p| p.category == "chat").count() >= 5, "通用对话预设：DeepSeek/Kimi/千问/豆包/ChatGPT");
+        assert!(presets.iter().filter(|p| p.category == "chat").count() >= 6, "通用对话预设：DeepSeek/Kimi/千问/豆包/ChatGPT/MiniMax");
+        assert!(presets.iter().filter(|p| p.category == "audio").count() >= 2, "配音/音乐预设：MiniMax speech-2.8-hd / music-3.0");
+        for a in presets.iter().filter(|p| p.category == "audio") {
+            let tmpl: HttpTemplate = serde_json::from_value(a.template.clone())
+                .unwrap_or_else(|e| panic!("音频预设 {} 模板解析失败: {e}", a.id));
+            assert!(
+                tmpl.response.as_ref().map(|r| r.result_hex.is_some()).unwrap_or(false),
+                "音频预设 {} 必须带 result_hex 映射（MiniMax 返回 hex 编码音频）",
+                a.id
+            );
+        }
         assert!(presets.iter().filter(|p| p.category == "image").count() >= 4, "图片预设：Nano Banana/Seedream/FLUX/MJ");
         assert!(presets.iter().filter(|p| p.category == "video").count() >= 6, "视频预设：海螺/可灵/即梦/万相/Pika/Runway");
         for p in &presets {

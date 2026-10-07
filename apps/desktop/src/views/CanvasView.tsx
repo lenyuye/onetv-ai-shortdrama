@@ -29,6 +29,8 @@ import ModelSelectorPanel, { modelCapsOf } from "../components/canvas/ModelSelec
 import {
   createCanvasNode,
   inputAcceptOf,
+  pickInputPort,
+  pickOutputPort,
   outputAcceptOf,
   uid,
   type FlowNode,
@@ -292,12 +294,18 @@ function CanvasWorkbench({
       const tgt = nodesRef.current.find((n) => n.id === conn.target);
       if (!src || !tgt) return;
 
-      const inPort = inputAcceptOf(tgt.data.cn.type, conn.targetHandle);
-      if (!inPort) {
+      // v2.26.19 单连接点：连线按类型兼容性自动挑逻辑端口（用户只看到每节点 1 进 1 出）
+      const outAcceptAll = outputAcceptOf(src.data.cn.type, null);
+      const picked = pickInputPort(tgt.data.cn.type, outAcceptAll);
+      if (!picked) {
         useApp.getState().toast(t("目标节点没有可用输入端口"), "err");
         return;
       }
-      const outAccept = outputAcceptOf(src.data.cn.type, conn.sourceHandle);
+      const inPort = picked.port;
+      const targetHandleId = picked.id;
+      const outPick = pickOutputPort(src.data.cn.type, inPort.accept);
+      const sourceHandleId = outPick?.id ?? conn.sourceHandle ?? null;
+      const outAccept = outputAcceptOf(src.data.cn.type, sourceHandleId);
       const check = checkPortCompatible(inPort.accept, outAccept);
       if (!check.ok) {
         // check.reason 来自 node-sdk checkPortCompatible 的动态文案（含具体 MIME 集合），
@@ -321,8 +329,8 @@ function CanvasWorkbench({
         id: `e-${uid("c")}`,
         source: conn.source,
         target: conn.target,
-        sourceHandle: conn.sourceHandle,
-        targetHandle: conn.targetHandle,
+        sourceHandle: sourceHandleId,
+        targetHandle: targetHandleId,
       };
       pushUndo();
       setEdges((es) => {

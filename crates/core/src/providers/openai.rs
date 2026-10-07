@@ -194,7 +194,18 @@ pub async fn chat_stream(
     let mut buf = String::new();
     let mut full = String::new();
     let mut tf = ThinkFilter::new();
-    while let Some(chunk) = byte_stream.next().await {
+    // 流式空闲超时（v2.26.19）：180 秒无任何数据视为流挂死，避免任务永久卡 RUNNING
+    const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+    loop {
+        let chunk = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, byte_stream.next()).await {
+            Ok(Some(c)) => c,
+            Ok(None) => break, // 流正常结束（未发 [DONE]）
+            Err(_) => {
+                return Err(GatewayError::Network(
+                    "流式响应超时：180 秒未收到任何数据（服务商无响应或连接挂死）".into(),
+                ))
+            }
+        };
         let bytes = chunk.map_err(|e| GatewayError::Network(e.to_string()))?;
         buf.push_str(&String::from_utf8_lossy(&bytes));
         while let Some(pos) = buf.find('\n') {
@@ -217,7 +228,8 @@ pub async fn chat_stream(
             }
         }
     }
-    Ok(full)
+    // 最终返回值同样剥 <think>（落库/回复事件用这个，不能带推理过程）
+    Ok(ThinkFilter::finish(&full))
 }
 
 /// 视觉理解（v2.14，项20）：OpenAI 兼容 chat/completions 多模态内容

@@ -96,6 +96,7 @@ function AssetCard({
   asset,
   onCopy,
   onDelete,
+  onPreview,
   onUnderstand,
   understanding,
 }: {
@@ -103,6 +104,7 @@ function AssetCard({
   onCopy: (a: AssetRecord) => void;
   onDelete: (a: AssetRecord) => void;
   onUnderstand: (a: AssetRecord) => void;
+  onPreview: (a: AssetRecord) => void;
   understanding: boolean;
 }) {
   const [imgFailed, setImgFailed] = useState(false);
@@ -130,6 +132,9 @@ function AssetCard({
         {/* 悬浮操作层 */}
         <div className="asset-actions">
           <button className="btn sm" onClick={() => onCopy(asset)}>{t("复制路径")}</button>
+          <button className="btn sm" onClick={() => onPreview(asset)} title={t("在 OneTV 内直接查看（视频/图片/音频/文本）")}>
+            {t("👁 预览")}
+          </button>
           {group === "video" && (
             <button
               className="btn sm blue"
@@ -154,9 +159,76 @@ function AssetCard({
   );
 }
 
+/* ---------------- 预览弹窗（v2.26.19）：视频播放 / 图片查看 / 音频播放 / 文本显示 ---------------- */
+function AssetPreviewModal({
+  asset, onClose,
+}: { asset: AssetRecord; onClose: () => void }) {
+  const t = useT();
+  const group = kindGroup(asset);
+  const url = assets.assetUrl(asset.path);
+  const name = basename(asset.path);
+  const [textContent, setTextContent] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    if (group !== "doc") return;
+    let alive = true;
+    setTextContent(null);
+    fetch(url)
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+      .then((txt) => { if (alive) setTextContent(txt.slice(0, 200000)); })
+      .catch((e) => { if (alive) setErr(errMsg(e)); });
+    return () => { alive = false; };
+  }, [url, group]);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ width: "min(900px, 94vw)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <span>{t("👁 预览 · {name}", { name })}</span>
+          <button className="btn sm ghost" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body" style={{ display: "flex", justifyContent: "center", minHeight: 120 }}>
+          {err ? (
+            <div className="hint mem-notice">{t("预览失败：{msg}", { msg: err })}</div>
+          ) : group === "video" ? (
+            <video src={url} controls autoPlay style={{ maxWidth: "100%", maxHeight: "68vh", borderRadius: 10 }} />
+          ) : group === "audio" ? (
+            <div style={{ width: "100%", textAlign: "center", padding: 20 }}>
+              <div style={{ fontSize: 44, marginBottom: 14 }}>🎵</div>
+              <audio src={url} controls autoPlay style={{ width: "100%" }} />
+            </div>
+          ) : group === "image" ? (
+            <img src={url} alt={name} style={{ maxWidth: "100%", maxHeight: "68vh", borderRadius: 10 }} />
+          ) : textContent !== null ? (
+            <pre
+              style={{
+                width: "100%", whiteSpace: "pre-wrap", wordBreak: "break-word",
+                background: "var(--bg-deep)", border: "1px solid var(--border)", borderRadius: 10,
+                padding: 14, fontSize: 12.5, maxHeight: "66vh", overflow: "auto",
+                userSelect: "text",
+              }}
+            >
+              {textContent}
+            </pre>
+          ) : (
+            <div className="hint">{t("加载中…")}</div>
+          )}
+        </div>
+        <div className="modal-foot">
+          <span className="hint" style={{ marginRight: "auto" }}>
+            {formatSize(asset.size_bytes)} · SHA-256 {asset.sha256.slice(0, 12)}
+          </span>
+          <button className="btn" onClick={onClose}>{t("关闭")}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- 主视图 ---------------- */
 
 export default function AssetsView() {
+  const [previewAsset, setPreviewAsset] = useState<AssetRecord | null>(null);
   const { project, setView, toast } = useApp();
   const t = useT();
   const [items, setItems] = useState<AssetRecord[]>([]);
@@ -310,10 +382,14 @@ export default function AssetsView() {
               asset={a}
               onCopy={(x) => void doCopy(x)}
               onDelete={(x) => void doDelete(x)}
+              onPreview={(x) => setPreviewAsset(x)}
               onUnderstand={(x) => void doUnderstand(x)}
               understanding={understandingId === a.id}
             />
           ))}
+          {previewAsset && (
+            <AssetPreviewModal asset={previewAsset} onClose={() => setPreviewAsset(null)} />
+          )}
         </div>
       )}
 

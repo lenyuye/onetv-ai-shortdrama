@@ -3,9 +3,10 @@
  * 自 views/AgentChatView.tsx 原样迁出；滚动容器 ref 仍由主视图持有（自动滚动逻辑留在主视图）。
  * v2.22 性能：历史气泡抽为 memo 组件——流式 delta 只重渲染打字气泡，不再重放整列表。
  */
-import { memo, type RefObject } from "react";
+import { memo, useEffect, useState, type RefObject } from "react";
 import type { ChatMsg } from "../../agentChatStore";
 import { getLang, useT } from "../../i18n";
+import { useApp } from "../../store";
 import { MdBlock } from "./MdBlock";
 import { PlanCard } from "./PlanCard";
 
@@ -18,6 +19,56 @@ function fmtChatTime(raw: string): string {
     }
   }
   return raw;
+}
+
+/** 消息右键菜单（v2.26.19）：复制全文 / 复制选区——气泡文本可选中 */
+function MsgContextMenu({
+  x, y, text, onClose,
+}: { x: number; y: number; text: string; onClose: () => void }) {
+  const t = useT();
+  useEffect(() => {
+    const close = () => onClose();
+    document.addEventListener("mousedown", close);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+  const sel = (window.getSelection()?.toString() ?? "").trim();
+  return (
+    <div
+      className="msg-ctx-menu"
+      style={{ position: "fixed", left: Math.min(x, window.innerWidth - 210), top: Math.min(y, window.innerHeight - 110), zIndex: 1200 }}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <button
+        onClick={() => {
+          void navigator.clipboard.writeText(text).then(
+            () => useApp.getState().toast(t("已复制到剪贴板"), "ok"),
+            () => useApp.getState().toast(t("复制失败"), "err"),
+          );
+          onClose();
+        }}
+      >
+        {t("复制全文")}
+      </button>
+      <button
+        disabled={!sel}
+        onClick={() => {
+          void navigator.clipboard.writeText(sel).then(
+            () => useApp.getState().toast(t("已复制到剪贴板"), "ok"),
+            () => useApp.getState().toast(t("复制失败"), "err"),
+          );
+          onClose();
+        }}
+      >
+        {sel ? t("复制选区") : t("复制选区（先选中文字）")}
+      </button>
+    </div>
+  );
 }
 
 interface MessageListProps {
@@ -43,6 +94,7 @@ const BubbleList = memo(function BubbleList({
   onReject: (planId: string) => void;
 }) {
   const t = useT();
+  const [ctx, setCtx] = useState<{ x: number; y: number; text: string } | null>(null);
   return (
     <>
       {msgs.map((m) => (
@@ -64,6 +116,13 @@ const BubbleList = memo(function BubbleList({
               padding: "10px 14px",
               whiteSpace: m.role === "assistant" ? "normal" : "pre-wrap",
               fontSize: 12.5,
+              userSelect: "text",
+              cursor: "text",
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setCtx({ x: e.clientX, y: e.clientY, text: m.text });
             }}
           >
             <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
@@ -85,6 +144,7 @@ const BubbleList = memo(function BubbleList({
           </div>
         </div>
       ))}
+      {ctx && <MsgContextMenu x={ctx.x} y={ctx.y} text={ctx.text} onClose={() => setCtx(null)} />}
     </>
   );
 });
@@ -125,4 +185,27 @@ export function MessageList({ msgs, streamingText, approving, onApprove, onRejec
       )}
     </div>
   );
+}
+
+/* 消息右键菜单样式（v2.26.19） */
+const msgCtxCss = `
+.msg-ctx-menu {
+  background: var(--panel-2); border: 1px solid var(--border-strong); border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.25); padding: 4px; min-width: 180px;
+  display: flex; flex-direction: column;
+}
+.msg-ctx-menu button {
+  background: none; border: none; cursor: pointer; text-align: left;
+  color: var(--text); font-family: var(--font); font-size: 12.5px;
+  padding: 7px 12px; border-radius: 6px;
+}
+.msg-ctx-menu button:hover:not(:disabled) { background: rgba(255,255,255,.08); }
+.msg-ctx-menu button:disabled { color: var(--muted); cursor: default; }
+`;
+const styleTag = typeof document !== "undefined" && !document.getElementById("msg-ctx-css");
+if (styleTag) {
+  const el = document.createElement("style");
+  el.id = "msg-ctx-css";
+  el.textContent = msgCtxCss;
+  document.head.appendChild(el);
 }
