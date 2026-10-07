@@ -17,6 +17,7 @@ import StoryboardView from "./views/StoryboardView";
 import JobsView from "./views/JobsView";
 import SkillsView from "./views/SkillsView";
 import HermesView from "./views/HermesView";
+import { InstructionsView } from "./views/InstructionsView";
 import LoginView from "./views/LoginView";
 import AgentChatView from "./views/AgentChatView";
 import { Toaster } from "./components/Toaster";
@@ -38,6 +39,7 @@ const NAV: { key: ViewKey; icon: string; label: string; section: string }[] = [
   { key: "models", icon: "🧠", label: "模型", section: "管理" },
   { key: "skills", icon: "🧩", label: "Skills", section: "管理" },
   { key: "hermes", icon: "🛰️", label: "Hermes 连接", section: "管理" },
+  { key: "instructions", icon: "📜", label: "自定义指令", section: "管理" },
   { key: "jobs", icon: "⏳", label: "任务", section: "管理" },
   { key: "settings", icon: "⚙️", label: "设置", section: "系统" },
 ];
@@ -188,6 +190,9 @@ export default function App() {
       break;
     case "hermes":
       main = <HermesView />;
+      break;
+    case "instructions":
+      main = <InstructionsView />;
       break;
     case "agent":
       main = <AgentChatView />;

@@ -174,9 +174,15 @@ pub fn chat_reply_handler(env: Arc<AgentEnv>) -> JobHandler {
         Box::pin(async move {
             let text = ctx.params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
             // 会话上下文（v2.6.3）：前端随消息附带本会话最近几轮历史，chat 才有连贯记忆
-            let mut messages = vec![ChatMessage::system(
-                "你是 OneTV 短剧制作台的 AI 助手，熟悉剧本、分镜与生成工作流，回答简洁专业，用中文。",
-            )];
+            // 自定义指令（v2.26.16）：设置 → 自定义指令 的持久指令追加到系统提示（Codex AGENTS.md 式）
+            let mut system_prompt =
+                "你是 OneTV 短剧制作台的 AI 助手，熟悉剧本、分镜与生成工作流，回答简洁专业，用中文。".to_string();
+            let custom = env.custom_instructions();
+            if !custom.trim().is_empty() {
+                system_prompt.push_str("\n\n用户自定义指令（必须遵守）：\n");
+                system_prompt.push_str(custom.trim().chars().take(4000).collect::<String>().as_str());
+            }
+            let mut messages = vec![ChatMessage::system(system_prompt)];
             if let Some(hist) = ctx.params.get("history").and_then(|h| h.as_array()) {
                 for m in hist.iter().take(16) {
                     let role = m.get("role").and_then(|v| v.as_str()).unwrap_or_default();

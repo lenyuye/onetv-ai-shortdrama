@@ -134,6 +134,7 @@ fn settings_update(state: TState, patch: serde_json::Value) -> Result<AppSetting
     if let Some(agent) = AGENT.get() {
         agent.env.set_offline(out.offline_mode);
         agent.env.set_auto_memory(out.auto_memory);
+        agent.env.set_custom_instructions(out.custom_instructions.clone());
         agent.jobs.set_concurrency(out.max_concurrent_jobs);
         agent.env.set_model_defaults(model_defaults_map(&out));
         agent.jobs.set_cost_guard(onetv_core::jobs::CostGuardConfig {
@@ -184,6 +185,13 @@ fn apply_patch(s: &mut AppSettings, patch: &serde_json::Value) {
     }
     if let Some(v) = patch.get("defaultProjectFolder").and_then(|v| v.as_str()) {
         s.default_project_folder = if v.trim().is_empty() { None } else { Some(v.into()) };
+    }
+    // 自动记忆（v2.26.15）与自定义指令（v2.26.16）
+    if let Some(v) = patch.get("autoMemory").and_then(|v| v.as_bool()) {
+        s.auto_memory = v;
+    }
+    if let Some(v) = patch.get("customInstructions").and_then(|v| v.as_str()) {
+        s.custom_instructions = v.to_string();
     }
     // 生成模型设置：{ chat: {providerId, modelId} | null, image: ..., video: ..., tts: ... }
     if let Some(md) = patch.get("modelDefaults").and_then(|v| v.as_object()) {
@@ -3978,6 +3986,7 @@ pub fn run() {
             let s = state.settings.get();
             env.set_offline(s.offline_mode);
             env.set_auto_memory(s.auto_memory);
+            env.set_custom_instructions(s.custom_instructions.clone());
             jobs.set_concurrency(s.max_concurrent_jobs);
             env.set_model_defaults(model_defaults_map(&s));
             jobs.set_media(state.media.clone());

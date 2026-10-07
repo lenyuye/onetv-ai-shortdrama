@@ -26,6 +26,8 @@ pub struct AgentEnv {
     offline: Arc<AtomicBool>,
     /// 自动记忆（v2.26.15）：开启时对话后自动提取记忆并注入上下文
     auto_memory: Arc<AtomicBool>,
+    /// 自定义指令（v2.26.16）：用户持久指令，注入 chat 系统提示
+    custom_instructions: std::sync::RwLock<String>,
     events_sink: EventSink,
     /// 各能力默认生成模型（设置 → 模型 → 生成模型设置）：
     /// key = chat | image | video | tts；handlers 未显式指定模型时回退到这里。
@@ -45,6 +47,7 @@ impl AgentEnv {
             media,
             offline: Arc::new(AtomicBool::new(false)),
             auto_memory: Arc::new(AtomicBool::new(true)),
+            custom_instructions: std::sync::RwLock::new(String::new()),
             events_sink,
             defaults: RwLock::new(std::collections::HashMap::new()),
         })
@@ -67,6 +70,14 @@ impl AgentEnv {
     }
     pub fn set_auto_memory(&self, v: bool) {
         self.auto_memory.store(v, Ordering::Relaxed);
+    }
+    pub fn custom_instructions(&self) -> String {
+        self.custom_instructions.read().map(|g| g.clone()).unwrap_or_default()
+    }
+    pub fn set_custom_instructions(&self, v: String) {
+        if let Ok(mut g) = self.custom_instructions.write() {
+            *g = v;
+        }
     }
     pub fn events(&self, name: &str, payload: serde_json::Value) {
         (self.events_sink)(name, payload);

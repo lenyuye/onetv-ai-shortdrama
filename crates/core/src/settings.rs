@@ -92,6 +92,9 @@ pub struct AppSettings {
     /// 自动记忆（v2.26.15）：对话后自动提取值得记住的事实存入项目记忆库，并在后续生成时注入上下文
     #[serde(default = "default_auto_memory", alias = "auto_memory")]
     pub auto_memory: bool,
+    /// 自定义指令（v2.26.16）：用户为 Agent 写的持久指令（Codex AGENTS.md 式），注入对话系统提示
+    #[serde(default, alias = "custom_instructions")]
+    pub custom_instructions: String,
     /// 各能力默认生成模型（v2.3.5「生成模型设置」）：
     /// key = chat | image | video | tts（推理/文本同 chat 口），value = provider+model。
     #[serde(default, alias = "model_defaults")]
@@ -159,6 +162,7 @@ impl Default for AppSettings {
             skin_opacity: default_skin_opacity(),
             last_project: None,
             auto_memory: default_auto_memory(),
+            custom_instructions: String::new(),
             model_defaults: std::collections::HashMap::new(),
             hermes_url: None,
             hermes_listen_port: default_hermes_port(),

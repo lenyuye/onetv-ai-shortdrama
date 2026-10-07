@@ -1,11 +1,13 @@
 /**
- * 🧠 意识模块（记忆）卡片 —— 从 SettingsView 原样迁出：
- * 时间线 / 语义搜索 / 统计 / 多选批量删除 / 导入导出 / 常驻输入区 + 局部样式 MEM_CSS。
+ * 🧠 意识模块（记忆）卡片 —— v2.26.16 三行式重构（对标 Codex 记忆设置页）：
+ * 行1 自动记忆开关 / 行2 编辑记忆（打开管理弹窗）/ 行3 清空全部记忆（危险）。
+ * 卡片保持紧凑与右侧 FFmpeg 卡对称；时间线/搜索/多选/导入导出/新增全部移入弹窗。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import * as api from "../../api";
 import { memorySearch } from "../../api-extras";
+import ConfirmDialog from "../ConfirmDialog";
 import { useApp } from "../../store";
 import { t, useT } from "../../i18n";
 
@@ -18,7 +20,6 @@ const errMsg = (e: unknown): string => {
 
 /* ---------------- 🧠 意识模块（记忆）卡片 ---------------- */
 
-/** 记忆条目行：scope tag + 文本（点击展开/收起）+ 就地编辑 + 删除 */
 /** 相对时间：3 分钟前 / 2 小时前 / 昨天 / 10-03 */
 function memRelTime(iso: string): string {
   const ts = new Date(iso).getTime();
@@ -150,11 +151,11 @@ function MemoryRow({
   );
 }
 
-export function MemoryCard() {
-  const { toast, settings, patchSettings } = useApp();
+/** 记忆管理弹窗：时间线 / 语义搜索 / 多选批量 / 导入导出 / 新增（全部从卡片移入） */
+function MemoryManagerModal({ onClose }: { onClose: () => void }) {
+  const { toast } = useApp();
   const t = useT();
   const [records, setRecords] = useState<api.MemoryRecord[] | null>(null);
-  const [notOpen, setNotOpen] = useState(false);
   const [loadErr, setLoadErr] = useState("");
   const [newText, setNewText] = useState("");
   const [addBusy, setAddBusy] = useState(false);
@@ -166,18 +167,11 @@ export function MemoryCard() {
   const newTextRef = useRef<HTMLTextAreaElement | null>(null);
 
   const refresh = useCallback(async () => {
-    setNotOpen(false);
     setLoadErr("");
     try {
       setRecords(await api.memoryList());
     } catch (e) {
-      const msg = errMsg(e);
-      if (msg.includes("未打开项目")) {
-        setNotOpen(true);
-        setRecords(null);
-      } else {
-        setLoadErr(msg);
-      }
+      setLoadErr(errMsg(e));
     }
   }, []);
 
@@ -187,7 +181,6 @@ export function MemoryCard() {
 
   const list = records ?? [];
   const q = query.trim().toLowerCase();
-  // v2.14 语义搜索：后端余弦相似度排序（含 includes 兜底；后端不可用时不影响原行为）
   const [semanticIds, setSemanticIds] = useState<Map<string, number> | null>(null);
   useEffect(() => {
     if (!q) {
@@ -207,17 +200,13 @@ export function MemoryCard() {
   }, [q]);
   const filtered = q
     ? semanticIds
-      ? // 语义排序：命中分 > 0 的按分排序，includes 命中的必定分高；零分记录按原序垫底
-        list
+      ? list
           .map((m, i) => ({ m, i, score: semanticIds.get(m.id) ?? 0, includes: m.text.toLowerCase().includes(q) ? 2 : 0 }))
           .filter((x) => x.score > 0 || x.includes)
           .sort((a, b) => b.score + b.includes - (a.score + a.includes) || a.i - b.i)
           .map((x) => x.m)
       : list.filter((m) => m.text.toLowerCase().includes(q))
     : list;
-  const latest = list.length
-    ? list.reduce((a, b) => ((a.createdAt ?? a.created_at ?? "") > (b.createdAt ?? b.created_at ?? "") ? a : b))
-    : null;
 
   const addMemory = async () => {
     const text = newText.trim();
@@ -310,6 +299,161 @@ export function MemoryCard() {
     setSelected((s) => { const n = new Set(s); if (v) n.add(id); else n.delete(id); return n; });
   };
 
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ width: "min(760px, 94vw)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <span>{t("🧠 编辑记忆（{n} 条）", { n: list.length })}</span>
+          <button className="btn sm ghost" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          {loadErr ? (
+            <div className="hint mem-notice">{t("加载失败：{msg}", { msg: loadErr })}</div>
+          ) : records === null ? (
+            <div className="hint">{t("加载中…")}</div>
+          ) : (
+            <>
+              {/* 统计 + 工具条 */}
+              <div className="mem-stats">
+                <span className="tag green">{t("仅存本机工程内")}</span>
+                <span style={{ flex: 1 }} />
+                <button className="btn sm" onClick={() => { setMultiSelect((v) => !v); setSelected(new Set()); }}>
+                  {multiSelect ? t("退出多选") : t("多选")}
+                </button>
+                <button className="btn sm" title={t("导出为 Markdown")} onClick={exportMd}>{t("⬇ 导出")}</button>
+                <button className="btn sm" title={t("从 .txt/.md 导入（空行分段，每段一条）")} onClick={() => importRef?.click()}>{t("⬆ 导入")}</button>
+                <input
+                  ref={setImportRef}
+                  type="file"
+                  accept=".txt,.md,.markdown,text/plain,text/markdown"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    e.target.value = "";
+                    if (f) void importFile(f);
+                  }}
+                />
+              </div>
+
+              {list.length > 0 && (
+                <input
+                  className="mem-search"
+                  type="text"
+                  placeholder={t("🔍 搜索记忆（语义排序：相关度优先）…")}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              )}
+
+              {multiSelect && list.length > 0 && (
+                <div className="mem-bulk">
+                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={filtered.length > 0 && filtered.every((m) => selected.has(m.id))}
+                      onChange={(e) => {
+                        if (e.target.checked) setSelected(new Set(filtered.map((m) => m.id)));
+                        else setSelected(new Set());
+                      }}
+                    />
+                    {t("全选（当前筛选 {n} 条）", { n: filtered.length })}
+                  </label>
+                  <span style={{ flex: 1 }} />
+                  <span className="hint">{t("已选 {n} 条", { n: selected.size })}</span>
+                  <button className="btn sm danger" disabled={selected.size === 0} onClick={() => void batchDelete()}>
+                    {t("删除所选")}
+                  </button>
+                </div>
+              )}
+
+              {list.length === 0 ? (
+                <div className="mem-empty">
+                  <div className="mem-empty-icon">🧠</div>
+                  <div className="mem-empty-title">{t("还没有记忆")}</div>
+                  <div className="hint">{t("把主角设定、风格约定、剧情要点告诉 Agent —— 开启自动记忆后对话会自动提取，或在下方手写第一条")}</div>
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="hint" style={{ margin: "10px 0" }}>{t("没有匹配「{q}」的记忆", { q: query })}</div>
+              ) : (
+                <div className="mem-list mem-timeline">
+                  {filtered.map((rec) => (
+                    <MemoryRow
+                      key={rec.id}
+                      rec={rec}
+                      checked={selected.has(rec.id)}
+                      multiSelect={multiSelect}
+                      saving={savingId === rec.id}
+                      onCheck={toggleCheck}
+                      onSave={saveEdit}
+                      onDelete={(id) => void removeMemory(id)}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* 新增输入区 */}
+              <div className="mem-composer">
+                <textarea
+                  ref={newTextRef}
+                  className="mem-edit"
+                  rows={2}
+                  value={newText}
+                  placeholder={t("写下要记住的内容，例如：主角林晚是冷静的刑警，口头禅「证据说话」…（⌘+Enter 保存；粘贴多段文字后保存会按原样存为一条）")}
+                  onChange={(e) => setNewText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                      e.preventDefault();
+                      void addMemory();
+                    }
+                  }}
+                />
+                <div className="mem-composer-bar">
+                  <span className="hint" style={{ marginRight: "auto" }}>{t("{n} 字 · ⌘+Enter 保存", { n: newText.trim().length })}</span>
+                  <button className="btn primary" disabled={addBusy || !newText.trim()} onClick={() => void addMemory()}>
+                    {addBusy ? t("保存中…") : t("保存记忆")}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onClose}>{t("关闭")}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 三行式紧凑卡片（与右侧 FFmpeg 卡对称）：开关 / 编辑记忆 / 清空全部 */
+export function MemoryCard() {
+  const { toast, settings, patchSettings } = useApp();
+  const t = useT();
+  const [count, setCount] = useState<number | null>(null);
+  const [latestLabel, setLatestLabel] = useState("—");
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [notOpen, setNotOpen] = useState(false);
+
+  const refreshStat = useCallback(async () => {
+    setNotOpen(false);
+    try {
+      const list = await api.memoryList();
+      setCount(list.length);
+      const latest = list.length
+        ? list.reduce((a, b) => ((a.createdAt ?? a.created_at ?? "") > (b.createdAt ?? b.created_at ?? "") ? a : b))
+        : null;
+      setLatestLabel(latest ? memRelTime(latest.createdAt ?? latest.created_at ?? "") : "—");
+    } catch (e) {
+      if (errMsg(e).includes("未打开项目")) setNotOpen(true);
+      else setCount(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshStat();
+  }, [refreshStat]);
+
   const autoMemory = settings?.autoMemory ?? true;
   const toggleAutoMemory = async (v: boolean) => {
     try {
@@ -320,154 +464,82 @@ export function MemoryCard() {
     }
   };
 
+  const clearAll = async () => {
+    setConfirmClear(false);
+    try {
+      const list = await api.memoryList();
+      let ok = 0;
+      for (const m of list) {
+        try { await api.memoryDelete(m.id); ok += 1; } catch { /* 单条失败继续 */ }
+      }
+      await refreshStat();
+      toast(t("已清空 {ok}/{total} 条记忆", { ok, total: list.length }), ok === list.length ? "ok" : "warn");
+    } catch (e) {
+      toast(t("清空失败：{msg}", { msg: errMsg(e) }), "err");
+    }
+  };
+
   return (
     <div className="card mem-card">
+      <style>{MEM_CSS}</style>
       <h3>{t("🧠 意识模块（记忆）")}</h3>
       <div className="hint" style={{ marginBottom: 8 }}>
-        {t("Agent 的长期记忆，随项目保存在本机；生成时作为上下文参考。支持搜索、批量管理与导入导出。")}
+        {t("Agent 的长期记忆，随项目保存在本机；生成时作为上下文参考。")}
       </div>
-      {/* 自动记忆开关（v2.26.15）：对标 Codex/ZCode 的本地真记忆——提取与注入全在本机 */}
-      <div
-        className="mem-auto-row"
-        style={{
-          display: "flex", alignItems: "center", gap: 8, marginBottom: 10,
-          background: "var(--panel-2)", border: "1px solid var(--border)", borderRadius: 10, padding: "9px 12px",
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={autoMemory}
-          onChange={(e) => void toggleAutoMemory(e.target.checked)}
-          id="mem-auto-switch"
+
+      {/* 行1：自动记忆开关 */}
+      <div className="mem-setting-row" onClick={(e) => { if ((e.target as HTMLElement).tagName !== "INPUT") void toggleAutoMemory(!autoMemory); }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="mem-setting-title">{t("启用自动记忆")}</div>
+          <div className="hint">{t("每轮对话自动提取值得记住的信息存入本机，并在后续对话/生成时自动作为上下文（数据不出本机）")}</div>
+        </div>
+        <input type="checkbox" checked={autoMemory} onChange={(e) => void toggleAutoMemory(e.target.checked)} />
+      </div>
+
+      {/* 行2：编辑记忆（打开管理弹窗） */}
+      <div className="mem-setting-row" onClick={() => { if (!notOpen) setManagerOpen(true); }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="mem-setting-title">{t("编辑记忆")}</div>
+          <div className="hint">
+            {notOpen
+              ? t("意识模块按项目存储，请先在工作区打开一个项目")
+              : count === null
+                ? t("加载中…")
+                : t("{n} 条记忆 · 最近更新 {time}", { n: count, time: latestLabel })}
+          </div>
+        </div>
+        <button className="btn sm" disabled={notOpen} onClick={(e) => { e.stopPropagation(); if (!notOpen) setManagerOpen(true); }}>
+          {t("管理 ›")}
+        </button>
+      </div>
+
+      {/* 行3：清空全部记忆（危险） */}
+      <div className="mem-setting-row">
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="mem-setting-title">{t("清空全部记忆")}</div>
+          <div className="hint">{t("删除本项目内的全部记忆（含自动与手动），不可恢复")}</div>
+        </div>
+        <button className="btn sm danger" disabled={notOpen || count === 0} onClick={() => setConfirmClear(true)}>
+          {t("清空")}
+        </button>
+      </div>
+
+      {managerOpen && (
+        <MemoryManagerModal
+          onClose={() => {
+            setManagerOpen(false);
+            void refreshStat();
+          }}
         />
-        <label htmlFor="mem-auto-switch" style={{ fontSize: 12.5 }}>
-          <b>{t("自动记忆")}</b>
-          <span className="hint" style={{ marginLeft: 6 }}>
-            {t("开启后每轮对话自动提取值得记住的信息存入本机，并在后续对话/生成时自动作为上下文（数据不出本机）")}
-          </span>
-        </label>
-      </div>
-
-      {notOpen ? (
-        <div className="hint mem-notice">{t("意识模块按项目存储，请先在工作区打开一个项目")}</div>
-      ) : loadErr ? (
-        <div className="hint mem-notice">{t("加载失败：{msg}", { msg: loadErr })}</div>
-      ) : records === null ? (
-        <div className="hint">{t("加载中…")}</div>
-      ) : (
-        <>
-          {/* 统计条 */}
-          <div className="mem-stats">
-            <span><b>{list.length}</b> {t("条记忆")}</span>
-            <span className="mem-sep">·</span>
-            <span>{t("最近更新 {time}", { time: latest ? memRelTime(latest.createdAt ?? latest.created_at ?? "") : "—" })}</span>
-            <span className="mem-sep">·</span>
-            <span className="tag green">{t("仅存本机工程内")}</span>
-            <span style={{ flex: 1 }} />
-            <button className="btn sm" onClick={() => { setMultiSelect((v) => !v); setSelected(new Set()); }}>
-              {multiSelect ? t("退出多选") : t("多选")}
-            </button>
-            <button className="btn sm" title={t("导出为 Markdown")} onClick={exportMd}>{t("⬇ 导出")}</button>
-            <button className="btn sm" title={t("从 .txt/.md 导入（空行分段，每段一条）")} onClick={() => importRef?.click()}>{t("⬆ 导入")}</button>
-            <input
-              ref={setImportRef}
-              type="file"
-              accept=".txt,.md,.markdown,text/plain,text/markdown"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                e.target.value = "";
-                if (f) void importFile(f);
-              }}
-            />
-          </div>
-
-          {/* 搜索 */}
-          {list.length > 0 && (
-            <input
-              className="mem-search"
-              type="text"
-              placeholder={t("🔍 搜索记忆（语义排序：相关度优先）…")}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          )}
-
-          {/* 批量操作条 */}
-          {multiSelect && list.length > 0 && (
-            <div className="mem-bulk">
-              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <input
-                  type="checkbox"
-                  checked={filtered.length > 0 && filtered.every((m) => selected.has(m.id))}
-                  onChange={(e) => {
-                    if (e.target.checked) setSelected(new Set(filtered.map((m) => m.id)));
-                    else setSelected(new Set());
-                  }}
-                />
-                {t("全选（当前筛选 {n} 条）", { n: filtered.length })}
-              </label>
-              <span style={{ flex: 1 }} />
-              <span className="hint">{t("已选 {n} 条", { n: selected.size })}</span>
-              <button className="btn sm danger" disabled={selected.size === 0} onClick={() => void batchDelete()}>
-                {t("删除所选")}
-              </button>
-            </div>
-          )}
-
-          {/* 时间线列表 */}
-          {list.length === 0 ? (
-            <div className="mem-empty">
-              <div className="mem-empty-icon">🧠</div>
-              <div className="mem-empty-title">{t("还没有记忆")}</div>
-              <div className="hint">{t("把主角设定、风格约定、剧情要点告诉 Agent —— 在下方输入第一条记忆，生成剧本/分镜时会自动参考")}</div>
-              <button className="btn primary sm" style={{ marginTop: 10 }} onClick={() => newTextRef.current?.focus()}>
-                {t("写下第一条记忆")}
-              </button>
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="hint" style={{ margin: "10px 0" }}>{t("没有匹配「{q}」的记忆", { q: query })}</div>
-          ) : (
-            <div className="mem-list mem-timeline">
-              {filtered.map((rec) => (
-                <MemoryRow
-                  key={rec.id}
-                  rec={rec}
-                  checked={selected.has(rec.id)}
-                  multiSelect={multiSelect}
-                  saving={savingId === rec.id}
-                  onCheck={toggleCheck}
-                  onSave={saveEdit}
-                  onDelete={(id) => void removeMemory(id)}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* 常驻输入区（Codex 式） */}
-          <div className="mem-composer">
-            <textarea
-              ref={newTextRef}
-              className="mem-edit"
-              rows={2}
-              value={newText}
-              placeholder={t("写下要记住的内容，例如：主角林晚是冷静的刑警，口头禅「证据说话」…（⌘+Enter 保存；粘贴多段文字后保存会按原样存为一条）")}
-              onChange={(e) => setNewText(e.target.value)}
-              onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                  e.preventDefault();
-                  void addMemory();
-                }
-              }}
-            />
-            <div className="mem-composer-bar">
-              <span className="hint" style={{ marginRight: "auto" }}>{t("{n} 字 · ⌘+Enter 保存", { n: newText.trim().length })}</span>
-              <button className="btn primary" disabled={addBusy || !newText.trim()} onClick={() => void addMemory()}>
-                {addBusy ? t("保存中…") : t("保存记忆")}
-              </button>
-            </div>
-          </div>
-        </>
+      )}
+      {confirmClear && (
+        <ConfirmDialog
+          title={t("清空全部记忆")}
+          message={t("将删除本项目内的全部记忆（含自动提取与手动添加），不可恢复。确定继续？")}
+          danger
+          onCancel={() => setConfirmClear(false)}
+          onConfirm={() => void clearAll()}
+        />
       )}
     </div>
   );
@@ -477,6 +549,16 @@ export function MemoryCard() {
 
 export const MEM_CSS = `
 .mem-card { margin-bottom: 14px; align-self: stretch; height: 100%; display: flex; flex-direction: column; }
+.mem-setting-row {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; cursor: pointer; transition: border-color .15s ease;
+}
+.mem-setting-row:hover { border-color: var(--border-strong); }
+.mem-setting-row:last-of-type { margin-bottom: 0; }
+.mem-setting-title { font-size: 12.5px; font-weight: 600; margin-bottom: 2px; }
+.mem-setting-row .hint { font-size: 11.5px; }
+.mem-setting-row input[type="checkbox"] { width: 17px; height: 17px; flex-shrink: 0; cursor: pointer; }
 .mem-list { flex: 1 1 auto; min-height: 140px; }
 .mem-stats { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); margin-bottom: 8px; flex-wrap: wrap; }
 .mem-stats b { color: var(--text); }
@@ -497,7 +579,7 @@ export const MEM_CSS = `
   content: ""; position: absolute; left: 5px; top: 8px; bottom: 8px;
   width: 2px; background: var(--border); border-radius: 2px; opacity: .6;
 }
-.mem-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; max-height: 460px; overflow: auto; }
+.mem-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; max-height: 46vh; overflow: auto; }
 .mem-row {
   position: relative;
   border: 1px solid var(--border); border-radius: var(--radius-sm);

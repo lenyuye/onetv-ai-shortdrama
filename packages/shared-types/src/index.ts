@@ -524,6 +524,8 @@ export interface AppSettings {
   offlineMode: boolean;
   /** 自动记忆（v2.26.15）：对话后自动提取 + 生成时注入上下文 */
   autoMemory: boolean;
+  /** 自定义指令（v2.26.16）：注入 Agent 对话系统提示的持久指令 */
+  customInstructions: string;
   telemetry: false;
   ffmpegPath?: string;
   ffprobePath?: string;
