@@ -131,7 +131,7 @@ export default {
   '⚡ 平台预设一键填充（选平台 → 填 API Key → 保存即用）': '⚡ One-click platform presets (pick platform → fill API Key → save and go)',
   '选择平台预设': 'Choose a platform preset',
   '选择平台预设（通用 / 图片 / 视频生成）…': 'Choose a platform preset (chat / image / video generation)…',
-  '通用功能': 'General',
+    '通用功能': 'General',
   '🖼️ 图片生成': '🖼️ Image generation',
   '🎬 视频生成': '🎬 Video generation',
   '套用': 'Apply',
