@@ -66,6 +66,31 @@ def main():
         S.press_key(int(sys.argv[2]))
         time.sleep(0.5)
         print(f"[gt] key {sys.argv[2]}")
+    elif cmd == "drag":
+        # 拖选（v2.26.24 划选验证）：drag <x1> <y1> <x2> <y2>（1600 宽截图坐标）
+        x1, y1 = img2global(float(sys.argv[2]), float(sys.argv[3]), b)
+        x2, y2 = img2global(float(sys.argv[4]), float(sys.argv[5]), b)
+        if not os.environ.get("GT_NO_ACT"):
+            S.activate_app(); time.sleep(0.3)
+        down = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDown, (x1, y1), Quartz.kCGMouseButtonLeft)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, down); time.sleep(0.15)
+        for i in range(1, 13):
+            ix = x1 + (x2 - x1) * i / 12
+            iy = y1 + (y2 - y1) * i / 12
+            mv = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDragged, (ix, iy), Quartz.kCGMouseButtonLeft)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, mv); time.sleep(0.03)
+        up = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseUp, (x2, y2), Quartz.kCGMouseButtonLeft)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, up); time.sleep(0.6)
+        print(f"[gt] dragged ({x1:.0f},{y1:.0f})->({x2:.0f},{y2:.0f})")
+    elif cmd == "rclick":
+        x, y = img2global(float(sys.argv[2]), float(sys.argv[3]), b)
+        if not os.environ.get("GT_NO_ACT"):
+            S.activate_app(); time.sleep(0.3)
+        down = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventRightMouseDown, (x, y), Quartz.kCGMouseButtonRight)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, down); time.sleep(0.08)
+        up = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventRightMouseUp, (x, y), Quartz.kCGMouseButtonRight)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, up); time.sleep(0.8)
+        print(f"[gt] rclicked global ({x:.0f},{y:.0f})")
     elif cmd == "shot":
         wid, b = win()
         p = os.path.join(OUT, f"gt_{sys.argv[2]}.png")
