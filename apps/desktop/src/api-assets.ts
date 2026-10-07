@@ -30,4 +30,6 @@ export const assetList = () => invoke<AssetRecord[]>("asset_list");
 export const assetDelete = (id: string) => invoke<void>("asset_delete", { id });
 
 /** 资产绝对路径 → 自定义协议 URL（用于 <img>/<video> 的 src） */
+export const assetReveal = (path: string) => invoke<void>("asset_reveal", { path });
+
 export const assetUrl = (path: string) => `onetv-asset://localhost/${encodeURIComponent(path)}`;

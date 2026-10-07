@@ -135,6 +135,18 @@ function AssetCard({
           <button className="btn sm" onClick={() => onPreview(asset)} title={t("在 OneTV 内直接查看（视频/图片/音频/文本）")}>
             {t("👁 预览")}
           </button>
+          <button
+            className="btn sm"
+            title={t("在 Finder 中打开所在文件夹并选中该文件")}
+            onClick={() => {
+              void assets.assetReveal(asset.path).then(
+                () => useApp.getState().toast(t("已在 Finder 中定位"), "ok"),
+                (e) => useApp.getState().toast(t("打开失败：{msg}", { msg: errMsg(e) }), "err"),
+              );
+            }}
+          >
+            {t("📁 文件夹")}
+          </button>
           {group === "video" && (
             <button
               className="btn sm blue"
