@@ -161,7 +161,7 @@ impl VerificationStore {
 
     /// 清除某邮箱某用途的未消费验证码（例如修改绑定邮箱后）。
     pub fn revoke(&self, email: &str, purpose: &str) {
-        let mut records: Vec<CodeRecord> = self
+        let records: Vec<CodeRecord> = self
             .load()
             .into_iter()
             .filter(|r| !(r.email == email && r.purpose == purpose))

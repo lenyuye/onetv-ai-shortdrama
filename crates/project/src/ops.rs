@@ -367,6 +367,8 @@ pub fn delete_project(root: &Path) -> ProjectResult<()> {
 /* ---------------- helpers ---------------- */
 
 #[derive(serde::Serialize)]
+// 字段名即 JSON 键（前端契约要求 camelCase），非 Rust 惯例命名
+#[allow(non_snake_case)]
 struct ScriptDocStub {
     schemaVersion: String,
     episodeId: String,

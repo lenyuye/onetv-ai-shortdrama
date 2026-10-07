@@ -16,3 +16,8 @@ apps/desktop/src-tauri/gen/
 # Local runtime data (never commit user projects)
 *.ytv/
 out/
+
+# Smoke test artifacts
+scripts/smoke/__pycache__/
+scripts/smoke/screenshots/
+scripts/smoke/smoke_report.json

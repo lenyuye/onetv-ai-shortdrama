@@ -181,12 +181,29 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = vec![0u8; 4096];
             use std::io::{Read, Write};
-            let n = stream.read(&mut buf).unwrap();
-            let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+            // 头与体可能分 TCP 段到达：循环读直到收满 Content-Length 声明的 body
+            let mut raw: Vec<u8> = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                raw.extend_from_slice(&buf[..n]);
+                let s = String::from_utf8_lossy(&raw).to_string();
+                let head_end = s.find("\r\n\r\n").map(|p| p + 4);
+                let content_len = s.to_lowercase().split("content-length:").nth(1).and_then(|x| {
+                    x.split("\r\n").next().and_then(|v| v.trim().parse::<usize>().ok())
+                });
+                match (head_end, content_len) {
+                    (Some(h), Some(cl)) if raw.len() >= h + cl => break,
+                    _ if raw.len() > 65536 => break,
+                    _ => {}
+                }
+            }
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
-            raw
+            String::from_utf8_lossy(&raw).to_string()
         });
         let payload = build_payload("job.succeeded", &json!({"id": "j9", "outputs": []}));
         let rt = tokio::runtime::Runtime::new().unwrap();

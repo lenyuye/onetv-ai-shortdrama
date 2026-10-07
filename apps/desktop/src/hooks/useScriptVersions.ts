@@ -227,6 +227,20 @@ export function useScriptVersions({ doc, setDoc, episodeId, persistScript }: Use
   };
 
   /** ⧉ 复制副本：同一根剧本最多 3 个副本（副本的副本计入同一根的名额） */
+  /** 重命名版本（v2.26.22）：改 versions[i].title（与 doc.title 联动）并落盘 */
+  const renameVersion = async (id: string, title: string) => {
+    if (!doc) return;
+    const t2 = title.trim();
+    if (!t2) return;
+    const next: ScriptDocWithVersions = {
+      ...doc,
+      title: (doc.activeVersionId ?? "") === id ? t2 : doc.title,
+      versions: (doc.versions ?? []).map((v) => (v.id === id ? { ...v, title: t2 } : v)),
+    };
+    setDoc(next);
+    await persistScript(next, t("已重命名为《{title}》", { title: t2 }));
+  };
+
   const duplicateVersion = async (id: string) => {
     if (!doc) return;
     const src = libVersions.find((v) => v.id === id);
@@ -289,6 +303,7 @@ export function useScriptVersions({ doc, setDoc, episodeId, persistScript }: Use
     submitNewScript,
     useVersion,
     duplicateVersion,
+    renameVersion,
     deleteVersion,
   };
 }

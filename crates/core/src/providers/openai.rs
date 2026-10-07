@@ -109,13 +109,13 @@ impl ThinkFilter {
                         self.in_think = false;
                     }
                     None => {
-                        // 仍可能在 think 内；保留可能是 "</think>" 前缀的尾巴
-                        let keep = self
-                            .pending
-                            .len()
-                            .saturating_sub(8)
-                            .min(self.pending.len());
-                        let emit_len = self.pending.rfind('<').map(|i| i).unwrap_or(self.pending.len());
+                        // 仍可能在 think 内；保留可能是 "</think>" 前缀的尾巴（按字符边界截，避免切进多字节字符）
+                        let len = self.pending.len();
+                        let mut keep = len.saturating_sub(8);
+                        while keep < len && !self.pending.is_char_boundary(keep) {
+                            keep += 1;
+                        }
+                        let emit_len = self.pending.rfind('<').unwrap_or(len);
                         let cut = keep.min(emit_len);
                         self.pending.drain(..cut);
                         return out;
@@ -129,15 +129,17 @@ impl ThinkFilter {
                         self.in_think = true;
                     }
                     None => {
-                        // 输出除"可能是 <think> 前缀"尾巴外的全部
-                        let tail_len = {
-                            let tail = &self.pending;
-                            (1..=7.min(tail.len()))
-                                .find(|k| "<think>".starts_with(&tail[tail.len() - k..]))
-                                .unwrap_or(0)
-                        };
-                        let cut = self.pending.len() - tail_len;
-                        out.push_str(&self.pending[..cut]);
+                        // 输出除"可能是 <think> 前缀"尾巴外的全部（按字符边界匹配，避免切进多字节字符）
+                        let tail = self.pending.clone();
+                        let len = tail.len();
+                        let tail_len = (1..=7.min(len))
+                            .find(|k| {
+                                let start = len - k;
+                                tail.is_char_boundary(start) && "<think>".starts_with(&tail[start..])
+                            })
+                            .unwrap_or(0);
+                        let cut = len - tail_len;
+                        out.push_str(&tail[..cut]);
                         self.pending.drain(..cut);
                         return out;
                     }
@@ -390,5 +392,13 @@ mod think_tests {
         assert_eq!(ThinkFilter::finish("<think>推理</think>最终"), "最终");
         assert_eq!(ThinkFilter::finish("无think"), "无think");
         assert_eq!(ThinkFilter::finish("开头<think>未闭合"), "开头");
+        // 多字节中文分片回归（v2.26.23）：尾窗切片必须落在字符边界上
+        let mut g = ThinkFilter::new();
+        assert_eq!(g.push("你好"), "你好");
+        assert_eq!(g.push("世界<th"), "世界");
+        assert_eq!(g.push("ink>嗯"), "");
+        assert_eq!(g.push("</th"), "");
+        assert_eq!(g.push("ink>好了"), "好了");
+        assert_eq!(ThinkFilter::finish("开头<think>推理中</think>结尾"), "开头结尾");
     }
 }

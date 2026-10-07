@@ -229,6 +229,7 @@ export default function ScriptView() {
     submitNewScript,
     useVersion,
     duplicateVersion,
+  renameVersion,
     deleteVersion,
   } = useScriptVersions({ doc, setDoc, episodeId, persistScript });
 
@@ -400,6 +401,7 @@ export default function ScriptView() {
           onNew={openNewScript}
           onUse={(id) => void useVersion(id)}
           onDuplicate={(id) => void duplicateVersion(id)}
+          onRename={(id, t2) => void renameVersion(id, t2)}
           onDelete={(id) => void deleteVersion(id)}
         />
       )}

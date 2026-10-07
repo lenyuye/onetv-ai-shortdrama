@@ -181,6 +181,9 @@ export const debugSessionStatus = () =>
 /* ---------------- 删除能力（v2.3.5） ---------------- */
 
 /** 删除 .ytv 工程（磁盘文件夹一并删除，不可恢复；UI 必须先 confirm） */
+export const projectRename = (newTitle: string) =>
+  invoke<{ ok: boolean; title: string }>("project_rename", { newTitle });
+
 export const projectDelete = (projectDir: string) => invoke<void>("project_delete", { projectDir });
 /** 从最近打开列表移除记录（不删文件） */
 export const workspaceRecentRemove = (path: string) =>

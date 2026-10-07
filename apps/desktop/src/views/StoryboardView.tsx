@@ -782,6 +782,19 @@ export default function StoryboardView() {
               <button className="btn sm ghost" onClick={() => setEditShotId(null)}>×</button>
             </div>
             <div className="modal-body">
+              {/* 查看：已生成分镜图时顶部直接预览（点击全屏放大） */}
+              {shotImage(editShot) && (
+                <div style={{ marginBottom: 12, textAlign: "center" }}>
+                  <a href={shotImage(editShot) ?? "#"} target="_blank" rel="noreferrer">
+                    <img
+                      src={shotImage(editShot) ?? ""}
+                      alt={editShot.shotId}
+                      style={{ maxWidth: "100%", maxHeight: "40vh", borderRadius: 10 }}
+                    />
+                  </a>
+                  <div className="hint" style={{ marginTop: 4 }}>{t("已生成分镜图（点击图片在新窗口放大）")}</div>
+                </div>
+              )}
               <div className="field">
                 <label>{t("画面 prompt（图像 / 视频生成输入）")}</label>
                 <textarea

@@ -17,6 +17,24 @@ type ConfirmState =
 const displayName = (r: api.RecentWorkspace) => r.name || r.path.split("/").filter(Boolean).pop() || r.path;
 
 export default function HomeView() {
+  const [renaming, setRenaming] = useState(false);
+  const [renameText, setRenameText] = useState("");
+  const [renamingBusy, setRenamingBusy] = useState(false);
+  const doRename = async () => {
+    const t2 = renameText.trim();
+    if (!t2) return;
+    setRenamingBusy(true);
+    try {
+      await api.projectRename(t2);
+      await loadProject();
+      useApp.getState().toast(t("已重命名为「{title}」", { title: t2 }), "ok");
+      setRenaming(false);
+    } catch (e) {
+      useApp.getState().toast(t("重命名失败：{msg}", { msg: api.errMsg(e) }), "err");
+    } finally {
+      setRenamingBusy(false);
+    }
+  };
   const { project, loadProject, setView, toast, settings } = useApp();
   const t = useT();
   const [recent, setRecent] = useState<api.RecentWorkspace[]>([]);
@@ -165,7 +183,38 @@ export default function HomeView() {
       {project && (
         <div className="card" style={{ marginBottom: 16, borderColor: "rgba(53,208,127,.35)" }}>
           <h3>✅ {t("已打开项目")}</h3>
-          <div className="kv"><span className="k">{t("标题")}</span><span className="v">{project.project.title}</span></div>
+          <div className="kv">
+            <span className="k">{t("标题")}</span>
+            <span className="v">
+              {renaming ? (
+                <input
+                  value={renameText}
+                  autoFocus
+                  maxLength={60}
+                  style={{ width: 220, marginRight: 8 }}
+                  onChange={(e) => setRenameText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void doRename();
+                    if (e.key === "Escape") setRenaming(false);
+                  }}
+                />
+              ) : (
+                project.project.title
+              )}
+              {renaming ? (
+                <>
+                  <button className="btn sm primary" style={{ marginLeft: 8 }} disabled={!renameText.trim() || renamingBusy} onClick={() => void doRename()}>
+                    {renamingBusy ? t("保存中…") : t("保存")}
+                  </button>
+                  <button className="btn sm" onClick={() => setRenaming(false)}>{t("取消")}</button>
+                </>
+              ) : (
+                <button className="btn sm" style={{ marginLeft: 8 }} title={t("重命名项目")} onClick={() => { setRenameText(project.project.title); setRenaming(true); }}>
+                  {t("✏️ 重命名")}
+                </button>
+              )}
+            </span>
+          </div>
           <div className="kv"><span className="k">{t("画幅")}</span><span className="v">{project.project.aspectRatio}</span></div>
           <div className="kv"><span className="k">{t("集数")}</span><span className="v">{project.episodes.length}</span></div>
           <div className="kv"><span className="k">{t("项目路径")}</span><span className="v">{useApp.getState().projectRoot}</span></div>

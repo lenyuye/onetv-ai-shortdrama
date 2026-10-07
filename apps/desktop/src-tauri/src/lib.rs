@@ -931,7 +931,7 @@ async fn provider_test(
                 .await
                 .map_err(|e| e.to_string())
         }
-        ProviderDriverKind::CustomHttp | ProviderDriverKind::Comfyui | ProviderDriverKind::Plugin => {
+        ProviderDriverKind::CustomHttp | ProviderDriverKind::Plugin => {
             agent.env.gateway().check(&profile.base_url).map_err(|e| e.to_string())
         }
     };
@@ -3265,6 +3265,37 @@ fn doc_get(state: TState, episode_id: String, kind: String) -> Result<serde_json
     serde_json::from_str(&raw).map_err(err)
 }
 
+/// 项目重命名（v2.26.22）：改 project.json 的 project.title（工作区卡片/顶栏标题）
+#[tauri::command]
+fn project_rename(state: TState, new_title: String) -> Result<serde_json::Value, CommandError> {
+    let title = new_title.trim();
+    if title.is_empty() {
+        return Err(err("项目名不能为空"));
+    }
+    let (root, manifest) = open_ctx(&state)?;
+    let mut m = manifest.clone();
+    let old_title = m.project.title.clone();
+    m.project.title = title.to_string();
+    let path = root.join("project.json");
+    let json = serde_json::to_string_pretty(&m).map_err(err)?;
+    let tmp = path.with_extension(format!(
+        "tmp-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    std::fs::write(&tmp, json).map_err(err)?;
+    std::fs::rename(&tmp, &path).map_err(err)?;
+    if let Some(mut guard) = state.project.try_write() {
+        if let Some(mm) = guard.manifest.as_mut() {
+            mm.project.title = title.to_string();
+        }
+    }
+    state.settings.touch_recent(&root.to_string_lossy(), title);
+    state
+        .audit
+        .record("project.rename", &format!("{old_title} → {title}"), None);
+    Ok(serde_json::json!({ "ok": true, "title": title }))
+}
+
 #[tauri::command]
 fn doc_save(
     state: TState,
@@ -3493,7 +3524,10 @@ async fn export_render(
     agent: tauri::State<'_, Arc<AgentState>>,
     episode: String,
     presets: Vec<String>,
+    // 参数名为前端 invoke 契约的 camelCase 键
+    #[allow(non_snake_case)]
     burnSubtitle: bool,
+    #[allow(non_snake_case)]
     includeSrt: bool,
 ) -> Result<serde_json::Value, CommandError> {
     let (_, manifest) = open_ctx(&state)?;
@@ -4065,6 +4099,7 @@ pub fn run() {
             workspace_recent_remove,
             doc_get,
             doc_save,
+            project_rename,
             canvas_get,
             canvas_save,
             timeline_get,
