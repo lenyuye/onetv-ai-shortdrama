@@ -51,22 +51,24 @@ export default function InspectorPanel(props: InspectorPanelProps) {
   const disabled = node?.config?.disabled === true;
   const isReviewAwaiting = node?.type === "review" && node?.config?.status === "awaiting_review";
   const isAsset = node?.type === "asset";
-  const assetFiles: AssetFileMeta[] = isAsset && Array.isArray(node?.config?.files)
+  // v2.26.28 生成节点（图片/视频/片段合成/配音）也支持选中后直接上传参考
+  const isGenNode = ["image", "video", "video-clip", "audio"].includes(node?.type ?? "");
+  const nodeFiles: AssetFileMeta[] = (isAsset || isGenNode) && Array.isArray(node?.config?.files)
     ? ((node?.config?.files as unknown) as AssetFileMeta[])
     : [];
   const [uploading, setUploading] = useState(false);
   const [draft, setDraft] = useState("");
   const [draftErr, setDraftErr] = useState<string | null>(null);
 
-  /** 上传本地素材（v2.26.26）：agentAttach 落盘入资产库，id/path 记入节点 config */
-  const uploadAssetFile = async () => {
+  /** 上传本地素材/参考（v2.26.26/28）：agentAttach 落盘入资产库，id/path 记入节点 config */
+  const uploadNodeFile = async () => {
     if (!node) return;
     setUploading(true);
     try {
       const att = await agentAttach();
       onEditStart();
       onConfigChange({
-        files: [...assetFiles, { id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
+        files: [...nodeFiles, { id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
         referenceAssetIds: [
           ...((node.config?.referenceAssetIds as string[]) ?? []),
           att.assetId,
@@ -74,7 +76,7 @@ export default function InspectorPanel(props: InspectorPanelProps) {
         status: "ready",
       });
       onEditEnd();
-      useApp.getState().toast(t("已上传 {name}（连线给生成节点即可作为参考）", { name: att.name }), "ok");
+      useApp.getState().toast(t("已上传 {name}，将作为该节点的参考项", { name: att.name }), "ok");
     } catch (e) {
       const msg = errMsg(e);
       if (!msg.includes("已取消") && !msg.includes("取消")) {
@@ -85,11 +87,11 @@ export default function InspectorPanel(props: InspectorPanelProps) {
     }
   };
 
-  const removeAssetFile = (id: string) => {
+  const removeNodeFile = (id: string) => {
     if (!node) return;
     onEditStart();
     onConfigChange({
-      files: assetFiles.filter((f) => f.id !== id),
+      files: nodeFiles.filter((f) => f.id !== id),
       referenceAssetIds: ((node.config?.referenceAssetIds as string[]) ?? []).filter((x) => x !== id),
     });
     onEditEnd();
@@ -113,6 +115,8 @@ export default function InspectorPanel(props: InspectorPanelProps) {
   const def = NODE_TYPE_DEFS[node.type];
   const paramEntries: [string, NodeParamDef][] = def
     ? (Object.entries(def.params ?? {}) as [string, NodeParamDef][])
+        // v2.26.28 文本节点：text 字段由下方专用文案编辑区承担，避免重复表单
+        .filter(([k]) => !(node?.type === "text" && k === "text"))
     : [];
 
   const applyDraft = () => {
@@ -155,16 +159,16 @@ export default function InspectorPanel(props: InspectorPanelProps) {
       {isAsset && (
         <div className="field">
           <label>{t("素材文件（本地上传，存入项目资产库）")}</label>
-          <button className="btn sm primary" disabled={uploading || locked} style={{ width: "100%" }} onClick={() => void uploadAssetFile()}>
+          <button className="btn sm primary" disabled={uploading || locked} style={{ width: "100%" }} onClick={() => void uploadNodeFile()}>
             {uploading ? t("上传中…") : t("📤 上传素材（图片/视频/音频/文本）")}
           </button>
-          {assetFiles.length === 0 ? (
+          {nodeFiles.length === 0 ? (
             <div className="hint" style={{ marginTop: 6 }}>
               {t("上传后把本节点的输出连线到 生图/生视频/片段合成 等节点，即可作为参考图/参考视频/文字约束。")}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-              {assetFiles.map((f) => (
+              {nodeFiles.map((f) => (
                 <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {f.kind === "images" || /\.(png|jpe?g|webp|gif)$/i.test(f.path) ? (
                     <img src={assetUrl(f.path)} alt={f.name} style={{ width: 40, height: 30, objectFit: "cover", borderRadius: 5, border: "1px solid var(--border)", flexShrink: 0 }} />
@@ -174,10 +178,42 @@ export default function InspectorPanel(props: InspectorPanelProps) {
                     </span>
                   )}
                   <span style={{ fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={f.path}>{f.name}</span>
-                  <button className="btn sm danger" title={t("移除该素材")} onClick={() => removeAssetFile(f.id)}>✕</button>
+                  <button className="btn sm danger" title={t("移除该素材")} onClick={() => removeNodeFile(f.id)}>✕</button>
                 </div>
               ))}
               <div className="hint">{t("把本节点输出连线到生成节点，即自动作为其参考项。")}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* v2.26.28 生成节点（图片/视频/片段合成/配音）：选中后直接上传参考图/视频 */}
+      {isGenNode && (
+        <div className="field">
+          <label>{t("参考素材（生成时作为参考项）")}</label>
+          <button className="btn sm primary" disabled={uploading || locked} style={{ width: "100%" }} onClick={() => void uploadNodeFile()}>
+            {uploading ? t("上传中…") : t("📤 上传参考（图片/视频/音频）")}
+          </button>
+          {nodeFiles.length === 0 ? (
+            <div className="hint" style={{ marginTop: 6 }}>
+              {t("上传后生成时自动携带；也可以连线素材/文本节点，或用节点面板的「＋ 参考」「⚓ 节点参考」。")}
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+              {nodeFiles.map((f) => (
+                <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {f.kind === "images" || /\.(png|jpe?g|webp|gif)$/i.test(f.path) ? (
+                    <img src={assetUrl(f.path)} alt={f.name} style={{ width: 40, height: 30, objectFit: "cover", borderRadius: 5, border: "1px solid var(--border)", flexShrink: 0 }} />
+                  ) : (
+                    <span style={{ fontSize: 18, flexShrink: 0, width: 40, textAlign: "center" }}>
+                      {f.kind === "videos" ? "🎬" : f.kind === "audio" ? "🎵" : "📄"}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={f.path}>{f.name}</span>
+                  <button className="btn sm danger" title={t("移除该参考")} onClick={() => removeNodeFile(f.id)}>✕</button>
+                </div>
+              ))}
+              <div className="hint">{t("参考在节点面板生成与批量运行时都会自动携带。")}</div>
             </div>
           )}
         </div>
@@ -211,6 +247,23 @@ export default function InspectorPanel(props: InspectorPanelProps) {
           onChange={(e) => onTitleChange(e.target.value)}
         />
       </div>
+
+      {/* v2.26.28 文本节点专用文案编辑区：选中即可直接输入/编辑文案，作为下游节点的文字约束 */}
+      {node.type === "text" && (
+        <div className="field">
+          <label>{t("📝 文案内容（连线给生成节点即作为文字约束）")}</label>
+          <textarea
+            rows={7}
+            value={String(node.config?.text ?? "")}
+            disabled={locked}
+            placeholder={t("输入文案内容，例如：雨夜霓虹街头，女主撑伞回眸——收进节点后连线给 生图/生视频 即生效")}
+            onFocus={onEditStart}
+            onBlur={onEditEnd}
+            onChange={(e) => onConfigChange({ text: e.target.value })}
+          />
+          <div className="hint">{t("编辑实时保存；也可以双击节点在生成面板里编辑或让 AI 续写。")}</div>
+        </div>
+      )}
 
       {paramEntries.map(([key, p]) => {
         const raw = node.config?.[key];
