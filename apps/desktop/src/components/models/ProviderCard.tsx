@@ -99,8 +99,15 @@ export function ProviderCard({
       </div>
 
       {fetched.length > 0 && (
-        <div className="pv-fetched">
-          <span className="hint">{t("远端模型（编辑时自动合并进模型列表；点击可复制 modelId）：")}</span>
+        <div
+          className="pv-fetched"
+          style={fetched.length > 8 ? { maxHeight: 200, overflowY: "auto" } : undefined}
+        >
+          <span className="hint">
+            {fetched.length > 8
+              ? t("远端模型 {n} 个（点击可复制 modelId；列表可滚动，编辑时自动合并进模型列表）：", { n: fetched.length })
+              : t("远端模型（点击可复制 modelId；编辑时自动合并进模型列表）：")}
+          </span>
           {fetched.map((id) => (
             <span key={id} className="tag blue pv-copy" title={t("点击复制 {id}", { id })} onClick={() => onCopyModel(id)}>
               {id}
