@@ -52,7 +52,9 @@ const EMPTY_RUNS: import("../agentChatStore").JobRun[] = [];
 
 export default function AgentChatView() {
   const t = useT();
-  const { project, projectRoot, toast } = useApp();
+  const { project, projectRoot, toast, settings } = useApp();
+  /** v2.26.113：自定义指令文本（设置页实时保存，chat 意图注入 LLM system prompt）——头部显示生效标识 */
+  const instructions = settings?.customInstructions ?? "";
   /** 对话键 = 项目 root 路径：消息/忙碌态按项目隔离 */
   const chatKey = projectRoot;
   const sessions = useAgentChat((s) => (chatKey ? s.sessionsByProject[chatKey] ?? EMPTY_SESSIONS : EMPTY_SESSIONS));
@@ -395,6 +397,16 @@ export default function AgentChatView() {
           </div>
         </div>
         <div style={{ marginLeft: "auto", flexShrink: 0, display: "flex", gap: 8 }}>
+          {/* v2.26.113：自定义指令生效标识——配置了指令时在对话页可见，点击跳转设置页查看/编辑 */}
+          {instructions.trim().length > 0 && (
+            <button
+              className="btn sm"
+              title={t("自定义指令（对全部对话生效）：{text}", { text: instructions.trim().slice(0, 120) })}
+              onClick={() => useApp.getState().setView("instructions")}
+            >
+              📜 {t("自定义指令：生效中")}
+            </button>
+          )}
           <button
             className={`btn sm${autoCanvas ? " primary" : ""}`}
             title={t("生成完成后自动把产物（图片/视频/音频）作为节点加入画布，LibTV 式连续创作")}

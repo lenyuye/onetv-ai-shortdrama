@@ -140,6 +140,10 @@ export interface JobRun {
   progress: number;
   note?: string;
   error?: string | null;
+  /** v2.26.113：任务类别（chat/image_generation/…）——chat 过程卡显示「思考中」而非百分比 */
+  kind?: string;
+  /** v2.26.113：任务创建时间——chat 过程卡显示已等待秒数 */
+  startedAt?: number;
   /** 终态时间戳：3s 后从过程卡列表移除（产物消息/失败提示随后已到） */
   finishedAt?: number;
 }
@@ -313,7 +317,16 @@ export const useAgentChat = create<AgentChatState>((set, get) => {
       set((st) => {
         const cur = st.streamingByJob[jobId];
         const text = (cur?.text ?? "") + delta;
-        return { streamingByJob: { ...st.streamingByJob, [jobId]: { root, sessionId, text } } };
+        // v2.26.113：首个流式增量到达时，同步把过程卡状态从「思考中…」切到「正在回复…」
+        const run = st.jobRuns[jobId];
+        const jobRuns =
+          run && !run.finishedAt && run.note !== "正在回复…"
+            ? { ...st.jobRuns, [jobId]: { ...run, note: "正在回复…" } }
+            : st.jobRuns;
+        return {
+          streamingByJob: { ...st.streamingByJob, [jobId]: { root, sessionId, text } },
+          jobRuns,
+        };
       }),
 
     finishStreaming: (jobId) =>
@@ -424,7 +437,7 @@ export function initAgentChatBridge() {
   // v2.26.103 修复：后端 job state 是大写（SUCCEEDED/FAILED/CANCELED/RUNNING），
   // 此前终态判定用小写导致永匹配不上 → 过程卡 100% 卡死不消失。
   const FINISHED_STATES = ["succeeded", "failed", "canceled", "cancelled"];
-  const upsertFromJobEvent = (p: { id?: string; title?: string; state?: string; progress?: number; error?: string | null }) => {
+  const upsertFromJobEvent = (p: { id?: string; title?: string; state?: string; progress?: number; error?: string | null; kind?: string }) => {
     if (!p?.id) return;
     const loc = locateJob(p.id);
     if (!loc) return;
@@ -437,7 +450,10 @@ export function initAgentChatBridge() {
       title: p.title ?? cur?.title ?? "任务执行中",
       state,
       progress: typeof p.progress === "number" ? p.progress : (cur?.progress ?? 0),
+      note: cur?.note,
       error: p.error ?? cur?.error ?? null,
+      kind: p.kind ?? cur?.kind,
+      startedAt: cur?.startedAt ?? Date.now(),
       finishedAt: FINISHED_STATES.includes(state) ? (cur?.finishedAt ?? Date.now()) : undefined,
     });
     // 终态：同时清理流式气泡（v2.26.110——失败/取消且后端不再发 agent:message 时，

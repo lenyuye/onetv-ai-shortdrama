@@ -109,7 +109,9 @@ interface MessageListProps {
   jobRuns?: JobRun[];
 }
 
-/** 执行过程卡（v2.26.29，codex 式）：Agent 干活的实时步骤/进度在对话流内可见 */
+/** 执行过程卡（v2.26.29，codex 式）：Agent 干活的实时步骤/进度在对话流内可见。
+ * v2.26.113：chat 任务（对话回复）不显示百分比/进度条（LLM 无 progress 概念），
+ * 改为「🤔 思考中… → 正在回复…」+ 已等待秒数，用户能感知任务活着、不是卡死。 */
 const JobRunCards = memo(function JobRunCards({ runs }: { runs: JobRun[] }) {
   const t = useT();
   if (runs.length === 0) return null;
@@ -120,8 +122,19 @@ const JobRunCards = memo(function JobRunCards({ runs }: { runs: JobRun[] }) {
     if (st === "failed") return { icon: "❌", label: r.error || t("失败") };
     if (st === "canceled" || st === "cancelled") return { icon: "⛔", label: t("已取消") };
     if (st === "awaiting_approval") return { icon: "⏸", label: t("等待批准") };
+    if (r.kind === "chat") return { icon: "🤔", label: r.note || t("思考中…") };
     return { icon: "⏳", label: r.note || t("执行中…") };
   };
+  // v2.26.113：chat 任务运行中每秒刷新，显示已等待秒数（用户可感知任务活着）
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const hasWaiting = runs.some(
+      (r) => r.kind === "chat" && !r.finishedAt && ["running", "queued"].includes(r.state.toLowerCase())
+    );
+    if (!hasWaiting) return;
+    const iv = window.setInterval(() => forceTick((x) => x + 1), 1000);
+    return () => window.clearInterval(iv);
+  }, [runs]);
   return (
     <div className="agent-job-runs" style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
       {runs.map((r) => {
@@ -129,6 +142,7 @@ const JobRunCards = memo(function JobRunCards({ runs }: { runs: JobRun[] }) {
         const st = r.state.toLowerCase();
         const done = st === "succeeded";
         const failed = st === "failed" || st === "canceled" || st === "cancelled";
+        const waitingSec = !done && !failed && r.startedAt ? Math.max(0, Math.floor((Date.now() - r.startedAt) / 1000)) : 0;
         return (
           <div key={r.jobId} className="agent-msg-bubble" style={{ display: "flex", justifyContent: "flex-start" }}>
             <div
@@ -145,10 +159,10 @@ const JobRunCards = memo(function JobRunCards({ runs }: { runs: JobRun[] }) {
                 <span className={done || failed ? undefined : "agent-job-spin"} style={{ fontSize: 13 }}>{s.icon}</span>
                 <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
                 <span style={{ marginLeft: "auto", color: "var(--muted)", flexShrink: 0 }}>
-                  {done ? s.label : failed ? "" : `${Math.round((r.progress ?? 0) * 100)}%`}
+                  {done ? s.label : failed ? "" : (r.kind === "chat" || !r.progress) ? "" : `${Math.round((r.progress ?? 0) * 100)}%`}
                 </span>
               </div>
-              {!done && !failed && (
+              {!done && !failed && r.kind !== "chat" && !!r.progress && (
                 <div style={{ marginTop: 6, height: 4, borderRadius: 2, background: "var(--panel-3)", overflow: "hidden" }}>
                   <div
                     className="agent-job-bar"
@@ -156,9 +170,15 @@ const JobRunCards = memo(function JobRunCards({ runs }: { runs: JobRun[] }) {
                   />
                 </div>
               )}
+              {!done && !failed && r.kind === "chat" && (
+                <div style={{ marginTop: 6, height: 4, borderRadius: 2, background: "var(--panel-3)", overflow: "hidden" }}>
+                  <div className="agent-job-bar agent-job-bar-indeterminate" style={{ height: "100%", borderRadius: 2 }} />
+                </div>
+              )}
               {s.label && !done && (
                 <div style={{ marginTop: 5, color: failed ? "var(--danger, #ff6b6b)" : "var(--muted)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {s.label}
+                  {!failed && r.kind === "chat" && waitingSec > 0 ? t("（已等待 {s} 秒）", { s: waitingSec }) : ""}
                 </div>
               )}
             </div>
@@ -312,6 +332,9 @@ const msgCtxCss = `
 @keyframes agent-job-rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .agent-job-bar { background: linear-gradient(90deg, var(--accent, #7c8cff), #b48cff); animation: agent-job-pulse 1.6s ease-in-out infinite; }
 @keyframes agent-job-pulse { 0%, 100% { opacity: .75; } 50% { opacity: 1; } }
+/* v2.26.113：chat 过程卡「思考中」不确定进度条（左右扫动） */
+.agent-job-bar-indeterminate { width: 40%; background: linear-gradient(90deg, var(--accent, #7c8cff), #b48cff); animation: agent-job-sweep 1.4s ease-in-out infinite; }
+@keyframes agent-job-sweep { 0% { transform: translateX(-60%); } 100% { transform: translateX(250%); } }
 `;
 const styleTag = typeof document !== "undefined" && !document.getElementById("msg-ctx-css");
 if (styleTag) {
