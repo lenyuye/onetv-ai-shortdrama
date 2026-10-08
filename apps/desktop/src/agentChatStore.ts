@@ -9,6 +9,15 @@ import { create } from "zustand";
 import * as api from "./api";
 import { useApp } from "./store";
 
+/** 产物卡片（v2.26.29，LibTV 式）：生成完成后随 agent.message 下发的资产信息 */
+export interface ChatMsgAsset {
+  assetId: string;
+  path: string;
+  kind: string;
+  mime?: string;
+  name?: string;
+}
+
 export interface ChatMsg {
   id: string;
   role: "user" | "assistant" | "system";
@@ -27,6 +36,8 @@ export interface ChatMsg {
     /** 批准/拒绝后置位：按钮消失，状态不再自相矛盾 */
     decided?: "approved" | "rejected";
   };
+  /** v2.26.29：产物卡片（图片/视频/音频内嵌预览 + 加入画布） */
+  assets?: ChatMsgAsset[];
   time: string;
 }
 
@@ -46,6 +57,8 @@ const MAX_MSGS_PER_SESSION = 400;
 const MAX_JOB_MAP = 200;
 /** 会话默认标题 */
 export const DEFAULT_SESSION_TITLE = "新会话";
+/** 自动落画布开关（v2.26.29，localStorage；"0"=关闭，默认开） */
+export const AUTO_CANVAS_KEY = "onetv-agent-autocanvas";
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -117,6 +130,20 @@ function schedulePersist(getSessions: () => Record<string, ChatSession[]>, getCu
   }, 300);
 }
 
+/** 执行过程卡条目（v2.26.29，codex 式）：任务在对话流中的实时进度 */
+export interface JobRun {
+  jobId: string;
+  root: string;
+  sessionId: string;
+  title: string;
+  state: string;
+  progress: number;
+  note?: string;
+  error?: string | null;
+  /** 终态时间戳：3s 后从过程卡列表移除（产物消息/失败提示随后已到） */
+  finishedAt?: number;
+}
+
 interface AgentChatState {
   sessionsByProject: Record<string, ChatSession[]>;
   currentByProject: Record<string, string>;
@@ -125,6 +152,8 @@ interface AgentChatState {
   activeJobsByProject: Record<string, string[]>;
   /** 流式进行中的回复，按 jobId 索引（打字机气泡；完整回复到达后移除） */
   streamingByJob: Record<string, { root: string; sessionId: string; text: string }>;
+  /** v2.26.29：执行中的任务过程卡，按 jobId 索引（job:progress/succeeded/failed 事件驱动） */
+  jobRuns: Record<string, JobRun>;
 
   sessionsOf: (key: string | null) => ChatSession[];
   currentSessionOf: (key: string | null) => ChatSession | null;
@@ -143,6 +172,9 @@ interface AgentChatState {
   updateByPlanId: (key: string, sessionId: string, planId: string, patch: (m: ChatMsg) => ChatMsg) => void;
   appendDelta: (root: string, sessionId: string, jobId: string, delta: string) => void;
   finishStreaming: (jobId: string) => void;
+  /** v2.26.29：过程卡 upsert / 移除 */
+  upsertJobRun: (run: JobRun) => void;
+  removeJobRun: (jobId: string) => void;
   /** 清空当前会话消息 */
   clearCurrent: (key: string) => void;
 }
@@ -171,6 +203,7 @@ export const useAgentChat = create<AgentChatState>((set, get) => {
     busyByProject: {},
     activeJobsByProject: {},
     streamingByJob: {},
+    jobRuns: {},
 
     sessionsOf: (key) => (key ? get().sessionsByProject[key] ?? [] : []),
     currentSessionOf: (key) => {
@@ -283,6 +316,16 @@ export const useAgentChat = create<AgentChatState>((set, get) => {
         return { streamingByJob: next };
       }),
 
+    upsertJobRun: (run) =>
+      set((st) => ({ jobRuns: { ...st.jobRuns, [run.jobId]: run } })),
+    removeJobRun: (jobId) =>
+      set((st) => {
+        if (!st.jobRuns[jobId]) return st;
+        const next = { ...st.jobRuns };
+        delete next[jobId];
+        return { jobRuns: next };
+      }),
+
     clearCurrent: (key) => {
       const cur = get().currentSessionOf(key);
       if (!cur) return;
@@ -319,35 +362,64 @@ export function rememberJobSession(jobIds: string[], root: string, sessionId: st
 
 let bridgeInited = false;
 
+/** 事件桥定位（v2.26.29 导出复用）：jobId → 项目+会话；未知 jobId 落当前项目当前会话 */
+export function locateJob(jobId?: string): { root: string; sessionId: string } | null {
+  const app = useApp.getState();
+  const hit = (jobId && jobToSession.get(jobId)) || null;
+  if (hit) return hit;
+  const root = app.projectRoot;
+  const st = useAgentChat.getState();
+  const cur = root ? st.currentSessionOf(root) : null;
+  return root && cur ? { root, sessionId: cur.id } : null;
+}
+
 /** 应用生命周期内只调用一次（App.tsx）：agent.message(.delta) 全局订阅 → 按项目+会话归档 */
 export function initAgentChatBridge() {
   if (bridgeInited) return;
   bridgeInited = true;
-  const locate = (jobId?: string) => {
-    const app = useApp.getState();
-    const hit = (jobId && jobToSession.get(jobId)) || null;
-    if (hit) return hit;
-    const root = app.projectRoot;
-    const st = useAgentChat.getState();
-    const cur = root ? st.currentSessionOf(root) : null;
-    return root && cur ? { root, sessionId: cur.id } : null;
-  };
   // 流式增量：按 jobId 累加（v2.6.2）
   api
     .onAppEvent<{ jobId?: string; delta?: string }>("agent:message:delta", (p) => {
       if (!p?.delta) return;
-      const loc = locate(p.jobId);
+      const loc = locateJob(p.jobId);
       if (!loc) return;
       useAgentChat.getState().appendDelta(loc.root, loc.sessionId, p.jobId ?? "", p.delta);
     })
     .catch(() => {});
+  // 执行过程卡（v2.26.29，codex 式）：job.created/progress 实时刷新，终态 3s 后移除
+  const upsertFromJobEvent = (p: { id?: string; title?: string; state?: string; progress?: number; error?: string | null }) => {
+    if (!p?.id) return;
+    const loc = locateJob(p.id);
+    if (!loc) return;
+    const cur = useAgentChat.getState().jobRuns[p.id];
+    const state = p.state ?? cur?.state ?? "running";
+    useAgentChat.getState().upsertJobRun({
+      jobId: p.id,
+      root: loc.root,
+      sessionId: loc.sessionId,
+      title: p.title ?? cur?.title ?? "任务执行中",
+      state,
+      progress: typeof p.progress === "number" ? p.progress : (cur?.progress ?? 0),
+      error: p.error ?? cur?.error ?? null,
+      finishedAt: ["succeeded", "failed", "cancelled"].includes(state) ? (cur?.finishedAt ?? Date.now()) : undefined,
+    });
+    // 终态 3s 后移除过程卡（产物卡片/失败消息随后已到达对话流）
+    if (["succeeded", "failed", "cancelled"].includes(state)) {
+      window.setTimeout(() => useAgentChat.getState().removeJobRun(p.id!), 3000);
+    }
+  };
+  api.onAppEvent<Record<string, unknown>>("job:created", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => {});
+  api.onAppEvent<Record<string, unknown>>("job:progress", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => {});
+  // job:succeeded/failed 的 payload 就是 job_public（含 state 字段），直接透传即可
+  api.onAppEvent<Record<string, unknown>>("job:succeeded", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => {});
+  api.onAppEvent<Record<string, unknown>>("job:failed", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => {});
   // 完整回复：收尾对应流式气泡并把正式消息写入会话
   api
-    .onAppEvent<{ text: string; kind?: string; jobId?: string }>("agent:message", (p) => {
+    .onAppEvent<{ text: string; kind?: string; jobId?: string; assets?: ChatMsgAsset[] }>("agent:message", (p) => {
       if (!p?.text) return;
       // 兜底定位（v2.24.2）：chat 意图在 agent_chat invoke 内联执行，事件先于 invoke 返回，
       // jobId 归档表可能尚未登记；会话也不存在时新建，保证回复永不丢。
-      let loc = locate(p.jobId);
+      let loc = locateJob(p.jobId);
       if (!loc) {
         const root = useApp.getState().projectRoot;
         if (root) {
@@ -363,8 +435,13 @@ export function initAgentChatBridge() {
           id: uid(),
           role: "assistant",
           text: p.text,
+          assets: Array.isArray(p.assets) && p.assets.length > 0 ? p.assets : undefined,
           time: new Date().toISOString(),
         });
+        // v2.26.29（LibTV 式）：带产物的消息自动落画布（开关可关，见 AgentChatView 头部）
+        if (Array.isArray(p.assets) && p.assets.length > 0 && localStorage.getItem(AUTO_CANVAS_KEY) !== "0") {
+          void import("./canvasSend").then((m) => m.autoDropAssetsToCanvas(p.assets!));
+        }
       } catch (e) {
         console.error("[agentChat] reply archive failed", e);
       }

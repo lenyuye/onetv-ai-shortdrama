@@ -15,6 +15,7 @@ import { useApp } from "../store";
 import {
   useAgentChat,
   rememberJobSession,
+  AUTO_CANVAS_KEY,
   uid,
   type ChatSession,
 } from "../agentChatStore";
@@ -23,6 +24,7 @@ import { AttachmentChips } from "../components/agentchat/AttachmentChips";
 import { AttachmentPreviewModal } from "../components/agentchat/AttachmentPreviewModal";
 import {
   MAX_ATTACHMENTS,
+  SLASH_COMMANDS,
   kindCn,
   type AiModelRef,
   type PendingExtra,
@@ -38,6 +40,7 @@ import { useAgentAttachments } from "../hooks/useAgentAttachments";
 import { useAgentPlanActions } from "../hooks/useAgentPlanActions";
 import { useAgentPlusMenu } from "../hooks/useAgentPlusMenu";
 import { useChatProviders } from "../hooks/useChatProviders";
+import { SlashMenu } from "../components/agentchat/SlashMenu";
 
 // 内部实现已迁至 components/agentchat/；MdBlock 此前即为本文件对外可复用的渲染组件，保持可导入
 export { MdBlock };
@@ -45,6 +48,7 @@ export { MdBlock };
 /** zustand v5 选择器的稳定空值：缺失键时必须返回同一引用，否则无限重渲染（白屏） */
 const EMPTY_SESSIONS: ChatSession[] = [];
 const EMPTY_JOBS: string[] = [];
+const EMPTY_RUNS: import("../agentChatStore").JobRun[] = [];
 
 export default function AgentChatView() {
   const t = useT();
@@ -68,6 +72,13 @@ export default function AgentChatView() {
     );
     return hit?.text;
   });
+  /** v2.26.29：当前项目+会话的执行过程卡（进行中 + 终态 3s 缓冲） */
+  const jobRuns = useAgentChat((s) => {
+    if (!chatKey || !currentSession) return null;
+    return Object.values(s.jobRuns).filter((r) => r.root === chatKey && r.sessionId === currentSession.id);
+  });
+  /** zustand v5 选择器：null → 空数组同一引用，避免无限重渲染 */
+  const runs = jobRuns ?? EMPTY_RUNS;
 
   /* ---------- 会话侧栏状态 ---------- */
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -119,6 +130,16 @@ export default function AgentChatView() {
   /* ---------- 模型选择 ---------- */
   const [aiModel, setAiModel] = useState<AiModelRef | null>(null);
   const { chatProviders } = useChatProviders();
+
+  /* ---------- 斜杠命令（v2.26.29）与自动落画布开关 ---------- */
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [autoCanvas, setAutoCanvas] = useState(() => localStorage.getItem(AUTO_CANVAS_KEY) !== "0");
+  const toggleAutoCanvas = () => {
+    const next = !autoCanvas;
+    setAutoCanvas(next);
+    localStorage.setItem(AUTO_CANVAS_KEY, next ? "1" : "0");
+    toast(next ? t("生成产物将自动加入画布") : t("已关闭产物自动入画布（卡片上仍可手动加入）"), "ok");
+  };
 
   /* ---------- 计划批准/拒绝 ---------- */
   const { approving, approve, reject } = useAgentPlanActions({ chatKey: chatKey ?? "", currentSession, toast });
@@ -183,6 +204,7 @@ export default function AgentChatView() {
       else sendParts.push(`[调用工具：${x.name}]`);
     });
     setInput("");
+    setSlashOpen(false);
     setAttachments([]);
     setExtras([]);
     const session = currentSession ?? (() => {
@@ -355,6 +377,13 @@ export default function AgentChatView() {
           </div>
         </div>
         <div style={{ marginLeft: "auto", flexShrink: 0, display: "flex", gap: 8 }}>
+          <button
+            className={`btn sm${autoCanvas ? " primary" : ""}`}
+            title={t("生成完成后自动把产物（图片/视频/音频）作为节点加入画布，LibTV 式连续创作")}
+            onClick={toggleAutoCanvas}
+          >
+            {autoCanvas ? t("🎨 自动入画布：开") : t("🎨 自动入画布：关")}
+          </button>
           <button className="btn sm" disabled={msgs.length === 0} title={t("清空当前项目的对话记录（本机保存的也会清除）")} onClick={clearChat}>
             {t("🗑 清空对话")}
           </button>
@@ -368,6 +397,7 @@ export default function AgentChatView() {
         onApprove={approve}
         onReject={reject}
         scrollRef={scrollRef}
+        jobRuns={runs}
       />
 
       <div style={{ padding: "10px 22px 14px", borderTop: "1px solid var(--border)" }}>
@@ -375,7 +405,21 @@ export default function AgentChatView() {
         <ModelSelector aiModel={aiModel} onModelChange={setAiModel} providers={chatProviders} busy={busy} />
         <style>{AGENT_CSS}</style>
         {/* Codex 式输入容器：参考 chip 行 + textarea + 工具行（＋添加参考 / 发送） */}
-        <div className={`agent-input-shell${dragOver ? " drag" : ""}`}>
+        <div className={`agent-input-shell${dragOver ? " drag" : ""}`} style={{ position: "relative" }}>
+          {/* 斜杠命令菜单（v2.26.29）：输入 "/" 触发 */}
+          {slashOpen && !busy && (
+            <SlashMenu
+              input={input}
+              onPick={(tpl) => setInput(tpl)}
+              onImmediate={(action) => {
+                if (action === "clear") {
+                  setInput("");
+                  clearChat();
+                }
+              }}
+              onClose={() => setSlashOpen(false)}
+            />
+          )}
           {totalPending > 0 && (
             <AttachmentChips
               attachments={attachments}
@@ -388,13 +432,36 @@ export default function AgentChatView() {
             />
           )}
           <textarea
-            placeholder={t("输入消息：例如「写一集都市情感短剧」或「把当前剧本拆成分镜」…（Enter 发送 / Shift+Enter 换行，支持拖入或粘贴文件作为参考）")}
+            placeholder={t("输入消息：例如「写一集都市情感短剧」或「把当前剧本拆成分镜」…（/ 唤出命令，Enter 发送 / Shift+Enter 换行，支持拖入或粘贴文件作为参考）")}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setSlashOpen(e.target.value.startsWith("/"));
+            }}
             onPaste={handlePaste}
             onKeyDown={(e) => {
+              // 斜杠菜单：Tab 补全按当前前缀命中的第一条命令（点击选择同样支持）
+              if (e.key === "Tab" && slashOpen && input.startsWith("/")) {
+                const q = input.slice(1).toLowerCase();
+                const hit = SLASH_COMMANDS.find(
+                  (c) => q === "" || c.cmd.slice(1).toLowerCase().startsWith(q) || c.name.toLowerCase().includes(q)
+                );
+                if (hit) {
+                  e.preventDefault();
+                  setInput(hit.immediate ? hit.cmd : hit.tpl);
+                  setSlashOpen(false);
+                  if (hit.immediate === "clear") clearChat();
+                }
+                return;
+              }
+              if (e.key === "Escape" && slashOpen) {
+                e.preventDefault();
+                setSlashOpen(false);
+                return;
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
+                setSlashOpen(false);
                 void send();
               }
             }}

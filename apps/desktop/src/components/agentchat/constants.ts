@@ -111,3 +111,16 @@ export const TOOL_PRESETS: { name: string; tpl: string }[] = [
   { name: "配音（TTS）", tpl: "为台词配音：" },
   { name: "视频理解", tpl: "视频理解：分析这个视频" },
 ];
+
+/** 斜杠命令（v2.26.29，LibTV 式快捷指令）：输入 "/" 触发菜单；tpl 为空串的为立即执行型 */
+export const SLASH_COMMANDS: { cmd: string; name: string; tpl: string; immediate?: "clear" }[] = [
+  { cmd: "/剧本", name: "生成剧本", tpl: "写一集剧本：" },
+  { cmd: "/图", name: "生成图片", tpl: "生成图片：" },
+  { cmd: "/视频", name: "生成视频镜头", tpl: "生成视频镜头：" },
+  { cmd: "/分镜", name: "拆分并生成分镜图", tpl: "把当前剧本拆成分镜，并批量生成分镜图" },
+  { cmd: "/成片", name: "合成成片", tpl: "按分镜顺序合成成片" },
+  { cmd: "/配音", name: "生成配音", tpl: "为当前剧本生成配音" },
+  { cmd: "/理解", name: "视频理解", tpl: "视频理解：分析这个视频" },
+  { cmd: "/帮助", name: "查看可用命令", tpl: "可用命令：/剧本 /图 /视频 /分镜 /成片 /配音 /理解 /清空。也可以直接用自然语言描述创作需求。" },
+  { cmd: "/清空", name: "清空当前会话", tpl: "", immediate: "clear" },
+];

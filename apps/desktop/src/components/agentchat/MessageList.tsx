@@ -4,9 +4,10 @@
  * v2.22 性能：历史气泡抽为 memo 组件——流式 delta 只重渲染打字气泡，不再重放整列表。
  */
 import { memo, useEffect, useState, type RefObject } from "react";
-import type { ChatMsg } from "../../agentChatStore";
+import type { ChatMsg, JobRun } from "../../agentChatStore";
 import { getLang, useT } from "../../i18n";
 import { useApp } from "../../store";
+import { AssetCards } from "./AssetCard";
 import { MdBlock } from "./MdBlock";
 import { PlanCard } from "./PlanCard";
 
@@ -80,7 +81,66 @@ interface MessageListProps {
   onApprove: (planId: string) => void;
   onReject: (planId: string) => void;
   scrollRef: RefObject<HTMLDivElement | null>;
+  /** v2.26.29：当前项目+会话的执行过程卡（进行中 + 3s 内的终态） */
+  jobRuns?: JobRun[];
 }
+
+/** 执行过程卡（v2.26.29，codex 式）：Agent 干活的实时步骤/进度在对话流内可见 */
+const JobRunCards = memo(function JobRunCards({ runs }: { runs: JobRun[] }) {
+  const t = useT();
+  if (runs.length === 0) return null;
+  const stateOf = (r: JobRun): { icon: string; label: string } => {
+    if (r.state === "succeeded") return { icon: "✅", label: t("完成") };
+    if (r.state === "failed") return { icon: "❌", label: r.error || t("失败") };
+    if (r.state === "cancelled") return { icon: "⛔", label: t("已取消") };
+    if (r.state === "awaiting_approval") return { icon: "⏸", label: t("等待批准") };
+    return { icon: "⏳", label: r.note || t("执行中…") };
+  };
+  return (
+    <div className="agent-job-runs" style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+      {runs.map((r) => {
+        const s = stateOf(r);
+        const done = r.state === "succeeded";
+        const failed = r.state === "failed" || r.state === "cancelled";
+        return (
+          <div key={r.jobId} className="agent-msg-bubble" style={{ display: "flex", justifyContent: "flex-start" }}>
+            <div
+              style={{
+                width: "78%",
+                background: "var(--panel-2)",
+                border: `1px solid ${failed ? "rgba(255,107,107,.45)" : "var(--border)"}`,
+                borderRadius: 10,
+                padding: "9px 13px",
+                fontSize: 12,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span className={done || failed ? undefined : "agent-job-spin"} style={{ fontSize: 13 }}>{s.icon}</span>
+                <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
+                <span style={{ marginLeft: "auto", color: "var(--muted)", flexShrink: 0 }}>
+                  {done ? s.label : failed ? "" : `${Math.round((r.progress ?? 0) * 100)}%`}
+                </span>
+              </div>
+              {!done && !failed && (
+                <div style={{ marginTop: 6, height: 4, borderRadius: 2, background: "var(--panel-3)", overflow: "hidden" }}>
+                  <div
+                    className="agent-job-bar"
+                    style={{ width: `${Math.max(4, Math.min(100, (r.progress ?? 0) * 100))}%`, height: "100%", borderRadius: 2, transition: "width .4s ease" }}
+                  />
+                </div>
+              )}
+              {s.label && !done && (
+                <div style={{ marginTop: 5, color: failed ? "var(--danger, #ff6b6b)" : "var(--muted)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {s.label}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+});
 
 /** 历史消息气泡列表（memo：msgs/approving 回调引用不变时跳过重渲染） */
 const BubbleList = memo(function BubbleList({
@@ -141,6 +201,8 @@ const BubbleList = memo(function BubbleList({
               )}
             </div>
             {m.role === "assistant" ? <MdBlock text={m.text} /> : m.text}
+            {/* v2.26.29：产物卡片（LibTV 式，图片/视频/音频内嵌 + 加入画布） */}
+            {m.role === "assistant" && <AssetCards assets={m.assets ?? []} />}
             {m.plan && (
               <PlanCard plan={m.plan} approving={approving} onApprove={onApprove} onReject={onReject} />
             )}
@@ -154,7 +216,7 @@ const BubbleList = memo(function BubbleList({
   );
 });
 
-export function MessageList({ msgs, streamingText, approving, onApprove, onReject, scrollRef }: MessageListProps) {
+export function MessageList({ msgs, streamingText, approving, onApprove, onReject, scrollRef, jobRuns = [] }: MessageListProps) {
   const t = useT();
   return (
     <div ref={scrollRef} className="agent-chat-select" style={{ flex: 1, overflowY: "auto", padding: "14px 22px", minHeight: 0 }}>
@@ -165,6 +227,8 @@ export function MessageList({ msgs, streamingText, approving, onApprove, onRejec
         </div>
       )}
       <BubbleList msgs={msgs} approving={approving} onApprove={onApprove} onReject={onReject} />
+      {/* 执行过程卡（v2.26.29）：进行中任务 + 3s 内的终态，codex 式实时进度 */}
+      <JobRunCards runs={jobRuns} />
       {/* 流式进行中的回复（打字机气泡；完整回复到达后由事件桥收尾替换） */}
       {streamingText !== undefined && (
         <div className="agent-msg-bubble" style={{ display: "flex", justifyContent: "flex-start", marginBottom: 12 }}>
@@ -206,6 +270,11 @@ const msgCtxCss = `
 }
 .msg-ctx-menu button:hover:not(:disabled) { background: rgba(255,255,255,.08); }
 .msg-ctx-menu button:disabled { color: var(--muted); cursor: default; }
+/* 执行过程卡（v2.26.29） */
+.agent-job-spin { display: inline-block; animation: agent-job-rotate 1.4s linear infinite; }
+@keyframes agent-job-rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.agent-job-bar { background: linear-gradient(90deg, var(--accent, #7c8cff), #b48cff); animation: agent-job-pulse 1.6s ease-in-out infinite; }
+@keyframes agent-job-pulse { 0%, 100% { opacity: .75; } 50% { opacity: 1; } }
 `;
 const styleTag = typeof document !== "undefined" && !document.getElementById("msg-ctx-css");
 if (styleTag) {

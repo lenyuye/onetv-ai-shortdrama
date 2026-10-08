@@ -488,8 +488,24 @@ pub fn image_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
             let (files, provider_id, model) =
                 generate_one_image(&env, &prompt, &aspect, &out_dir, pp.as_deref(), pm.as_deref(), &references).await?;
             ctx.set_meta(json!({ "providerId": provider_id, "model": model }));
-            ctx.report(0.9, "保存结果…");
-            Ok(files.iter().map(|p| p.to_string_lossy().into_owned()).collect())
+            ctx.report(0.9, "入库…");
+            // v2.26.29：产物登记 + 带卡片的消息（LibTV 式：图片直接在对话里看）
+            let paths: Vec<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+            let mut cards = Vec::new();
+            for p in &files {
+                if let Some(rec) = register_generated_asset(&ctx.root, Some(p), "images") {
+                    cards.push(asset_card_json(&rec, p));
+                }
+            }
+            let n = cards.len();
+            env_agent_message_assets(
+                &env,
+                &ctx.job_id,
+                &if n > 0 { format!("图片生成完成（{n} 张已入资产库），卡片可直接预览或加入画布。") } else { "图片生成完成。".to_string() },
+                "image.done",
+                cards,
+            );
+            Ok(paths)
         })
     })
 }
@@ -516,6 +532,7 @@ pub fn storyboard_image_batch_handler(env: Arc<AgentEnv>) -> JobHandler {
             let out_dir = ctx.root.join("renders").join(&ctx.job_id);
             let total = shots.len();
             let mut updated = shots.clone();
+            let mut shot_cards: Vec<serde_json::Value> = Vec::new();
             for (i, shot) in shots.iter().enumerate() {
                 if ctx.is_cancelled() {
                     return Err(fatal("已取消"));
@@ -526,9 +543,12 @@ pub fn storyboard_image_batch_handler(env: Arc<AgentEnv>) -> JobHandler {
                 let (files, provider_id, model) =
                     generate_one_image(&env, &prompt, "9:16", &out_dir, pp.as_deref(), pm.as_deref(), &[]).await?;
                 ctx.set_meta(json!({ "providerId": provider_id, "model": model }));
-                if let Some(asset_id) = register_generated_asset(&ctx.root, files.first(), "images") {
-                    updated[i]["outputAssetId"] = json!(asset_id);
+                if let Some(rec) = register_generated_asset(&ctx.root, files.first(), "images") {
+                    updated[i]["outputAssetId"] = json!(rec.id);
                     updated[i]["status"] = json!("ready");
+                    if let Some(p) = files.first() {
+                        shot_cards.push(asset_card_json(&rec, p));
+                    }
                 }
             }
             ctx.report(0.95, "写回分镜表…");
@@ -539,11 +559,13 @@ pub fn storyboard_image_batch_handler(env: Arc<AgentEnv>) -> JobHandler {
                 "updatedAt": chrono::Utc::now().to_rfc3339()
             });
             write_episode_doc(&ctx.root, &episode, "storyboard", &sb_out)?;
-            env.events("agent.message", json!({
-                "text": format!("分镜图批量生成完成：{total} 张已入库。可以在「分镜」页逐个审核，或直接说「合成成片」。"),
-                "kind": "storyboard.done",
-                "jobId": ctx.job_id
-            }));
+            env_agent_message_assets(
+                &env,
+                &ctx.job_id,
+                &format!("分镜图批量生成完成：{total} 张已入库。可以在「分镜」页逐个审核，或直接说「合成成片」。分镜图卡片可一键加入画布。"),
+                "storyboard.done",
+                shot_cards,
+            );
             Ok(vec![])
         })
     })
@@ -579,9 +601,21 @@ fn read_bible_style(root: &Path) -> String {
 
 /// 生成类产物（图片等小文件）登记：走 import_asset 拷贝进 assets/，
 /// 与成片类的零拷贝 ops::register_asset 区分（assets/ 目录的拷贝隔离只对生成产物有意义）。
-fn register_generated_asset(root: &Path, file: Option<&PathBuf>, kind: &str) -> Option<String> {
+/// v2.26.29：返回完整 AssetRecord（产物卡片需要 path/mime，前端按 assetId 联动画布/资产库）。
+fn register_generated_asset(root: &Path, file: Option<&PathBuf>, kind: &str) -> Option<onetv_project::ops::AssetRecord> {
     let f = file?;
-    onetv_project::ops::import_asset(root, f, kind).ok().map(|r| r.id)
+    onetv_project::ops::import_asset(root, f, kind).ok()
+}
+
+/// 产物资产卡片 JSON（v2.26.29）：assetId 供落画布/资产库联动，path 供 onetv-asset:// 缩略图。
+fn asset_card_json(rec: &onetv_project::ops::AssetRecord, file: &Path) -> serde_json::Value {
+    json!({
+        "assetId": rec.id,
+        "path": rec.path,
+        "kind": rec.kind,
+        "mime": rec.mime,
+        "name": file.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+    })
 }
 
 /* ---------------- video.generate ---------------- */
@@ -709,7 +743,23 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
             };
             ctx.report(0.9, "下载/保存结果…");
             ctx.set_meta(json!({ "providerId": provider_id, "model": model_id }));
-            Ok(files.iter().map(|p| p.to_string_lossy().into_owned()).collect())
+            // v2.26.29：产物登记 + 带卡片的消息（视频在对话内嵌播放）
+            let paths: Vec<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+            let mut cards = Vec::new();
+            for p in &files {
+                if let Some(rec) = register_generated_asset(&ctx.root, Some(p), "videos") {
+                    cards.push(asset_card_json(&rec, p));
+                }
+            }
+            let n = cards.len();
+            env_agent_message_assets(
+                &env,
+                &ctx.job_id,
+                &if n > 0 { format!("视频生成完成（{duration}s，{n} 个已入资产库），卡片可直接播放或加入画布。") } else { "视频生成完成。".to_string() },
+                "video.done",
+                cards,
+            );
+            Ok(paths)
         })
     })
 }
@@ -743,7 +793,21 @@ pub fn tts_handler(env: Arc<AgentEnv>) -> JobHandler {
                 other => return Err(fatal(format!("驱动 {other:?} 暂不支持 TTS"))),
             }
             ctx.set_meta(json!({ "providerId": decision.provider.id, "model": decision.model_id }));
-            Ok(vec![dest.to_string_lossy().into_owned()])
+            // v2.26.29：配音产物登记 + 带卡片的消息（音频在对话内嵌播放）
+            let paths = vec![dest.to_string_lossy().into_owned()];
+            let mut cards = Vec::new();
+            if let Some(rec) = register_generated_asset(&ctx.root, Some(&dest), "audio") {
+                cards.push(asset_card_json(&rec, &dest));
+            }
+            let has_card = !cards.is_empty();
+            env_agent_message_assets(
+                &env,
+                &ctx.job_id,
+                &if has_card { "配音生成完成（已入资产库），卡片可直接试听或加入画布。" } else { "配音生成完成。" },
+                "tts.done",
+                cards,
+            );
+            Ok(paths)
         })
     })
 }
@@ -1193,12 +1257,20 @@ pub fn timeline_render_handler(env: Arc<AgentEnv>) -> JobHandler {
             let srt_out = out.with_extension("srt");
             let _ = std::fs::copy(&srt_path, &srt_out);
             // 成片零拷贝登记（kind=videos）：成片已在 renders/ 有唯一副本，不复制进 assets/；
-            // 失败不阻断渲染结果
-            if let Err(e) = onetv_project::ops::register_asset(&ctx.root, &out, "videos") {
-                tracing::warn!("成片入库失败（不阻断）: {e}");
+            // 失败不阻断渲染结果。v2.26.29：登记记录用于产物卡片。
+            let mut done_cards: Vec<serde_json::Value> = Vec::new();
+            match onetv_project::ops::register_asset(&ctx.root, &out, "videos") {
+                Ok(rec) => done_cards.push(asset_card_json(&rec, &out)),
+                Err(e) => tracing::warn!("成片入库失败（不阻断）: {e}"),
             }
             ctx.report(0.95, "入库…");
-            env_agent_message(&env, &ctx.job_id, &format!("成片初剪已合成（{:.1}s，含硬字幕）。可在「任务」查看，或说「导出竖版」。", t), "timeline.done");
+            env_agent_message_assets(
+                &env,
+                &ctx.job_id,
+                &format!("成片初剪已合成（{:.1}s，含硬字幕）。可在「任务」查看，或说「导出竖版」。成片卡片可直接播放或加入画布。", t),
+                "timeline.done",
+                done_cards,
+            );
             Ok(vec![out.to_string_lossy().into_owned()])
         })
     })
@@ -1207,6 +1279,13 @@ pub fn timeline_render_handler(env: Arc<AgentEnv>) -> JobHandler {
 fn env_agent_message(env: &AgentEnv, job_id: &str, text: &str, kind: &str) {
     // 带 jobId：前端按任务归属把回复归档到发起对话的项目（切项目/切视图不串流）
     env.events("agent.message", json!({ "text": text, "kind": kind, "jobId": job_id }));
+}
+
+/// 带产物卡片的 agent.message（v2.26.29，LibTV 式对话体验）：
+/// assets: [{assetId, path, kind, mime, name}]，前端在消息气泡内嵌图片/视频/音频卡片，
+/// 支持预览 / Finder / 一键加入画布。assets 为空时前端自动退化为纯文本消息。
+fn env_agent_message_assets(env: &AgentEnv, job_id: &str, text: &str, kind: &str, assets: Vec<serde_json::Value>) {
+    env.events("agent.message", json!({ "text": text, "kind": kind, "jobId": job_id, "assets": assets }));
 }
 
 /* ---------------- export.render ---------------- */
@@ -1284,13 +1363,21 @@ pub fn export_render_handler(env: Arc<AgentEnv>) -> JobHandler {
             // 产物零拷贝登记进 assets 表（kind=videos）：导出成片已落在 renders/（工程内唯一副本），
             // 不再复制进 assets/ 双倍占盘；按 sha256 幂等，重复导出同内容不重录，
             // 「导出/合成成片」的产物可被 latest_asset_of_kind 命中。
-            // 登记失败不阻断导出结果（文件已落 renders/）。
-            if let Err(e) = onetv_project::ops::register_asset(&ctx.root, &out, "videos") {
-                tracing::warn!("导出成片入库失败（不阻断）: {e}");
+            // 登记失败不阻断导出结果（文件已落 renders/）。v2.26.29：登记记录用于产物卡片。
+            let mut export_cards: Vec<serde_json::Value> = Vec::new();
+            match onetv_project::ops::register_asset(&ctx.root, &out, "videos") {
+                Ok(rec) => export_cards.push(asset_card_json(&rec, &out)),
+                Err(e) => tracing::warn!("导出成片入库失败（不阻断）: {e}"),
             }
             ctx.report(0.95, "入库…");
             let sub_note = if burn_subtitle && has_srt { "含硬字幕" } else { "无硬字幕" };
-            env_agent_message(&env, &ctx.job_id, &format!("已导出 {w}×{h} 版本（{sub_note}）：{}", out.display()), "export.done");
+            env_agent_message_assets(
+                &env,
+                &ctx.job_id,
+                &format!("已导出 {w}×{h} 版本（{sub_note}）：{}。成片卡片可直接播放或加入画布。", out.display()),
+                "export.done",
+                export_cards,
+            );
             Ok(outputs)
         })
     })

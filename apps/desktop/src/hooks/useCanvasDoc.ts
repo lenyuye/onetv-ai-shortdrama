@@ -19,6 +19,7 @@ import {
   flowToDoc,
   type FlowNode,
 } from "../components/canvas/canvas-model";
+import { CANVAS_EXTERNAL_EVENT } from "../canvasSend";
 
 export const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1.2 };
 const MAX_UNDO = 60;
@@ -179,6 +180,25 @@ export function useCanvasDoc(episodeId: string) {
       }
     };
   }, [episodeId, applyDoc, toast, rf]);
+
+  /* ---------- 外部变更联动（v2.26.29）：Agent 对话产物自动落画布后重载文档 ---------- */
+
+  useEffect(() => {
+    const onExternal = (e: Event) => {
+      const detail = (e as CustomEvent<{ episodeId?: string }>).detail;
+      // 只响应当前正在浏览的分集；其他分集切换加载时自然拿到最新文档
+      if (!detail?.episodeId || detail.episodeId !== episodeIdRef.current || !loadedEpRef.current) return;
+      apiCanvas
+        .canvasGet(detail.episodeId)
+        .then((doc) => {
+          if (loadedEpRef.current !== detail.episodeId) return;
+          applyDoc(normalizeCanvasDoc(doc, detail.episodeId!));
+        })
+        .catch(() => {});
+    };
+    window.addEventListener(CANVAS_EXTERNAL_EVENT, onExternal);
+    return () => window.removeEventListener(CANVAS_EXTERNAL_EVENT, onExternal);
+  }, [applyDoc]);
 
   /* ---------- 撤销 / 重做 ---------- */
 
