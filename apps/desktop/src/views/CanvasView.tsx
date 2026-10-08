@@ -457,6 +457,48 @@ function CanvasWorkbench({
     [nodesRef, episodeIdRef, rf, pushUndo, setNodes, scheduleSave, toast, t]
   );
 
+  /** v2.26.106：右键菜单「素材（本地上传）」——先弹文件选择，成功后在右键位置
+   * 直接生成带内容的素材节点；取消选择则不留任何空壳。 */
+  const uploadAssetAtScreen = useCallback(
+    async (screenPos?: { x: number; y: number }) => {
+      const ep = episodeIdRef.current;
+      if (!ep) {
+        toast(t("请先选择分集"), "warn");
+        return;
+      }
+      try {
+        const att = await api.agentAttach();
+        const pos = screenPos
+          ? rf.screenToFlowPosition({ x: screenPos.x, y: screenPos.y })
+          : rf.screenToFlowPosition(centerScreen());
+        const cn = createCanvasNode("asset", ep, pos);
+        cn.title = att.name.length > 24 ? `${att.name.slice(0, 24)}…` : att.name;
+        cn.config = {
+          ...cn.config,
+          files: [{ id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
+          status: "ready",
+        };
+        pushUndo();
+        setNodes((ns) => [
+          ...ns.map((n) => ({ ...n, selected: false })),
+          { id: cn.id, type: "onetv", position: pos, data: { cn }, selected: true },
+        ]);
+        scheduleSave();
+        window.setTimeout(() => {
+          void rf.setCenter(pos.x + 95, pos.y + 80, { zoom: Math.max(rf.getZoom(), 0.8), duration: 300 });
+        }, 60);
+        toast(t("已上传 {name} 并创建素材节点——点「🖼 生图 / 🎬 生视频」即可继续生成", { name: att.name }), "ok");
+      } catch (e) {
+        const msg = api.errMsg(e);
+        if (!msg.includes("已取消") && !msg.includes("取消")) {
+          toast(t("上传失败：{msg}", { msg }), "err");
+        }
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [episodeIdRef, rf, pushUndo, setNodes, scheduleSave, toast, t]
+  );
+
   /** 素材/文本节点一键转生成（LibTV 式）：旁建生成节点 + 自动连线（上游即参考） */
   const spawnGenerateNode = useCallback(
     (sourceId: string, type: "image" | "video") => {
@@ -732,6 +774,7 @@ function CanvasWorkbench({
         selNodeCount={nodes.filter((n) => n.selected).length}
         onClose={() => setCtxMenu(null)}
         onAddNode={addNodeAt}
+        onUploadAsset={uploadAssetAtScreen}
         onPaste={pasteFromClipboard}
         onFitAll={fitAll}
         onOpenNodeChat={openNodeChatById}

@@ -246,6 +246,7 @@ export default function AssetsView() {
   const [items, setItems] = useState<AssetRecord[]>([]);
   const [tab, setTab] = useState("all");
   const [busyKind, setBusyKind] = useState<AssetImportKind | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [understandingId, setUnderstandingId] = useState<string | null>(null);
 
@@ -255,6 +256,17 @@ export default function AssetsView() {
       .then(setItems)
       .catch(() => setItems([]));
   }, []);
+
+  /** v2.26.106：手动刷新带 loading + 结果反馈（此前点击无任何视觉反馈，像失灵） */
+  const refreshWithFeedback = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+      toast(t("资产列表已刷新"), "ok");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh, toast, t]);
 
   useEffect(() => {
     if (project) void refresh();
@@ -356,7 +368,9 @@ export default function AssetsView() {
               {busyKind === b.kind ? t("导入中…") : `${b.icon} ${t("导入{label}", { label: t(b.label) })}`}
             </button>
           ))}
-          <button className="btn ghost" onClick={() => void refresh()}>⟳ {t("刷新")}</button>
+          <button className="btn ghost" disabled={refreshing} onClick={() => void refreshWithFeedback()}>
+            {refreshing ? t("刷新中…") : `⟳ ${t("刷新")}`}
+          </button>
         </div>
       </div>
 

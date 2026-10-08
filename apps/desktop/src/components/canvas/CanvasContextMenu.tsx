@@ -84,6 +84,8 @@ export interface CanvasContextMenuProps {
   selNodeCount: number;
   onClose: () => void;
   onAddNode: (type: NodeType, screenPos?: { x: number; y: number }) => void;
+  /** v2.26.106：「素材（本地上传）」——弹文件选择后在右键位置直接生成带内容节点 */
+  onUploadAsset?: (screenPos?: { x: number; y: number }) => void;
   onPaste: (flowPos: { x: number; y: number }) => void;
   onFitAll: () => void;
   onOpenNodeChat: (nodeId: string) => void;
@@ -99,6 +101,7 @@ export default function CanvasContextMenu({
   selNodeCount,
   onClose,
   onAddNode,
+  onUploadAsset,
   onPaste,
   onFitAll,
   onOpenNodeChat,
@@ -128,12 +131,17 @@ export default function CanvasContextMenu({
                   key={it.type}
                   className="cv-ctx-item"
                   onClick={() => {
-                    onAddNode(it.type, menu.screen);
+                    // v2.26.106：素材项 = 本地上传 → 直接生成带内容节点（不再先建空壳）
+                    if (it.type === "asset" && onUploadAsset) {
+                      onUploadAsset(menu.screen);
+                    } else {
+                      onAddNode(it.type, menu.screen);
+                    }
                     onClose();
                   }}
                 >
                   <span className="icon">{it.icon}</span>
-                  {t(it.label)}
+                  {it.type === "asset" && onUploadAsset ? t("素材（本地上传）") : t(it.label)}
                 </button>
               ))}
               <div className="cv-ctx-sep" />

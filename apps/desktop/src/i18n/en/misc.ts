@@ -330,4 +330,9 @@ export default {
   '获取插件详情失败：{msg}': 'Failed to load plugin details: {msg}',
   '插件提示词渲染失败：{msg}': 'Failed to render the plugin prompt: {msg}',
   '插件提示词已插入输入框': 'Plugin prompt inserted into the input box',
+
+  /* ---------- v2.26.106 资产刷新反馈 + 画布右键本地上传 ---------- */
+  '刷新中…': 'Refreshing…',
+  '资产列表已刷新': 'Asset list refreshed',
+  '素材（本地上传）': 'Asset (upload from disk)',
 } as Record<string, string>;
