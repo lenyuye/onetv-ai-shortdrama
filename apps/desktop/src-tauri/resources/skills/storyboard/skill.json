@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "结构化剧本 → 镜头表（Shot List）→ 分镜图组，逐镜审核后才能批量生成",
   "author": "OneTV",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "permissions": { "network": ["provider"], "filesystem": ["project"] },
   "inputs": ["episode_id", "shots_per_scene"],
   "outputs": ["shot_list", "storyboard_images"],

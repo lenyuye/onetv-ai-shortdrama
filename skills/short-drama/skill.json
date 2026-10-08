@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "一句话需求 → Story Bible → 分集大纲 → 单集结构化剧本",
   "author": "OneTV",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "permissions": { "network": ["provider"], "filesystem": ["project"] },
   "inputs": ["logline", "episode_count", "duration_sec", "aspect_ratio"],
   "outputs": ["story_bible", "script"],
