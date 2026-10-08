@@ -384,7 +384,8 @@ function CanvasWorkbench({
   );
 
   /** 节点卡内/检查器「上传素材」（v2.26.102，LibTV/即梦式）：
-   * 每次上传的文件自动成为一个**新的独立素材节点**（不再追加进已有节点的文件列表），
+   * 已有内容的节点上传 → 每次文件自动成为一个**新的独立素材节点**；
+   * v2.26.104：**空素材节点**（无文件无产物）点「+上传」→ 直接填充该节点，不再留下空壳孤儿节点。
    * 新节点自动选中并平移视口到可见位置。sourceId 仅作为摆放锚点（可无）。 */
   const uploadNodeFileById = useCallback(
     async (nodeId: string) => {
@@ -393,6 +394,38 @@ function CanvasWorkbench({
       try {
         const att = await api.agentAttach();
         const anchor = nodesRef.current.find((n) => n.id === nodeId);
+        const anchorCn = anchor?.data.cn;
+        const anchorFiles = Array.isArray(anchorCn?.config?.files)
+          ? (anchorCn.config.files as unknown[])
+          : [];
+        // v2.26.104：空素材节点 → 填充自身（title 同步为文件名）
+        if (anchor && anchorCn?.type === "asset" && anchorFiles.length === 0 && !anchorCn.config?.outputAssetId) {
+          pushUndo();
+          setNodes((ns) =>
+            ns.map((n) =>
+              n.id === nodeId
+                ? {
+                    ...n,
+                    data: {
+                      ...n.data,
+                      cn: {
+                        ...n.data.cn,
+                        title: att.name.length > 24 ? `${att.name.slice(0, 24)}…` : att.name,
+                        config: {
+                          ...n.data.cn.config,
+                          files: [{ id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
+                          status: "ready",
+                        },
+                      },
+                    },
+                  }
+                : n
+            )
+          );
+          scheduleSave();
+          toast(t("已上传 {name} 到该素材节点——点「🖼 生图 / 🎬 生视频」即可继续生成", { name: att.name }), "ok");
+          return;
+        }
         const pos = anchor
           ? { x: anchor.position.x + 40, y: anchor.position.y + 210 }
           : rf.screenToFlowPosition(centerScreen());
