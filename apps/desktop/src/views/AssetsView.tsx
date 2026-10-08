@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import * as assets from "../api-assets";
-import type { AssetImportKind, AssetRecord } from "../api-assets";
+import { exportAssetWithPicker, type AssetImportKind, type AssetRecord } from "../api-assets";
 import { video_understand } from "../api-extras";
 import { errMsg } from "../api";
 import { useApp } from "../store";
@@ -138,6 +138,19 @@ function AssetCard({
         </button>
         <button
           className="btn sm"
+          title={t("选择文件夹保存（同名自动加序号）")}
+          onClick={() => {
+            void exportAssetWithPicker(asset.path)
+              .then((dest) => {
+                if (dest) useApp.getState().toast(t("已下载到：{path}", { path: dest }), "ok");
+              })
+              .catch((e) => useApp.getState().toast(t("下载失败：{msg}", { msg: errMsg(e) }), "err"));
+          }}
+        >
+          {t("⬇ 下载")}
+        </button>
+        <button
+          className="btn sm"
           title={t("在 Finder 中打开所在文件夹并选中该文件")}
           onClick={() => {
             void assets.assetReveal(asset.path).then(
@@ -230,6 +243,32 @@ function AssetPreviewModal({
           <span className="hint" style={{ marginRight: "auto" }}>
             {formatSize(asset.size_bytes)} · SHA-256 {asset.sha256.slice(0, 12)}
           </span>
+          {/* v2.26.157：预览弹窗内直接下载（用户反馈"无法点预览后直接下载"） */}
+          <button
+            className="btn"
+            title={t("选择文件夹保存（同名自动加序号）")}
+            onClick={() => {
+              void exportAssetWithPicker(asset.path)
+                .then((dest) => {
+                  if (dest) useApp.getState().toast(t("已下载到：{path}", { path: dest }), "ok");
+                })
+                .catch((e) => useApp.getState().toast(t("下载失败：{msg}", { msg: errMsg(e) }), "err"));
+            }}
+          >
+            ⬇ {t("下载")}
+          </button>
+          <button
+            className="btn"
+            title={t("在 Finder 中显示")}
+            onClick={() => {
+              void assets
+                .assetReveal(asset.path)
+                .then(() => useApp.getState().toast(t("已在 Finder 中定位"), "ok"))
+                .catch((e) => useApp.getState().toast(t("打开失败：{msg}", { msg: errMsg(e) }), "err"));
+            }}
+          >
+            📁 {t("文件夹")}
+          </button>
           <button className="btn" onClick={onClose}>{t("关闭")}</button>
         </div>
       </div>

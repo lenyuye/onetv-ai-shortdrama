@@ -15,6 +15,7 @@ import { NODE_TYPE_DEFS } from "@onetv/node-sdk";
 import type { CanvasNode } from "@onetv/shared-types";
 import { useT } from "../../i18n";
 import { assetList, assetUrl } from "../../api-assets";
+import { canvasOutputNodeId } from "../../canvasSend";
 import * as api from "../../api";
 import { jobList } from "../../api-providers";
 import { useApp } from "../../store";
@@ -131,14 +132,21 @@ export default function CanvasNodeCard(props: NodeProps) {
   const isInlineGen = !!cn && INLINE_GEN_TYPES.includes(cn.type);
   const isAsset = cn?.type === "asset";
   const isText = cn?.type === "text";
-  const [genPrompt, setGenPrompt] = useState("");
-  const [genAspect, setGenAspect] = useState("9:16");
+  const [genPrompt, setGenPrompt] = useState(() =>
+    cn && typeof cn.config?.prompt === "string" ? (cn.config.prompt as string) : ""
+  );
+  const [genAspect, setGenAspect] = useState(() =>
+    cn && typeof cn.config?.aspect === "string" && cn.config.aspect ? (cn.config.aspect as string) : "9:16"
+  );
   const [genBusy, setGenBusy] = useState(false);
   const [genNote, setGenNote] = useState<string>("");
   const pollRef = useRef<number | null>(null);
 
   const genJobId = typeof cn?.config?.generateJobId === "string" ? (cn.config.generateJobId as string) : "";
   const genError = typeof cn?.config?.generateError === "string" ? (cn.config.generateError as string) : "";
+  // v2.26.157：产物节点幂等键——doc 级回填（job:succeeded）可能已落好产物节点，
+  // 卡内轮询随后到达时不得再落第二个（此前会出现两个同内容节点）。
+  const outNodeIdFor = (jid: string) => canvasOutputNodeId(jid);
 
   /** 轮询生成任务到终态并回填产物（jobId 持久在 config，重开应用/滚出视口后自动续查）。
    * v2.26.110 修复：守卫移除 genBusy——卡内发起生成后 genBusy 保持 true 且 genJobId
@@ -191,7 +199,9 @@ export default function CanvasNodeCard(props: NodeProps) {
               batchNote: t("卡内生成完成"),
             });
             // v2.26.102（LibTV 式）：产物自动落为新的独立内容节点（占满显示）
-            if (hit?.path) actions.spawnOutputNode(cn.id, outId2, hit.path);
+            // v2.26.157：若 doc 级回填已落（genout-<jobId>）则跳过，避免重复节点
+            const alreadyDropped = rf.getNodes().some((n) => n.id === outNodeIdFor(genJobId));
+            if (hit?.path && !alreadyDropped) actions.spawnOutputNode(cn.id, outId2, hit.path);
           } else {
             actions.patchConfig(cn.id, { generateJobId: null, batchStatus: null });
           }

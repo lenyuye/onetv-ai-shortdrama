@@ -409,7 +409,12 @@ async fn run_workflow_impl(
             &profile.base_url,
             &format!("view?filename={}&subfolder={}&type={typ}", enc_query(&filename), enc_query(&subfolder)),
         );
-        let ext = filename.rsplit('.').next().map(|e| e.chars().take(4).collect::<String>()).unwrap_or("png".into());
+        // v2.26.157：扩展名统一走安全推导（剥离 ?/# 与非法字符），避免脏文件名污染资产库；
+        // ComfyUI 产物以图片为主，推导失败回退 png（而非通用 bin）。
+        let ext = {
+            let e = crate::providers::custom_http::result_ext_from_url(&filename);
+            if e == "bin" { "png".to_string() } else { e }
+        };
         let dest = out_dir.join(format!("comfywf_{}_{}.{}", chrono::Utc::now().timestamp_millis(), i, ext));
         gw.download(profile, &view, &dest).await?;
         outs.push(dest);

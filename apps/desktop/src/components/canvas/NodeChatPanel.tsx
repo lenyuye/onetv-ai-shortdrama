@@ -17,6 +17,7 @@ import type { CanvasNode, NodeType } from "@onetv/shared-types";
 import { useT } from "../../i18n";
 import { useNodeActions } from "./NodeActionsContext";
 import { isPreviewMediaPath, isVideoMediaPath } from "./canvas-model";
+import { canvasOutputNodeId } from "../../canvasSend";
 
 const TYPE_CN: Record<string, string> = {
   asset: "素材", text: "文本", script: "剧本", image: "生图", video: "生视频", audio: "配音",
@@ -310,7 +311,9 @@ export default function NodeChatPanel({
                 onConfig(node.id, { outputAssetId: outId, outputAssetPath: hit?.path ?? "", status: "ready" });
                 setResultPath(hit?.path ?? null);
                 // v2.26.102（LibTV 式）：产物自动落为新的独立内容节点（图/视频）
-                if (hit?.path && isPreviewMediaPath(hit.path)) {
+                // v2.26.157：doc 级回填（genout-<jobId>）已落则跳过，避免重复节点
+                const dropped = rf.getNodes().some((n) => n.id === canvasOutputNodeId(j.id));
+                if (hit?.path && isPreviewMediaPath(hit.path) && !dropped) {
                   nodeActions.spawnOutputNode(node.id, outId, hit.path);
                 }
               }

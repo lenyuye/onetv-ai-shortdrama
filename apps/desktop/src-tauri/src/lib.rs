@@ -2026,18 +2026,103 @@ async fn agent_attach_data(
     .map_err(|e| err(e.to_string()))?
 }
 
+/// 归一化资产路径（v2.26.157）：历史脏数据可能带 URL 查询串（如 "xxx.mp4?e=签名"），
+/// 而文件已按干净名落盘——先按原路径找，找不到再去掉 ?/# 后重试。
+fn resolve_asset_path(path: &str) -> PathBuf {
+    let p = PathBuf::from(path);
+    if p.exists() {
+        return p;
+    }
+    if let Some(clean) = path.split(['?', '#']).next() {
+        let cp = PathBuf::from(clean);
+        if cp.exists() {
+            return cp;
+        }
+    }
+    p
+}
+
 /// 用系统默认应用打开文件（附件"打开/编辑"）。
 #[tauri::command]
 fn asset_open(app: tauri::AppHandle, path: String) -> Result<(), CommandError> {
     use tauri_plugin_opener::OpenerExt;
-    app.opener().open_path(path, None::<&str>).map_err(err)
+    let p = resolve_asset_path(&path);
+    // v2.26.157：文件缺失时给出可读归因（此前静默失败表现为"点打开无反应"）
+    if !p.exists() {
+        return Err(err(format!("文件不存在（可能已被移动或删除）：{}", p.display())));
+    }
+    app.opener()
+        .open_path(p.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(err)
 }
 
 /// 在 Finder 中显示文件。
 #[tauri::command]
 fn asset_reveal(app: tauri::AppHandle, path: String) -> Result<(), CommandError> {
     use tauri_plugin_opener::OpenerExt;
-    app.opener().reveal_item_in_dir(path).map_err(err)
+    let p = resolve_asset_path(&path);
+    if !p.exists() {
+        return Err(err(format!("文件不存在（可能已被移动或删除）：{}", p.display())));
+    }
+    app.opener()
+        .reveal_item_in_dir(p.to_string_lossy().into_owned())
+        .map_err(err)
+}
+
+/// 下载（导出）资产文件，同名自动加序号，返回最终落盘路径。v2.26.158：
+/// target_dir 由前端目录选择器提供（自选保存位置）；缺省时回落到系统
+/// 「下载」文件夹/OneTV（兼容旧调用）。
+#[tauri::command]
+async fn asset_export(
+    app: tauri::AppHandle,
+    path: String,
+    target_dir: Option<String>,
+) -> Result<String, CommandError> {
+    let src = resolve_asset_path(&path);
+    if !src.exists() {
+        return Err(err(format!("文件不存在（可能已被移动或删除）：{}", src.display())));
+    }
+    let dir = match target_dir.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(d) => {
+            let p = PathBuf::from(d);
+            if !p.is_dir() {
+                return Err(err(format!("所选目录不存在或不可访问：{d}")));
+            }
+            p
+        }
+        None => app
+            .path()
+            .download_dir()
+            .map_err(|e| err(e.to_string()))?
+            .join("OneTV"),
+    };
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let name = src
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "asset".into());
+    let mut dest = dir.join(&name);
+    if dest.exists() {
+        let stem = src
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "asset".into());
+        let ext = src.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        for i in 2..1000 {
+            let candidate = if ext.is_empty() {
+                format!("{stem}-{i}")
+            } else {
+                format!("{stem}-{i}.{ext}")
+            };
+            let p = dir.join(candidate);
+            if !p.exists() {
+                dest = p;
+                break;
+            }
+        }
+    }
+    std::fs::copy(&src, &dest).map_err(err)?;
+    Ok(dest.to_string_lossy().into_owned())
 }
 
 /* ---------------- 画布节点生成（v2.5：LibTV 式节点聊天框） ---------------- */
@@ -4242,6 +4327,7 @@ pub fn run() {
             agent_attach_data,
             asset_open,
             asset_reveal,
+            asset_export,
             memory_list,
             memory_add,
             memory_update,

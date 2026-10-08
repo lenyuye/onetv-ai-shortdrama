@@ -253,6 +253,8 @@ export const assetOpen = (path: string) => invoke<void>("asset_open", { path });
 /** 在 Finder 中显示文件 */
 export const assetReveal = (path: string) => invoke<void>("asset_reveal", { path });
 
+/** 资产下载/导出统一走 api-assets.ts（v2.26.158：exportAssetWithPicker 支持自选目录） */
+
 /* ---------------- 画布节点生成面板（v2.5） ---------------- */
 
 export const canvasNodeRun = (input: {

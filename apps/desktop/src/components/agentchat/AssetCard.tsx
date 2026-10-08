@@ -4,7 +4,7 @@
  * path 走 onetv-asset:// 协议（与资产库预览同链路）。
  */
 import * as api from "../../api";
-import { assetUrl } from "../../api-assets";
+import { assetUrl, cleanAssetPath, exportAssetWithPicker } from "../../api-assets";
 import { sendAssetsToCanvas } from "../../canvasSend";
 import { useApp } from "../../store";
 import { useT } from "../../i18n";
@@ -25,6 +25,19 @@ const KIND_ICON: Record<string, string> = { images: "🖼", videos: "🎬", audi
 function AssetCardItem({ asset }: { asset: ChatMsgAsset }) {
   const t = useT();
   const { toast } = useApp();
+  // v2.26.157：路径归一（历史脏数据可能带 "?e=签名" 查询串）+ 统一的打开失败归因
+  const path = cleanAssetPath(asset.path ?? "");
+  const openFile = () =>
+    void api.assetOpen(path).catch((e) => toast(t("打开失败：{msg}", { msg: api.errMsg(e) }), "err"));
+  const revealFile = () =>
+    void api.assetReveal(path).catch((e) => toast(t("打开失败：{msg}", { msg: api.errMsg(e) }), "err"));
+  // v2.26.158：下载改为先弹系统目录选择器（自选保存位置），取消则不导出
+  const downloadFile = () =>
+    void exportAssetWithPicker(path)
+      .then((dest) => {
+        if (dest) toast(t("已下载到：{path}", { path: dest }), "ok");
+      })
+      .catch((e) => toast(t("下载失败：{msg}", { msg: api.errMsg(e) }), "err"));
   // v2.26.110：path 缺省防御——事件漏发 path 时不再生成 .../undefined 的坏 src（裂图 + 打开必失败）
   if (!asset.path) {
     return (
@@ -42,15 +55,15 @@ function AssetCardItem({ asset }: { asset: ChatMsgAsset }) {
     <div className="agent-asset-card" style={{ maxWidth: 260 }}>
       {isImage(asset) ? (
         <img
-          src={assetUrl(asset.path)}
+          src={assetUrl(path)}
           alt={asset.name ?? asset.assetId}
           loading="lazy"
           style={{ width: "100%", maxHeight: 200, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)", cursor: "zoom-in", display: "block" }}
-          onClick={() => void api.assetOpen(asset.path).catch(() => toast(t("打开失败"), "err"))}
+          onClick={openFile}
         />
       ) : isVideo(asset) ? (
         <video
-          src={assetUrl(asset.path)}
+          src={assetUrl(path)}
           controls
           preload="metadata"
           style={{ width: "100%", maxHeight: 220, borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
@@ -58,7 +71,7 @@ function AssetCardItem({ asset }: { asset: ChatMsgAsset }) {
       ) : isAudio(asset) ? (
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
           <span style={{ fontSize: 20 }}>🎧</span>
-          <audio src={assetUrl(asset.path)} controls preload="metadata" style={{ flex: 1, height: 32 }} />
+          <audio src={assetUrl(path)} controls preload="metadata" style={{ flex: 1, height: 32 }} />
         </div>
       ) : (
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 0", fontSize: 12.5 }}>
@@ -77,14 +90,21 @@ function AssetCardItem({ asset }: { asset: ChatMsgAsset }) {
         <button
           className="btn sm"
           title={t("用系统默认程序打开")}
-          onClick={() => void api.assetOpen(asset.path).catch(() => toast(t("打开失败"), "err"))}
+          onClick={openFile}
         >
           {t("打开")}
         </button>
         <button
           className="btn sm"
+          title={t("选择文件夹保存（同名自动加序号）")}
+          onClick={downloadFile}
+        >
+          ⬇ {t("下载")}
+        </button>
+        <button
+          className="btn sm"
           title={t("在 Finder 中显示")}
-          onClick={() => void api.assetReveal(asset.path).catch(() => toast(t("打开失败"), "err"))}
+          onClick={revealFile}
         >
           {t("文件夹")}
         </button>

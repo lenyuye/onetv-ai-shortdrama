@@ -73,6 +73,10 @@ fn default_poll_timeout() -> u64 {
 /* ---------------- 模板变量白名单解析 ---------------- */
 
 /// 解析 `${expr}`：根只允许 input / model / secret / jobId（规格 §22.4）。
+/// v2.26.157 增强（可选参数条件化，避免向远程 API 传 null 被拒）：
+/// - 对象字段：值为可选链占位（`${...?}`）且解析为 null → **整个字段省略**；
+/// - 数组项：项为可选链占位解析为 null → 整项省略；项为对象且含 `"$if"` 标记 →
+///   `$if` 为 null/空串时整项省略（`$if` 不会出现在最终请求体里）。
 pub fn render_template(value: &Value, ctx: &Value) -> Result<Value, GatewayError> {
     match value {
         Value::String(s) => {
@@ -102,15 +106,55 @@ pub fn render_template(value: &Value, ctx: &Value) -> Result<Value, GatewayError
         Value::Object(map) => {
             let mut out = serde_json::Map::new();
             for (k, v) in map {
-                out.insert(k.clone(), render_template(v, ctx)?);
+                let rendered = render_template(v, ctx)?;
+                // 可选链占位解析为 null → 省略该字段（可选参数不发送）
+                if rendered.is_null() && is_optional_placeholder(v) {
+                    continue;
+                }
+                out.insert(k.clone(), rendered);
             }
             Ok(Value::Object(out))
         }
-        Value::Array(arr) => Ok(Value::Array(
-            arr.iter().map(|v| render_template(v, ctx)).collect::<Result<Vec<_>, _>>()?,
-        )),
+        Value::Array(arr) => {
+            let mut out = Vec::new();
+            for item in arr {
+                // 条件项：在**渲染前**读取原始 "$if"（否则会被上面的 null 可选字段省略规则吃掉）
+                if let Value::Object(m) = item {
+                    if let Some(cond_tpl) = m.get("$if") {
+                        let cond = render_template(cond_tpl, ctx)?;
+                        let empty = cond.is_null()
+                            || cond.as_str().map(|s| s.trim().is_empty()).unwrap_or(false);
+                        if empty {
+                            continue;
+                        }
+                        let mut rest = m.clone();
+                        rest.remove("$if");
+                        out.push(render_template(&Value::Object(rest), ctx)?);
+                        continue;
+                    }
+                }
+                let rendered = render_template(item, ctx)?;
+                // 项本身是可选链占位且为 null → 整项省略
+                if rendered.is_null() && is_optional_placeholder(item) {
+                    continue;
+                }
+                out.push(rendered);
+            }
+            Ok(Value::Array(out))
+        }
         other => Ok(other.clone()),
     }
+}
+
+/// 字符串是否整体为一个含可选链（末尾 `?` 段）的占位表达式。
+fn is_optional_placeholder(v: &Value) -> bool {
+    let Some(s) = v.as_str() else { return false };
+    let trimmed = s.trim();
+    if !(trimmed.starts_with("${") && trimmed.ends_with("}")) {
+        return false;
+    }
+    let inner = &trimmed[2..trimmed.len() - 1];
+    inner.split('.').any(|seg| seg.trim().ends_with('?'))
 }
 
 fn resolve_expr(expr: &str, ctx: &Value) -> Result<Value, GatewayError> {
@@ -404,6 +448,36 @@ mod tests {
         assert_eq!(result_ext_from_url("https://x.com/a.mp4?e=abc/odd"), "mp4");
         assert_eq!(result_ext_from_url("https://x.com/a.超长扩展名"), "bin");
         assert_eq!(result_ext_from_url("not-a-url"), "bin");
+    }
+
+    /// v2.26.157 回归：可选链占位为 null 时字段/数组项条件省略
+    /// （H3 图生视频：无参考图时不得发送 first_frame 图片项，也不得发 null 字段）
+    #[test]
+    fn render_template_omits_optional_null() {
+        let ctx_empty = json!({ "model": { "id": "MiniMax-H3" }, "input": { "prompt": "跳舞", "firstFrameBase64": null } });
+        let tpl = json!({
+            "model": "${model.id}",
+            "content": [
+                { "type": "text", "text": "${input.prompt}" },
+                { "$if": "${input.firstFrameBase64?}", "type": "image_url",
+                  "image_url": { "url": "${input.firstFrameBase64?}" }, "role": "first_frame" }
+            ],
+            "duration": 5,
+            "first_frame_image": "${input.firstFrameBase64?}"
+        });
+        let out = render_template(&tpl, &ctx_empty).unwrap();
+        // 无参考图 → 图片项与可选字段整体省略
+        assert_eq!(out["content"].as_array().unwrap().len(), 1);
+        assert!(out.get("first_frame_image").is_none());
+        assert!(out["content"][0].get("$if").is_none(), "$if 标记不应出现在请求体");
+
+        // 有参考图 → 图片项保留且注入 data URL
+        let ctx_ref = json!({ "model": { "id": "MiniMax-H3" }, "input": { "prompt": "跳舞", "firstFrameBase64": "data:image/png;base64,AAAA" } });
+        let out2 = render_template(&tpl, &ctx_ref).unwrap();
+        assert_eq!(out2["content"].as_array().unwrap().len(), 2);
+        assert_eq!(out2["content"][1]["role"], "first_frame");
+        assert_eq!(out2["content"][1]["image_url"]["url"], "data:image/png;base64,AAAA");
+        assert_eq!(out2["first_frame_image"], "data:image/png;base64,AAAA");
     }
 
     /// Mock 自定义平台：submit → poll（2 轮 queued）→ 返回结果 URL → /file 下载。

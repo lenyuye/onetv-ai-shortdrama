@@ -24,6 +24,7 @@ import { Toaster } from "./components/Toaster";
 import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
 import { CommandPalette } from "./components/CommandPalette";
 import { useTauriEvent } from "./hooks/useTauriEvent";
+import { reconcileCanvasJobOutput, type JobPublicLite } from "./canvasSend";
 import { initAgentChatBridge } from "./agentChatStore";
 import { useT } from "./i18n";
 
@@ -91,7 +92,12 @@ export default function App() {
   // 任务事件驱动刷新：任何任务状态变化都触发一次全量列表刷新，徽标实时反映队列
   useTauriEvent("job:created", refreshJobs);
   useTauriEvent("job:progress", refreshJobs);
-  useTauriEvent("job:succeeded", refreshJobs);
+  // v2.26.157：画布节点任务成功 → 无论用户此刻在哪个视图，都把产物回填进 canvas.json
+  // （修复"生成中切走视图，回来画布什么都没有，只在任务/对话里可见"）
+  useTauriEvent("job:succeeded", (p) => {
+    refreshJobs();
+    void reconcileCanvasJobOutput(p as JobPublicLite);
+  });
   useTauriEvent("job:failed", refreshJobs);
 
   // 原生菜单入口（macOS 菜单栏 → 对应页面）
