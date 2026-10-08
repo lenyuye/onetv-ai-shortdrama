@@ -34,5 +34,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # 核心 crates 纯 Rust 测试无需 GTK/WebKit 系统库；
       # onetv-desktop（Tauri 桌面壳）的构建验证由 release.yml 三平台构建覆盖
+      # golden pipeline E2E 的 Mock 生图/合成走本机 ffmpeg（lavfi gradients），需预装
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: cargo test（核心 crates，含 golden pipeline E2E）
         run: cargo test -p onetv-core -p onetv-project -p onetv-media -p onetv-security
