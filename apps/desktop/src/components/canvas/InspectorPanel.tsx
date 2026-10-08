@@ -53,30 +53,56 @@ export default function InspectorPanel(props: InspectorPanelProps) {
   const isAsset = node?.type === "asset";
   // v2.26.28 生成节点（图片/视频/片段合成/配音）也支持选中后直接上传参考
   const isGenNode = ["image", "video", "video-clip", "audio"].includes(node?.type ?? "");
-  const nodeFiles: AssetFileMeta[] = (isAsset || isGenNode) && Array.isArray(node?.config?.files)
+  // v2.26.101 语义拆分：
+  // - 素材节点上传 = 节点内容（config.files），连线给下游即作为其参考；
+  // - 生成节点「上传参考」= 参考（config.referenceAssetIds + referenceFiles 元数据），不污染节点内容。
+  const assetFiles: AssetFileMeta[] = isAsset && Array.isArray(node?.config?.files)
     ? ((node?.config?.files as unknown) as AssetFileMeta[])
     : [];
+  /** 生成节点参考元数据：新字段 referenceFiles，兼容合并旧版写入的 config.files（去重） */
+  const genRefs: AssetFileMeta[] = (() => {
+    if (!isGenNode) return [];
+    const newRefs = Array.isArray(node?.config?.referenceFiles)
+      ? ((node?.config?.referenceFiles as unknown) as AssetFileMeta[])
+      : [];
+    const legacy = Array.isArray(node?.config?.files)
+      ? ((node?.config?.files as unknown) as AssetFileMeta[])
+      : [];
+    const seen = new Set(newRefs.map((f) => f.id));
+    return [...newRefs, ...legacy.filter((f) => f.id && !seen.has(f.id))];
+  })();
   const [uploading, setUploading] = useState(false);
   const [draft, setDraft] = useState("");
   const [draftErr, setDraftErr] = useState<string | null>(null);
 
-  /** 上传本地素材/参考（v2.26.26/28）：agentAttach 落盘入资产库，id/path 记入节点 config */
+  /** 上传本地素材/参考（v2.26.26/28，v2.26.101 语义拆分）：
+   * 素材节点 → 写 files（节点内容）；生成节点 → 写 referenceAssetIds + referenceFiles（参考）。 */
   const uploadNodeFile = async () => {
     if (!node) return;
     setUploading(true);
     try {
       const att = await agentAttach();
       onEditStart();
-      onConfigChange({
-        files: [...nodeFiles, { id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
-        referenceAssetIds: [
-          ...((node.config?.referenceAssetIds as string[]) ?? []),
-          att.assetId,
-        ],
-        status: "ready",
-      });
+      if (isAsset) {
+        onConfigChange({
+          files: [...assetFiles, { id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
+          status: "ready",
+        });
+      } else {
+        const refIds = (node.config?.referenceAssetIds as string[]) ?? [];
+        onConfigChange({
+          referenceAssetIds: [...refIds, att.assetId],
+          referenceFiles: [...genRefs, { id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
+          status: "ready",
+        });
+      }
       onEditEnd();
-      useApp.getState().toast(t("已上传 {name}，将作为该节点的参考项", { name: att.name }), "ok");
+      useApp.getState().toast(
+        isAsset
+          ? t("已上传 {name}（节点内容，连线给生成节点即作为其参考）", { name: att.name })
+          : t("已上传 {name}，将作为该节点的参考项", { name: att.name }),
+        "ok",
+      );
     } catch (e) {
       const msg = errMsg(e);
       if (!msg.includes("已取消") && !msg.includes("取消")) {
@@ -87,13 +113,23 @@ export default function InspectorPanel(props: InspectorPanelProps) {
     }
   };
 
+  /** 移除条目：素材节点从 files 移除；生成节点从 referenceAssetIds + referenceFiles 移除 */
   const removeNodeFile = (id: string) => {
     if (!node) return;
     onEditStart();
-    onConfigChange({
-      files: nodeFiles.filter((f) => f.id !== id),
-      referenceAssetIds: ((node.config?.referenceAssetIds as string[]) ?? []).filter((x) => x !== id),
-    });
+    if (isAsset) {
+      onConfigChange({
+        files: assetFiles.filter((f) => f.id !== id),
+      });
+    } else {
+      onConfigChange({
+        referenceAssetIds: ((node.config?.referenceAssetIds as string[]) ?? []).filter((x) => x !== id),
+        referenceFiles: genRefs.filter((f) => f.id !== id),
+        files: (Array.isArray(node.config?.files) ? (node.config.files as unknown as AssetFileMeta[]) : []).filter(
+          (f) => f.id !== id,
+        ),
+      });
+    }
     onEditEnd();
   };
 
@@ -155,20 +191,20 @@ export default function InspectorPanel(props: InspectorPanelProps) {
         </label>
       </div>
 
-      {/* v2.26.26 素材节点：本地上传图片/视频/音频/文本，作为参考源连线给生成节点 */}
+      {/* v2.26.26 素材节点：本地上传图片/视频/音频/文本 = 节点内容（连线给生成节点即作参考） */}
       {isAsset && (
         <div className="field">
-          <label>{t("素材文件（本地上传，存入项目资产库）")}</label>
+          <label>{t("素材内容（本地上传，属于本节点内容）")}</label>
           <button className="btn sm primary" disabled={uploading || locked} style={{ width: "100%" }} onClick={() => void uploadNodeFile()}>
             {uploading ? t("上传中…") : t("📤 上传素材（图片/视频/音频/文本）")}
           </button>
-          {nodeFiles.length === 0 ? (
+          {assetFiles.length === 0 ? (
             <div className="hint" style={{ marginTop: 6 }}>
-              {t("上传后把本节点的输出连线到 生图/生视频/片段合成 等节点，即可作为参考图/参考视频/文字约束。")}
+              {t("上传的内容属于本节点（不是参考）。把本节点连线到 生图/生视频 等节点，内容即自动作为其参考。")}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-              {nodeFiles.map((f) => (
+              {assetFiles.map((f) => (
                 <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {f.kind === "images" || /\.(png|jpe?g|webp|gif)$/i.test(f.path) ? (
                     <img src={assetUrl(f.path)} alt={f.name} style={{ width: 40, height: 30, objectFit: "cover", borderRadius: 5, border: "1px solid var(--border)", flexShrink: 0 }} />
@@ -187,20 +223,20 @@ export default function InspectorPanel(props: InspectorPanelProps) {
         </div>
       )}
 
-      {/* v2.26.28 生成节点（图片/视频/片段合成/配音）：选中后直接上传参考图/视频 */}
+      {/* v2.26.28/101 生成节点：上传参考（参考 ≠ 节点内容，生成时自动携带） */}
       {isGenNode && (
         <div className="field">
-          <label>{t("参考素材（生成时作为参考项）")}</label>
+          <label>{t("参考素材（生成时作为参考项，不属于节点内容）")}</label>
           <button className="btn sm primary" disabled={uploading || locked} style={{ width: "100%" }} onClick={() => void uploadNodeFile()}>
             {uploading ? t("上传中…") : t("📤 上传参考（图片/视频/音频）")}
           </button>
-          {nodeFiles.length === 0 ? (
+          {genRefs.length === 0 ? (
             <div className="hint" style={{ marginTop: 6 }}>
-              {t("上传后生成时自动携带；也可以连线素材/文本节点，或用节点面板的「＋ 参考」「⚓ 节点参考」。")}
+              {t("参考在上传后生成时自动携带；也可以连线素材/文本节点，或用节点面板的「＋ 参考」「⚓ 节点参考」。")}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-              {nodeFiles.map((f) => (
+              {genRefs.map((f) => (
                 <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {f.kind === "images" || /\.(png|jpe?g|webp|gif)$/i.test(f.path) ? (
                     <img src={assetUrl(f.path)} alt={f.name} style={{ width: 40, height: 30, objectFit: "cover", borderRadius: 5, border: "1px solid var(--border)", flexShrink: 0 }} />

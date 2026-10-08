@@ -2663,6 +2663,16 @@ async fn canvas_run_batch(
                                 }
                             }
                         }
+                        // v2.26.101 语义：素材节点上传的 files 是"节点内容"，被下游连线引用时同样作为参考
+                        if let Some(arr) = scfg.and_then(|c| c.get("files")).and_then(|v| v.as_array()) {
+                            for f in arr.iter() {
+                                if let Some(fid) = f.get("id").and_then(|x| x.as_str()) {
+                                    if !fid.is_empty() && !refs.contains(&fid.to_string()) {
+                                        refs.push(fid.to_string());
+                                    }
+                                }
+                            }
+                        }
                         if src_node.get("type").and_then(|v| v.as_str()) == Some("text") {
                             let ut = scfg
                                 .and_then(|c| c.get("text"))

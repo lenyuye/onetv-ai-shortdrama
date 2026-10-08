@@ -141,6 +141,10 @@ export default function NodeChatPanel({
         for (const rid of refIds) {
           if (typeof rid === "string" && rid && !wanted.has(rid)) wanted.set(rid, n.title || n.id);
         }
+        // v2.26.101：素材节点内容（files）被下游连线引用时同样作为参考
+        for (const f of (Array.isArray(cfg.files) ? cfg.files : []) as { id?: string }[]) {
+          if (f?.id && !wanted.has(f.id)) wanted.set(f.id, n.title || n.id);
+        }
       }
       const assets: AssetRecord[] = wanted.size > 0 ? await assetList().catch(() => []) : [];
       const items: RefItem[] = assets

@@ -65,8 +65,8 @@ const isImagePath = (p: string) => /\.(png|jpe?g|webp|gif)$/i.test(p);
 const INLINE_GEN_TYPES = ["image", "video", "video-clip", "audio"];
 
 /**
- * 聚合上游连线节点的参考（产物/参考资产）与文字约束（v2.26.26 语义，卡内生成同用）。
- * 返回 referenceAssetIds（去重）与并入提示词的文字约束文本。
+ * 聚合上游连线节点的参考（产物/参考资产/素材内容）与文字约束（v2.26.26/31/101 语义）：
+ * v2.26.101 起素材节点上传的 files 是"节点内容"（非参考），但下游连线引用时仍作为参考参与生成。
  */
 async function collectUpstream(
   episodeId: string,
@@ -84,6 +84,10 @@ async function collectUpstream(
       if (typeof cfg.outputAssetId === "string" && cfg.outputAssetId) wanted.add(cfg.outputAssetId);
       for (const rid of (Array.isArray(cfg.referenceAssetIds) ? cfg.referenceAssetIds : []) as string[]) {
         if (rid) wanted.add(rid);
+      }
+      // v2.26.101：素材节点内容（files）被下游连线引用时作为参考
+      for (const f of (Array.isArray(cfg.files) ? cfg.files : []) as { id?: string }[]) {
+        if (f?.id) wanted.add(f.id);
       }
       if (n.type === "text") {
         const ut = typeof cfg.text === "string" ? cfg.text.trim() : "";
@@ -267,6 +271,20 @@ export default function CanvasNodeCard(props: NodeProps) {
 
   const hasOutThumb = isMedia && !!resolvedPath;
 
+  // v2.26.101 产物大预览（LibTV 式）：生成节点有产物后，卡片主体直接显示生成结果——
+  // 图片全宽大图 / 视频内嵌播放器 / 配音音频条，这才是"生成的产物在画布上显示"。
+  const isVideoPath = (p: string) => /\.(mp4|mov|webm|m4v)$/i.test(p);
+  const isAudioPath = (p: string) => /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(p);
+  const outPreviewH =
+    resolvedPath && isMedia
+      ? isAudioPath(resolvedPath)
+        ? 44
+        : isVideoPath(resolvedPath)
+          ? 170
+          : 230
+      : 0;
+  const hasOutPreview = isMedia && !!resolvedPath && outPreviewH > 0;
+
   // v2.26.27 运行状态徽标（批量运行写入 batchStatus；面板直发成功写 status=ready）
   const batchStatus = typeof cn.config?.batchStatus === "string" ? (cn.config.batchStatus as string) : "";
   const batchNote = typeof cn.config?.batchNote === "string" ? (cn.config.batchNote as string) : "";
@@ -295,7 +313,7 @@ export default function CanvasNodeCard(props: NodeProps) {
         height:
           HEAD_H + rows * ROW_H + SUMMARY_H
           + (isAsset && files.length > 0 ? THUMB_H : 0)
-          + (hasOutThumb ? THUMB_H : 0)
+          + (hasOutPreview ? outPreviewH : hasOutThumb ? THUMB_H : 0)
           + extraH,
       }}
     >
@@ -331,7 +349,25 @@ export default function CanvasNodeCard(props: NodeProps) {
           title={t("输出连接点（可接出多条连线，类型自动匹配）")}
         />
       )}
-      {hasOutThumb && (
+      {hasOutPreview ? (
+        /* v2.26.101 产物大预览：生成的图片/视频直接显示在节点内（LibTV 式） */
+        <div
+          className="cv-node-out-preview"
+          style={{ top: HEAD_H + rows * ROW_H, height: outPreviewH }}
+          title={t("生成产物（双击节点打开面板重新生成）")}
+        >
+          {isVideoPath(resolvedPath) ? (
+            <video src={assetUrl(resolvedPath)} controls preload="metadata" />
+          ) : isAudioPath(resolvedPath) ? (
+            <div className="cv-out-audio">
+              <span>🎧</span>
+              <audio src={assetUrl(resolvedPath)} controls preload="metadata" style={{ flex: 1, height: 30 }} />
+            </div>
+          ) : (
+            <img src={assetUrl(resolvedPath)} alt={t("生成产物")} />
+          )}
+        </div>
+      ) : hasOutThumb && (
         <div className="cv-node-thumbs cv-node-out" title={t("生成产物（双击节点打开面板查看/重生成）")}>
           {isImagePath(resolvedPath) ? (
             <img src={assetUrl(resolvedPath)} alt={t("生成产物")} />

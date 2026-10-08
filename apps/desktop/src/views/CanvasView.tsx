@@ -392,13 +392,12 @@ function CanvasWorkbench({
         const att = await api.agentAttach();
         const cfg = (src.data.cn.config ?? {}) as Record<string, unknown>;
         const files = (Array.isArray(cfg.files) ? cfg.files : []) as { id: string; name: string; path: string; kind: string }[];
-        const refIds = (Array.isArray(cfg.referenceAssetIds) ? cfg.referenceAssetIds : []) as string[];
+        // v2.26.101 语义：素材节点上传 = 节点内容（files），不写 referenceAssetIds（那是"参考"）
         patchNodeConfig(nodeId, {
           files: [...files, { id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
-          referenceAssetIds: [...refIds, att.assetId],
           status: "ready",
         });
-        toast(t("已上传 {name}，作为本节点素材/参考", { name: att.name }), "ok");
+        toast(t("已上传 {name}（节点内容，连线给生成节点即作参考）", { name: att.name }), "ok");
       } catch (e) {
         const msg = api.errMsg(e);
         if (!msg.includes("已取消") && !msg.includes("取消")) {
