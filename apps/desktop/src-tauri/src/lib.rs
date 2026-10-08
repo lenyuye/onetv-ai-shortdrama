@@ -4262,7 +4262,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building OneTV")
         .run(|app_handle, event| match event {
-            // 点击 Dock 图标 / Reopen：重新显示主窗口
+            // 点击 Dock 图标 / Reopen：重新显示主窗口（Reopen 事件仅存在于 macOS）
+            #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 if let Some(w) = app_handle.get_webview_window("main") {
                     let _ = w.show();
