@@ -1,6 +1,8 @@
 {
   "name": "onetv-desktop",
-  "version": "2.26.160",
+  "version": "2.26.161",
+  "license": "AGPL-3.0-only",
+  "license": "AGPL-3.0-only",
   "private": true,
   "description": "OneTV 桌面端（Tauri 2 + React）",
   "type": "module",
