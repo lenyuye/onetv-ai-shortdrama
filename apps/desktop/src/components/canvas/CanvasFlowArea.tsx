@@ -18,6 +18,7 @@ import type { ProviderDto } from "../../api-providers";
 import { useT } from "../../i18n";
 import CanvasNodeCard from "./CanvasNodeCard";
 import CanvasEdge, { EdgeDeleteContext } from "./CanvasEdge";
+import { NodeActionsContext, type NodeActions } from "./NodeActionsContext";
 import NodeChatPanel from "./NodeChatPanel";
 import { NODE_COLORS, type FlowNode } from "./canvas-model";
 import { FIT_VIEW_OPTIONS } from "../../hooks/useCanvasDoc";
@@ -41,6 +42,10 @@ export interface CanvasFlowAreaProps {
   onDeleteEdge: (edgeId: string) => void;
   /** 双击节点 → 打开生成面板 */
   onNodeDoubleClick: (node: FlowNode) => void;
+  /** v2.26.31 双击画布空白 → 在双击位置弹出新建节点菜单（LibTV 式） */
+  onPaneDoubleClick: (e: ReactMouseEvent) => void;
+  /** LibTV 式节点即生成器（v2.26.31）：卡内生成/上传/快捷转生成回调 */
+  nodeActions: NodeActions;
   /** 画布平移开始 → 关闭右键菜单 */
   onMoveStart: () => void;
   wrapperRef: MutableRefObject<HTMLDivElement | null>;
@@ -69,6 +74,8 @@ export default function CanvasFlowArea({
   onEdgeContextMenu,
   onDeleteEdge,
   onNodeDoubleClick,
+  onPaneDoubleClick,
+  nodeActions,
   onMoveStart,
   wrapperRef,
   onDragOver,
@@ -91,7 +98,13 @@ export default function CanvasFlowArea({
       onDragOver={onDragOver}
       onDrop={onDrop}
       onWheel={onWheel}
+      onDoubleClick={(e) => {
+        // 双击空白画布 → 就地新建节点菜单（LibTV 式）；双击节点走 onNodeDoubleClick 不受影响
+        const target = e.target as HTMLElement;
+        if (target.classList?.contains("react-flow__pane")) onPaneDoubleClick(e);
+      }}
     >
+      <NodeActionsContext.Provider value={nodeActions}>
       <EdgeDeleteContext.Provider value={onDeleteEdge}>
       <ReactFlow
         nodes={nodes}
@@ -128,6 +141,7 @@ export default function CanvasFlowArea({
         <Controls showInteractive={false} />
       </ReactFlow>
       </EdgeDeleteContext.Provider>
+      </NodeActionsContext.Provider>
 
       {/* LibTV 式节点生成面板：双击/右键节点打开；位置随节点实时计算 */}
       {nodeChat &&

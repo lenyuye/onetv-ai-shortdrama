@@ -10,8 +10,8 @@
  *   连线（删除）；内部剪贴板支持多选节点整体复制并保留内部连线关系；
  * - 节点运行链路将在 Phase 2 接入 Job Queue（现为占位 toast）。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { DragEvent as ReactDragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from "react";
 import { ReactFlowProvider, addEdge, useReactFlow } from "@xyflow/react";
 import type { Connection, Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -44,6 +44,7 @@ import { useCanvasContextMenu } from "../hooks/useCanvasContextMenu";
 import { useCanvasClipboard } from "../hooks/useCanvasClipboard";
 import { useCanvasNodeChat } from "../hooks/useCanvasNodeChat";
 import { useCanvasShortcuts } from "../hooks/useCanvasShortcuts";
+import type { NodeActions } from "../components/canvas/NodeActionsContext";
 import "../components/canvas/canvas.css";
 
 export default function CanvasView() {
@@ -365,6 +366,96 @@ function CanvasWorkbench({
   const handleTitleChange = (title: string) =>
     updateSelectedNode((cn) => ({ ...cn, title }));
 
+  /* ---------- v2.26.31 LibTV 式节点即生成器：卡内回调（任意节点，不要求选中） ---------- */
+
+  /** 按 nodeId 更新 config（节点卡内生成产物回填 / 文本卡内编辑 / 素材卡内上传） */
+  const patchNodeConfig = useCallback(
+    (nodeId: string, patch: Record<string, unknown>) => {
+      setNodes((ns) =>
+        ns.map((n) =>
+          n.id === nodeId
+            ? { ...n, data: { ...n.data, cn: { ...n.data.cn, config: { ...n.data.cn.config, ...patch } } } }
+            : n
+        )
+      );
+      scheduleSave();
+    },
+    [setNodes, scheduleSave]
+  );
+
+  /** 节点卡内「＋上传」：agentAttach 入资产库并写入 files/referenceAssetIds */
+  const uploadNodeFileById = useCallback(
+    async (nodeId: string) => {
+      const src = nodesRef.current.find((n) => n.id === nodeId);
+      if (!src) return;
+      try {
+        const att = await api.agentAttach();
+        const cfg = (src.data.cn.config ?? {}) as Record<string, unknown>;
+        const files = (Array.isArray(cfg.files) ? cfg.files : []) as { id: string; name: string; path: string; kind: string }[];
+        const refIds = (Array.isArray(cfg.referenceAssetIds) ? cfg.referenceAssetIds : []) as string[];
+        patchNodeConfig(nodeId, {
+          files: [...files, { id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
+          referenceAssetIds: [...refIds, att.assetId],
+          status: "ready",
+        });
+        toast(t("已上传 {name}，作为本节点素材/参考", { name: att.name }), "ok");
+      } catch (e) {
+        const msg = api.errMsg(e);
+        if (!msg.includes("已取消") && !msg.includes("取消")) {
+          toast(t("上传失败：{msg}", { msg }), "err");
+        }
+      }
+    },
+    [nodesRef, patchNodeConfig, toast, t]
+  );
+
+  /** 素材/文本节点一键转生成（LibTV 式）：旁建生成节点 + 自动连线（上游即参考） */
+  const spawnGenerateNode = useCallback(
+    (sourceId: string, type: "image" | "video") => {
+      const src = nodesRef.current.find((n) => n.id === sourceId);
+      const ep = episodeIdRef.current;
+      if (!src || !ep) return;
+      const srcCn = src.data.cn;
+      const pos = { x: src.position.x + 280, y: src.position.y };
+      const cn = createCanvasNode(type, ep, pos);
+      // 上游素材/文本自动绑定为参考（与「连线即参考」语义一致）
+      const srcRefIds = (Array.isArray(srcCn.config?.referenceAssetIds) ? srcCn.config.referenceAssetIds : []) as string[];
+      const fileIds = (Array.isArray(srcCn.config?.files) ? srcCn.config.files : []) as { id: string }[];
+      const autoRefs = [...new Set([...srcRefIds, ...fileIds.map((f) => f.id)])];
+      if (autoRefs.length > 0) cn.config = { ...cn.config, referenceAssetIds: autoRefs };
+      pushUndo();
+      setNodes((ns) => [...ns.map((n) => ({ ...n, selected: false })), { id: cn.id, type: "onetv", position: pos, data: { cn }, selected: true }]);
+      setEdges((es) =>
+        addEdge(
+          {
+            id: uid(),
+            source: sourceId,
+            target: cn.id,
+            sourceHandle: NODE_TYPE_DEFS[srcCn.type]?.outputs?.[0]?.port ?? null,
+            targetHandle: NODE_TYPE_DEFS[type]?.inputs?.[0]?.port ?? null,
+          },
+          es
+        )
+      );
+      scheduleSave();
+      toast(t("已创建{type}节点并连线，输入提示词即可生成", { type: type === "image" ? "生图" : "生视频" }), "ok");
+    },
+    [nodesRef, episodeIdRef, pushUndo, setNodes, setEdges, scheduleSave, toast, t]
+  );
+
+  const nodeActions: NodeActions = useMemo(
+    () => ({ patchConfig: patchNodeConfig, uploadNodeFile: uploadNodeFileById, spawnGenerateNode }),
+    [patchNodeConfig, uploadNodeFileById, spawnGenerateNode]
+  );
+
+  /** 双击画布空白 → 就地弹出新建节点菜单（LibTV 式，复用右键 pane 菜单） */
+  const handlePaneDoubleClick = useCallback(
+    (e: ReactMouseEvent) => {
+      handlePaneContextMenu(e);
+    },
+    [handlePaneContextMenu]
+  );
+
   /* ---------- 工具栏动作 ---------- */
 
   const fitAll = useCallback(() => {
@@ -502,6 +593,8 @@ function CanvasWorkbench({
           onEdgeContextMenu={handleEdgeContextMenu}
           onDeleteEdge={deleteEdgeById}
           onNodeDoubleClick={openNodeChat}
+          onPaneDoubleClick={handlePaneDoubleClick}
+          nodeActions={nodeActions}
           onMoveStart={() => setCtxMenu(null)}
           wrapperRef={wrapperRef}
           onDragOver={onDragOver}

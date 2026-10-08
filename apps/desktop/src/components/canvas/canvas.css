@@ -401,3 +401,104 @@
   border-color: var(--red);
   color: var(--red);
 }
+
+/* ---------- v2.26.31 LibTV 式节点即生成器：卡内操作区 ---------- */
+
+.cv-node-gen {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  padding: 5px 6px 6px;
+  border-top: 1px solid var(--border);
+  background: rgba(0,0,0,.14);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+.cv-node-gen-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-3);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 4px 6px;
+  outline: none;
+}
+.cv-node-gen-input:focus { border-color: var(--pink); }
+.cv-node-gen-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+}
+.cv-node-gen-aspect {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-3);
+  color: var(--text);
+  font-size: 10.5px;
+  padding: 1px 3px;
+  flexShrink: 0;
+}
+.cv-node-gen-btn {
+  flex: 1;
+  border: none;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #ff5fa2, #b48cff);
+  color: #fff;
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-node-gen-btn:hover:not(:disabled) { filter: brightness(1.1); }
+.cv-node-gen-btn:disabled { opacity: .55; cursor: default; }
+.cv-node-gen-err {
+  margin-top: 4px;
+  font-size: 10px;
+  color: #ff8a8a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cv-node-text-edit {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 74px;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: rgba(0,0,0,.14);
+}
+.cv-node-quick {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  gap: 4px;
+  padding: 4px 6px;
+  border-top: 1px solid var(--border);
+  background: rgba(0,0,0,.14);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+.cv-node-quick-btn {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-3);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 10.5px;
+  padding: 3px 2px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-node-quick-btn:hover:not(:disabled) { border-color: var(--pink); color: #fff; }
+.cv-node-quick-btn:disabled { opacity: .5; cursor: default; }

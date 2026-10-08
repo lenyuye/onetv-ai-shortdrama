@@ -93,7 +93,7 @@ export function PlusMenu({
         <>
           <div className="agent-plus-head">{t("通用上传与调用")}</div>
           <button className="agent-plus-item" onClick={() => { onSetMenu(null); void onPickFile(); }}>
-            <span>📎</span>{t("上传文件…（任意格式）")}
+            <span>📁</span>{t("上传文件…（任意格式）")}
           </button>
           <button className="agent-plus-item" onClick={() => onSetMenu("link")}>
             <span>🔗</span>{t("添加链接…")}
@@ -108,7 +108,7 @@ export function PlusMenu({
             <span>🛠️</span>{t("调用工具…")}
           </button>
           <button className="agent-plus-item" onClick={() => { onLoadPlugins(); onSetMenu("plugin"); }}>
-            <span>🧩</span>{t("插件（提示词包）…")}
+            <span>📦</span>{t("插件（提示词包）…")}
           </button>
           <div className="agent-plus-sep" />
         </>
@@ -222,7 +222,7 @@ export function PlusMenu({
       )}
       {menu === "plugin" && (
         <>
-          <div className="agent-plus-head">{t("🧩 插件（提示词包）")}</div>
+          <div className="agent-plus-head">{t("📦 插件（提示词包）")}</div>
           {!activePlugin ? (
             <div className="agent-plus-list">
               {plugins.length === 0 ? (
@@ -243,7 +243,7 @@ export function PlusMenu({
                     title={p.valid ? p.description || p.id : p.error}
                     onClick={() => onSelectPlugin(p)}
                   >
-                    <span>🧩</span>{displayPluginName(p)}
+                    <span>📦</span>{displayPluginName(p)}
                     <em>{p.valid ? t("v{version} · {n} 个提示词", { version: p.version, n: p.promptsCount }) : t("清单校验失败")}</em>
                   </button>
                 ))
