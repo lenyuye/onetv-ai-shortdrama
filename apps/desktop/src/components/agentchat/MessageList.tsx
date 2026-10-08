@@ -22,10 +22,16 @@ function fmtChatTime(raw: string): string {
   return raw;
 }
 
-/** 消息右键菜单（v2.26.19）：复制全文 / 复制选区——气泡文本可选中 */
+/** 消息右键菜单（v2.26.19）：复制全文 / 复制选区——气泡文本可选中
+ *  v2.26.103：新增「删除这条消息 / 删除此条及之后」（微信式对话记录管理） */
 function MsgContextMenu({
-  x, y, text, sel, onClose,
-}: { x: number; y: number; text: string; sel: string; onClose: () => void }) {
+  x, y, text, sel, msgId, onDelete, onDeleteFrom, onClose,
+}: {
+  x: number; y: number; text: string; sel: string; msgId: string;
+  onDelete: (msgId: string) => void;
+  onDeleteFrom: (msgId: string) => void;
+  onClose: () => void;
+}) {
   const t = useT();
   useEffect(() => {
     const close = () => onClose();
@@ -41,7 +47,7 @@ function MsgContextMenu({
   return (
     <div
       className="msg-ctx-menu"
-      style={{ position: "fixed", left: Math.min(x, window.innerWidth - 210), top: Math.min(y, window.innerHeight - 110), zIndex: 1200 }}
+      style={{ position: "fixed", left: Math.min(x, window.innerWidth - 210), top: Math.min(y, window.innerHeight - 150), zIndex: 1200 }}
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
@@ -69,6 +75,21 @@ function MsgContextMenu({
       >
         {sel ? t("复制选区") : t("复制选区（先选中文字）")}
       </button>
+      <div className="msg-ctx-sep" />
+      <button
+        className="danger"
+        title={t("只删除这一条消息")}
+        onClick={() => { onDelete(msgId); onClose(); }}
+      >
+        {t("🗑 删除这条消息")}
+      </button>
+      <button
+        className="danger"
+        title={t("删除这条消息以及它后面的所有消息（截断对话）")}
+        onClick={() => { onDeleteFrom(msgId); onClose(); }}
+      >
+        {t("✂️ 删除此条及之后")}
+      </button>
     </div>
   );
 }
@@ -81,6 +102,9 @@ interface MessageListProps {
   onApprove: (planId: string) => void;
   onReject: (planId: string) => void;
   scrollRef: RefObject<HTMLDivElement | null>;
+  /** v2.26.103 删除消息回调（实现：agentChatStore.deleteMsg / deleteMsgsFrom） */
+  onDeleteMsg: (msgId: string) => void;
+  onDeleteMsgsFrom: (msgId: string) => void;
   /** v2.26.29：当前项目+会话的执行过程卡（进行中 + 3s 内的终态） */
   jobRuns?: JobRun[];
 }
@@ -89,19 +113,22 @@ interface MessageListProps {
 const JobRunCards = memo(function JobRunCards({ runs }: { runs: JobRun[] }) {
   const t = useT();
   if (runs.length === 0) return null;
+  // v2.26.103：后端 state 大写（SUCCEEDED/RUNNING…），统一小写比较
   const stateOf = (r: JobRun): { icon: string; label: string } => {
-    if (r.state === "succeeded") return { icon: "✅", label: t("完成") };
-    if (r.state === "failed") return { icon: "❌", label: r.error || t("失败") };
-    if (r.state === "cancelled") return { icon: "⛔", label: t("已取消") };
-    if (r.state === "awaiting_approval") return { icon: "⏸", label: t("等待批准") };
+    const st = r.state.toLowerCase();
+    if (st === "succeeded") return { icon: "✅", label: t("完成") };
+    if (st === "failed") return { icon: "❌", label: r.error || t("失败") };
+    if (st === "canceled" || st === "cancelled") return { icon: "⛔", label: t("已取消") };
+    if (st === "awaiting_approval") return { icon: "⏸", label: t("等待批准") };
     return { icon: "⏳", label: r.note || t("执行中…") };
   };
   return (
     <div className="agent-job-runs" style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
       {runs.map((r) => {
         const s = stateOf(r);
-        const done = r.state === "succeeded";
-        const failed = r.state === "failed" || r.state === "cancelled";
+        const st = r.state.toLowerCase();
+        const done = st === "succeeded";
+        const failed = st === "failed" || st === "canceled" || st === "cancelled";
         return (
           <div key={r.jobId} className="agent-msg-bubble" style={{ display: "flex", justifyContent: "flex-start" }}>
             <div
@@ -148,14 +175,18 @@ const BubbleList = memo(function BubbleList({
   approving,
   onApprove,
   onReject,
+  onDeleteMsg,
+  onDeleteMsgsFrom,
 }: {
   msgs: ChatMsg[];
   approving: string | null;
   onApprove: (planId: string) => void;
   onReject: (planId: string) => void;
+  onDeleteMsg: (msgId: string) => void;
+  onDeleteMsgsFrom: (msgId: string) => void;
 }) {
   const t = useT();
-  const [ctx, setCtx] = useState<{ x: number; y: number; text: string; sel: string } | null>(null);
+  const [ctx, setCtx] = useState<{ x: number; y: number; text: string; sel: string; msgId: string } | null>(null);
   return (
     <>
       {msgs.map((m) => (
@@ -185,7 +216,7 @@ const BubbleList = memo(function BubbleList({
               e.stopPropagation();
               // 选区必须在右键瞬间捕获——菜单渲染/点击过程会清掉它
               const sel = (window.getSelection()?.toString() ?? "").trim();
-              setCtx({ x: e.clientX, y: e.clientY, text: m.text, sel });
+              setCtx({ x: e.clientX, y: e.clientY, text: m.text, sel, msgId: m.id });
             }}
           >
             <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
@@ -210,13 +241,17 @@ const BubbleList = memo(function BubbleList({
         </div>
       ))}
       {ctx && (
-        <MsgContextMenu x={ctx.x} y={ctx.y} text={ctx.text} sel={ctx.sel} onClose={() => setCtx(null)} />
+        <MsgContextMenu
+          x={ctx.x} y={ctx.y} text={ctx.text} sel={ctx.sel} msgId={ctx.msgId}
+          onDelete={onDeleteMsg} onDeleteFrom={onDeleteMsgsFrom}
+          onClose={() => setCtx(null)}
+        />
       )}
     </>
   );
 });
 
-export function MessageList({ msgs, streamingText, approving, onApprove, onReject, scrollRef, jobRuns = [] }: MessageListProps) {
+export function MessageList({ msgs, streamingText, approving, onApprove, onReject, scrollRef, jobRuns = [], onDeleteMsg, onDeleteMsgsFrom }: MessageListProps) {
   const t = useT();
   return (
     <div ref={scrollRef} className="agent-chat-select" style={{ flex: 1, overflowY: "auto", padding: "14px 22px", minHeight: 0 }}>
@@ -226,7 +261,7 @@ export function MessageList({ msgs, streamingText, approving, onApprove, onRejec
           {t("（做什么、调多少次远程 API、风险等级），你批准后才会真正执行 —— 全程可审计。对话类问题直接回答；生图/生视频任务会进入任务队列。")}
         </div>
       )}
-      <BubbleList msgs={msgs} approving={approving} onApprove={onApprove} onReject={onReject} />
+      <BubbleList msgs={msgs} approving={approving} onApprove={onApprove} onReject={onReject} onDeleteMsg={onDeleteMsg} onDeleteMsgsFrom={onDeleteMsgsFrom} />
       {/* 执行过程卡（v2.26.29）：进行中任务 + 3s 内的终态，codex 式实时进度 */}
       <JobRunCards runs={jobRuns} />
       {/* 流式进行中的回复（打字机气泡；完整回复到达后由事件桥收尾替换） */}
@@ -270,6 +305,8 @@ const msgCtxCss = `
 }
 .msg-ctx-menu button:hover:not(:disabled) { background: rgba(255,255,255,.08); }
 .msg-ctx-menu button:disabled { color: var(--muted); cursor: default; }
+.msg-ctx-sep { height: 1px; background: var(--border); margin: 3px 8px; }
+.msg-ctx-menu button.danger { color: #ff6b6b; }
 /* 执行过程卡（v2.26.29） */
 .agent-job-spin { display: inline-block; animation: agent-job-rotate 1.4s linear infinite; }
 @keyframes agent-job-rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

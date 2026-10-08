@@ -177,6 +177,10 @@ interface AgentChatState {
   removeJobRun: (jobId: string) => void;
   /** 清空当前会话消息 */
   clearCurrent: (key: string) => void;
+  /** v2.26.103 删除单条消息（右键菜单，微信式） */
+  deleteMsg: (key: string, sessionId: string, msgId: string) => void;
+  /** v2.26.103 删除指定消息及其之后的所有消息（截断） */
+  deleteMsgsFrom: (key: string, sessionId: string, msgId: string) => void;
 }
 
 function ensureSession(list: ChatSession[], currentMap: Record<string, string>, key: string): { list: ChatSession[]; sessionId: string } {
@@ -338,6 +342,32 @@ export const useAgentChat = create<AgentChatState>((set, get) => {
       }));
       persist();
     },
+
+    deleteMsg: (key, sessionId, msgId) => {
+      set((st) => ({
+        sessionsByProject: {
+          ...st.sessionsByProject,
+          [key]: (st.sessionsByProject[key] ?? []).map((s) =>
+            s.id === sessionId ? { ...s, msgs: s.msgs.filter((m) => m.id !== msgId) } : s
+          ),
+        },
+      }));
+      persist();
+    },
+
+    deleteMsgsFrom: (key, sessionId, msgId) => {
+      set((st) => ({
+        sessionsByProject: {
+          ...st.sessionsByProject,
+          [key]: (st.sessionsByProject[key] ?? []).map((s) => {
+            if (s.id !== sessionId) return s;
+            const idx = s.msgs.findIndex((m) => m.id === msgId);
+            return idx < 0 ? s : { ...s, msgs: s.msgs.slice(0, idx) };
+          }),
+        },
+      }));
+      persist();
+    },
   };
 });
 
@@ -387,12 +417,15 @@ export function initAgentChatBridge() {
     })
     .catch(() => {});
   // 执行过程卡（v2.26.29，codex 式）：job.created/progress 实时刷新，终态 3s 后移除
+  // v2.26.103 修复：后端 job state 是大写（SUCCEEDED/FAILED/CANCELED/RUNNING），
+  // 此前终态判定用小写导致永匹配不上 → 过程卡 100% 卡死不消失。
+  const FINISHED_STATES = ["succeeded", "failed", "canceled", "cancelled"];
   const upsertFromJobEvent = (p: { id?: string; title?: string; state?: string; progress?: number; error?: string | null }) => {
     if (!p?.id) return;
     const loc = locateJob(p.id);
     if (!loc) return;
     const cur = useAgentChat.getState().jobRuns[p.id];
-    const state = p.state ?? cur?.state ?? "running";
+    const state = (p.state ?? cur?.state ?? "running").toLowerCase();
     useAgentChat.getState().upsertJobRun({
       jobId: p.id,
       root: loc.root,
@@ -401,10 +434,10 @@ export function initAgentChatBridge() {
       state,
       progress: typeof p.progress === "number" ? p.progress : (cur?.progress ?? 0),
       error: p.error ?? cur?.error ?? null,
-      finishedAt: ["succeeded", "failed", "cancelled"].includes(state) ? (cur?.finishedAt ?? Date.now()) : undefined,
+      finishedAt: FINISHED_STATES.includes(state) ? (cur?.finishedAt ?? Date.now()) : undefined,
     });
     // 终态 3s 后移除过程卡（产物卡片/失败消息随后已到达对话流）
-    if (["succeeded", "failed", "cancelled"].includes(state)) {
+    if (FINISHED_STATES.includes(state)) {
       window.setTimeout(() => useAgentChat.getState().removeJobRun(p.id!), 3000);
     }
   };

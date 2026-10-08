@@ -7,7 +7,7 @@
  * 支持停止生成与助手消息 Markdown 渲染。
  * v2.16：拆分为 components/agentchat/ 子组件与 hooks/ 逻辑 hook（组合根，行为零变化）。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../api";
 import * as story from "../api-story";
 import { jobCancel } from "../api-providers";
@@ -147,6 +147,20 @@ export default function AgentChatView() {
 
   /* ---------- 计划批准/拒绝 ---------- */
   const { approving, approve, reject } = useAgentPlanActions({ chatKey: chatKey ?? "", currentSession, toast });
+
+  /* ---------- 消息删除（v2.26.103，右键菜单：单条 / 此条及之后） ---------- */
+  const handleDeleteMsg = useCallback(
+    (msgId: string) => {
+      if (chatKey && currentSession) useAgentChat.getState().deleteMsg(chatKey, currentSession.id, msgId);
+    },
+    [chatKey, currentSession]
+  );
+  const handleDeleteMsgsFrom = useCallback(
+    (msgId: string) => {
+      if (chatKey && currentSession) useAgentChat.getState().deleteMsgsFrom(chatKey, currentSession.id, msgId);
+    },
+    [chatKey, currentSession]
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -402,6 +416,8 @@ export default function AgentChatView() {
         onReject={reject}
         scrollRef={scrollRef}
         jobRuns={runs}
+        onDeleteMsg={handleDeleteMsg}
+        onDeleteMsgsFrom={handleDeleteMsgsFrom}
       />
 
       <div style={{ padding: "10px 22px 14px", borderTop: "1px solid var(--border)" }}>
