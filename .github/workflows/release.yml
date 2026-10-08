@@ -1,0 +1,57 @@
+# OneTV 三平台发布流水线：推送 v* 标签自动构建 macOS (Intel/ARM) + Windows 安装包并发布 Release
+# 也可在 GitHub 仓库 Actions 页面手动触发（workflow_dispatch，仅验证构建不出 Release）
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest   # Apple Silicon (aarch64)
+          - platform: macos-13       # Intel (x86_64)
+          - platform: windows-latest # Windows x64
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build & publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "OneTV ${{ github.ref_name }}"
+          releaseBody: "下载对应平台安装包：macOS Apple Silicon (aarch64.dmg) / macOS Intel (x64.dmg) / Windows (x64-setup.exe)。本应用为本地优先、无遥测；API Key 存于系统钥匙串。"
+          releaseDraft: false
+          prerelease: false
