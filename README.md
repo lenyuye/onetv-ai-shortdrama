@@ -31,7 +31,7 @@ OneTV 是一款开源桌面应用，用于 AI 短剧的完整生产流程：
 
 ## 快速开始（开发）
 
-要求：Node ≥ 20、pnpm ≥ 9、Rust 1.7x+、FFmpeg/FFprobe（`brew install ffmpeg`）。
+要求：Node ≥ 22、pnpm ≥ 11、Rust 1.7x+、FFmpeg/FFprobe（`brew install ffmpeg`）。
 
 ```bash
 pnpm install
@@ -59,10 +59,10 @@ docs/             # 设计文档
 
 ## 测试
 
-- Rust 侧：各 crate 内 `#[cfg(test)]` 单元测试 + `crates/core/tests/golden_pipeline.rs` 集成测试（建项目→Mock 剧本→拆分→出图→时间线合成→入库→幂等，`cargo test --workspace`，当前 76 项）。
-- 前端：`apps/desktop/src/*.test.ts`（vitest，28 项，含 i18n 字典完整性守护）。
+- Rust 侧：各 crate 内 `#[cfg(test)]` 单元测试 + `crates/core/tests/golden_pipeline.rs` 集成测试（建项目→Mock 剧本→拆分→出图→时间线合成→入库→幂等，`cargo test -p onetv-core -p onetv-project -p onetv-media -p onetv-security`，当前 104 项）。
+- 前端：`apps/desktop/src/**/*.test.ts`（vitest，30 项，含 i18n 字典完整性守护）。
 - 真机 UI 冒烟：`scripts/smoke/onetv_smoke.py`（Quartz 遍历 13 视图截图 + 基础健康断言）。
-- CI：`.github/workflows/ci.yml`（typecheck + vitest + cargo test + clippy）。
+- CI：`.github/workflows/ci.yml`（typecheck + vitest + cargo test 核心 crates + release.yml 三平台 tauri 构建）。
 
 ## 安全与隐私（硬承诺）
 

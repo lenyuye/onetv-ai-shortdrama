@@ -8,8 +8,8 @@
 
 ```bash
 pnpm typecheck && pnpm build
-cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo test -p onetv-core -p onetv-project -p onetv-media -p onetv-security
+cargo clippy -p onetv-core -p onetv-project -p onetv-media -p onetv-security -- -D warnings
 ```
 
 ## 硬性红线（违反即拒收）
