@@ -7,7 +7,7 @@
  * 支持停止生成与助手消息 Markdown 渲染。
  * v2.16：拆分为 components/agentchat/ 子组件与 hooks/ 逻辑 hook（组合根，行为零变化）。
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../api";
 import * as story from "../api-story";
 import { jobCancel } from "../api-providers";
@@ -72,13 +72,17 @@ export default function AgentChatView() {
     );
     return hit?.text;
   });
-  /** v2.26.29：当前项目+会话的执行过程卡（进行中 + 终态 3s 缓冲） */
-  const jobRuns = useAgentChat((s) => {
-    if (!chatKey || !currentSession) return null;
-    return Object.values(s.jobRuns).filter((r) => r.root === chatKey && r.sessionId === currentSession.id);
-  });
-  /** zustand v5 选择器：null → 空数组同一引用，避免无限重渲染 */
-  const runs = jobRuns ?? EMPTY_RUNS;
+  /** v2.26.29：当前项目+会话的执行过程卡（进行中 + 终态 3s 缓冲）。
+   * ⚠️ zustand v5 陷阱：selector 内 filter/新数组会让 useSyncExternalStore 的
+   * getSnapshot 永不稳定 → React 无限重渲染（error #185 页面崩溃）。
+   * 必须选稳定引用（s.jobRuns 对象），过滤放 useMemo。 */
+  const jobRunsMap = useAgentChat((s) => s.jobRuns);
+  const runs = useMemo(() => {
+    if (!chatKey || !currentSession) return EMPTY_RUNS;
+    return Object.values(jobRunsMap).filter(
+      (r) => r.root === chatKey && r.sessionId === currentSession.id
+    );
+  }, [jobRunsMap, chatKey, currentSession]);
 
   /* ---------- 会话侧栏状态 ---------- */
   const [renamingId, setRenamingId] = useState<string | null>(null);

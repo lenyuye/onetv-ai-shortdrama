@@ -2,6 +2,11 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.26.30] — v2.26.30：修复 v2.26.29 Agent 对话页崩溃（React #185）
+
+### 修复
+- **🔥 页面「渲染出错了」崩溃修复（用户实测反馈）**：Agent 对话页过程卡的 zustand selector 在选择器内直接 `filter()` 返回新数组——zustand v5（useSyncExternalStore）要求 getSnapshot 引用稳定，流式打字期间每个 delta 都触发 store 通知，新数组引用导致 React 无限重渲染直至 Maximum update depth exceeded（error #185）。修复 = 选择器只取 `s.jobRuns` 稳定引用，过滤移入 `useMemo`（依赖 jobRunsMap/chatKey/currentSession）。
+
 ## [2.26.29] — v2.26.29：Agent 对话 LibTV 式增强（产物卡片/过程卡/落画布/斜杠命令）
 
 ### 追加
