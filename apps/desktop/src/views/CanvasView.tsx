@@ -620,9 +620,16 @@ function CanvasWorkbench({
       toast(t("请先选择分集"), "warn");
       return;
     }
+    // v2.26.110：进入循环前固化分集 id——多文件拖入含多次 await，中途切分集会让后续
+    // 节点落到新分集文档里（落点与预期不符）；检测到切换立即中止剩余文件。
+    const dropEp = episodeIdRef.current;
     let created = 0;
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
+      if (episodeIdRef.current !== dropEp) {
+        toast(t("分集已切换，剩余 {n} 个文件未导入", { n: files.length - i }), "warn");
+        break;
+      }
       if (f.size > 50 * 1024 * 1024) {
         toast(t("{name} 超过 50MB 上限，已跳过", { name: f.name }), "warn");
         continue;
@@ -631,7 +638,7 @@ function CanvasWorkbench({
         const dataB64 = await fileToB64(f);
         const att = await api.agentAttachData({ name: f.name, dataB64 });
         const pos = rf.screenToFlowPosition({ x: e.clientX + i * 30, y: e.clientY + i * 26 });
-        const cn = createCanvasNode("asset", episodeIdRef.current, pos);
+        const cn = createCanvasNode("asset", dropEp, pos);
         cn.title = f.name.length > 24 ? `${f.name.slice(0, 24)}…` : f.name;
         cn.config = {
           ...cn.config,

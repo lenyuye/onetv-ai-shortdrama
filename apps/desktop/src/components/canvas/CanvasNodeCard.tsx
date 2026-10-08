@@ -143,16 +143,36 @@ export default function CanvasNodeCard(props: NodeProps) {
   const genJobId = typeof cn?.config?.generateJobId === "string" ? (cn.config.generateJobId as string) : "";
   const genError = typeof cn?.config?.generateError === "string" ? (cn.config.generateError as string) : "";
 
-  /** 轮询生成任务到终态并回填产物（jobId 持久在 config，重开应用/滚出视口后自动续查） */
+  /** 轮询生成任务到终态并回填产物（jobId 持久在 config，重开应用/滚出视口后自动续查）。
+   * v2.26.110 修复：守卫移除 genBusy——卡内发起生成后 genBusy 保持 true 且 genJobId
+   * 写入触发本 effect，若守卫含 genBusy 则 interval 永不启动（按钮永久「生成中…」死锁）。
+   * 防重复点击由 runInlineGenerate 的 genBusy 守卫负责，二者职责分离。 */
   useEffect(() => {
-    if (!cn || !genJobId || genBusy) return;
+    if (!cn || !genJobId) return;
     if (pollRef.current) window.clearInterval(pollRef.current);
     let alive = true;
+    let miss = 0; // v2.26.110：任务跌出最近列表窗口的连续计数，防无限空转
     const tick = async () => {
       try {
         const jobs = await jobList(200);
         const j = jobs.find((x) => x.id === genJobId);
-        if (!j || !alive) return;
+        if (!alive) return;
+        if (!j) {
+          // 连续约 30s 查不到任务（已被清理/异常丢失）则按失败收场，停止轮询
+          if (++miss >= 20) {
+            window.clearInterval(pollRef.current!);
+            pollRef.current = null;
+            actions.patchConfig(cn.id, {
+              generateJobId: null,
+              generateError: t("任务查询超时（任务可能已丢失），请重新生成"),
+              batchStatus: null,
+            });
+            setGenBusy(false);
+            setGenNote("");
+          }
+          return;
+        }
+        miss = 0;
         if (j.state === "SUCCEEDED") {
           window.clearInterval(pollRef.current!);
           pollRef.current = null;
@@ -162,6 +182,7 @@ export default function CanvasNodeCard(props: NodeProps) {
           const outId2 = (j.outputs ?? [])[0];
           if (outId2) {
             const list = await assetList().catch(() => []);
+            if (!alive) return; // v2.26.110：第二个 await 后复查，防止卸载后写状态
             const hit = list.find((a) => a.id === outId2);
             actions.patchConfig(cn.id, {
               outputAssetId: outId2,

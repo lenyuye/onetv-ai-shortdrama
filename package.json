@@ -1,7 +1,7 @@
 {
   "name": "onetv",
   "private": true,
-  "version": "2.26.106",
+  "version": "2.26.110",
   "description": "OneTV — 本地优先的开源短剧 Agent 桌面工作台",
   "scripts": {
     "dev": "pnpm --filter onetv-desktop dev",

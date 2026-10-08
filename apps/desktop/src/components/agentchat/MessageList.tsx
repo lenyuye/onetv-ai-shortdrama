@@ -47,7 +47,7 @@ function MsgContextMenu({
   return (
     <div
       className="msg-ctx-menu"
-      style={{ position: "fixed", left: Math.min(x, window.innerWidth - 210), top: Math.min(y, window.innerHeight - 150), zIndex: 1200 }}
+      style={{ position: "fixed", left: Math.min(x, window.innerWidth - 210), top: Math.min(y, window.innerHeight - 200), zIndex: 1200 }}
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >

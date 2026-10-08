@@ -335,4 +335,8 @@ export default {
   '刷新中…': 'Refreshing…',
   '资产列表已刷新': 'Asset list refreshed',
   '素材（本地上传）': 'Asset (upload from disk)',
+  '文件路径缺失': 'file path missing',
+  '分集已切换，剩余 {n} 个文件未导入': 'Episode switched, {n} file(s) skipped',
+  '任务查询超时（任务可能已丢失），请重新生成': 'Task lookup timed out (job may be lost), please regenerate',
+  '已上传 {name} 到该素材节点——点「🖼 生图 / 🎬 生视频」即可继续生成': 'Uploaded {name} into this asset node — click "🖼 Image / 🎬 Video" to generate',
 } as Record<string, string>;

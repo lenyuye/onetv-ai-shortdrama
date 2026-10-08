@@ -3,6 +3,7 @@
  * 输入 "/" 触发，按输入前缀过滤；点击或 Tab 补全插入模板；Esc 关闭。
  * 立即执行型命令（/清空）通过 onImmediate 回调交给视图处理。
  */
+import { useEffect, useRef } from "react";
 import { SLASH_COMMANDS } from "./constants";
 import { useT } from "../../i18n";
 
@@ -16,6 +17,15 @@ interface SlashMenuProps {
 
 export function SlashMenu({ input, onPick, onImmediate, onClose }: SlashMenuProps) {
   const t = useT();
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // v2.26.110：点击菜单外部区域自动关闭（此前仅 Esc/选择项可关，菜单会悬挂）
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as globalThis.Node)) onClose();
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [onClose]);
   const q = input.startsWith("/") ? input.slice(1).toLowerCase() : null;
   if (q === null) return null;
   const hits = SLASH_COMMANDS.filter(
@@ -24,6 +34,7 @@ export function SlashMenu({ input, onPick, onImmediate, onClose }: SlashMenuProp
   if (hits.length === 0) return null;
   return (
     <div
+      ref={menuRef}
       className="agent-slash-menu"
       style={{
         position: "absolute", left: 0, right: 0, bottom: "calc(100% + 6px)",

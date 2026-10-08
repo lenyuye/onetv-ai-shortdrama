@@ -188,6 +188,34 @@ export function useCanvasDoc(episodeId: string) {
       const detail = (e as CustomEvent<{ episodeId?: string }>).detail;
       // 只响应当前正在浏览的分集；其他分集切换加载时自然拿到最新文档
       if (!detail?.episodeId || detail.episodeId !== episodeIdRef.current || !loadedEpRef.current) return;
+      // v2.26.110：本地有未落盘编辑（800ms debounce 内）时不能直接重载——会把用户刚改的
+      // 内容静默丢掉。改为「按 id 合并」：外部文档为基准，追加本地独有的节点/边，回写后再上屏。
+      // 冲突（同 id）以外部为准，保证外部刚落的产物节点不丢；本地 800ms 内的位移类微编辑可能回跳，可接受。
+      if (saveTimer.current !== null) {
+        window.clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+        const localDoc = flowToDoc(nodesRef.current, edgesRef.current, detail.episodeId);
+        apiCanvas
+          .canvasGet(detail.episodeId)
+          .then((remote) => {
+            const rn = normalizeCanvasDoc(remote, detail.episodeId!);
+            const remoteNodeIds = new Set(rn.nodes.map((n) => n.id));
+            const remoteEdgeIds = new Set(rn.edges.map((ed) => ed.id));
+            return {
+              ...rn,
+              nodes: [...rn.nodes, ...localDoc.nodes.filter((n) => !remoteNodeIds.has(n.id))],
+              edges: [...rn.edges, ...localDoc.edges.filter((ed) => !remoteEdgeIds.has(ed.id))],
+            };
+          })
+          .then((merged) =>
+            apiCanvas.canvasSave(detail.episodeId!, merged).then(() => {
+              if (loadedEpRef.current !== detail.episodeId) return;
+              applyDoc(merged);
+            })
+          )
+          .catch(() => {});
+        return;
+      }
       apiCanvas
         .canvasGet(detail.episodeId)
         .then((doc) => {

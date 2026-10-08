@@ -25,6 +25,19 @@ const KIND_ICON: Record<string, string> = { images: "🖼", videos: "🎬", audi
 function AssetCardItem({ asset }: { asset: ChatMsgAsset }) {
   const t = useT();
   const { toast } = useApp();
+  // v2.26.110：path 缺省防御——事件漏发 path 时不再生成 .../undefined 的坏 src（裂图 + 打开必失败）
+  if (!asset.path) {
+    return (
+      <div className="agent-asset-card" style={{ maxWidth: 260 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 0", fontSize: 12.5, color: "var(--muted)" }}>
+          <span>{KIND_ICON[asset.kind] ?? "📄"}</span>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {asset.name || asset.assetId}（{t("文件路径缺失")}）
+          </span>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="agent-asset-card" style={{ maxWidth: 260 }}>
       {isImage(asset) ? (

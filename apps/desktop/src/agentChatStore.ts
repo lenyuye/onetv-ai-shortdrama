@@ -268,11 +268,15 @@ export const useAgentChat = create<AgentChatState>((set, get) => {
     appendTo: (key, sessionId, msg) => {
       set((st) => {
         let list = st.sessionsByProject[key] ?? [];
+        let rebuilt = false;
         if (!list.some((s) => s.id === sessionId)) {
           // 兜底：会话不存在（如 jobId 归档表已过期）时按原 id 重建，消息不丢
           list = [...list, { id: sessionId, title: DEFAULT_SESSION_TITLE, createdAt: Date.now(), msgs: [] }];
+          rebuilt = true;
         }
         return {
+          // v2.26.110：兜底重建的会话同时设为当前会话，避免回复写进侧栏里非当前会话而"看不见"
+          currentByProject: rebuilt ? { ...st.currentByProject, [key]: sessionId } : st.currentByProject,
           sessionsByProject: {
             ...st.sessionsByProject,
             [key]: list.map((s) => {
@@ -415,7 +419,7 @@ export function initAgentChatBridge() {
       if (!loc) return;
       useAgentChat.getState().appendDelta(loc.root, loc.sessionId, p.jobId ?? "", p.delta);
     })
-    .catch(() => {});
+    .catch(() => { bridgeInited = false; });
   // 执行过程卡（v2.26.29，codex 式）：job.created/progress 实时刷新，终态 3s 后移除
   // v2.26.103 修复：后端 job state 是大写（SUCCEEDED/FAILED/CANCELED/RUNNING），
   // 此前终态判定用小写导致永匹配不上 → 过程卡 100% 卡死不消失。
@@ -436,16 +440,18 @@ export function initAgentChatBridge() {
       error: p.error ?? cur?.error ?? null,
       finishedAt: FINISHED_STATES.includes(state) ? (cur?.finishedAt ?? Date.now()) : undefined,
     });
-    // 终态 3s 后移除过程卡（产物卡片/失败消息随后已到达对话流）
+    // 终态：同时清理流式气泡（v2.26.110——失败/取消且后端不再发 agent:message 时，
+    // 否则该会话底部永久残留「正在输入…」）+ 3s 后移除过程卡
     if (FINISHED_STATES.includes(state)) {
+      useAgentChat.getState().finishStreaming(p.id);
       window.setTimeout(() => useAgentChat.getState().removeJobRun(p.id!), 3000);
     }
   };
-  api.onAppEvent<Record<string, unknown>>("job:created", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => {});
-  api.onAppEvent<Record<string, unknown>>("job:progress", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => {});
+  api.onAppEvent<Record<string, unknown>>("job:created", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => { bridgeInited = false; });
+  api.onAppEvent<Record<string, unknown>>("job:progress", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => { bridgeInited = false; });
   // job:succeeded/failed 的 payload 就是 job_public（含 state 字段），直接透传即可
-  api.onAppEvent<Record<string, unknown>>("job:succeeded", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => {});
-  api.onAppEvent<Record<string, unknown>>("job:failed", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => {});
+  api.onAppEvent<Record<string, unknown>>("job:succeeded", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => { bridgeInited = false; });
+  api.onAppEvent<Record<string, unknown>>("job:failed", (p) => upsertFromJobEvent(p as { id?: string; title?: string; state?: string; progress?: number; error?: string | null })).catch(() => { bridgeInited = false; });
   // 完整回复：收尾对应流式气泡并把正式消息写入会话
   api
     .onAppEvent<{ text: string; kind?: string; jobId?: string; assets?: ChatMsgAsset[] }>("agent:message", (p) => {
@@ -479,5 +485,5 @@ export function initAgentChatBridge() {
         console.error("[agentChat] reply archive failed", e);
       }
     })
-    .catch(() => {});
+    .catch(() => { bridgeInited = false; });
 }
