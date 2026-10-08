@@ -202,13 +202,26 @@ function CanvasWorkbench({
 
   /* ---------- 节点生成面板（LibTV 式聊天框）：双击节点或右键菜单打开 ---------- */
 
-  const { nodeChat, setNodeChat, openNodeChat, handleChatConfig } = useCanvasNodeChat({
+  const { nodeChat, setNodeChat, openNodeChat, handleChatConfig, consumeRestorableChat } = useCanvasNodeChat({
     wrapperRef,
     nodesRef,
     setNodes,
     scheduleSave,
     setCtxMenu,
+    episodeId,
   });
+
+  // v2.26.111：切视图（模型/任务等）导致 CanvasView 卸载重建后，恢复未关闭的节点生成面板。
+  // 文档加载完成且面板未打开时，按 sessionStorage 记录（分集+节点）恢复一次；节点已删除则清除记录。
+  useEffect(() => {
+    if (loading || nodeChat) return;
+    const restoreId = consumeRestorableChat(episodeId);
+    if (!restoreId) return;
+    const fn = nodesRef.current.find((n) => n.id === restoreId);
+    if (fn) openNodeChat(fn);
+    else setNodeChat(null); // 节点已不存在：清除持久化记录
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, nodes.length, episodeId]);
 
   /* ---------- 检查器编辑派生状态 ---------- */
 
