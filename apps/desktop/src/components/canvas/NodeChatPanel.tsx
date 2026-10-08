@@ -14,6 +14,7 @@ import { assetList, assetUrl, type AssetRecord } from "../../api-assets";
 import { canvasGet } from "../../api-canvas";
 import type { CanvasNode, NodeType } from "@onetv/shared-types";
 import { useT } from "../../i18n";
+import { useNodeActions } from "./NodeActionsContext";
 
 const TYPE_CN: Record<string, string> = {
   asset: "素材", text: "文本", script: "剧本", image: "生图", video: "生视频", audio: "配音",
@@ -86,6 +87,7 @@ export default function NodeChatPanel({
   onClose: () => void;
 }) {
   const t = useT();
+  const nodeActions = useNodeActions();
   const cap =
     node.type === "image" ? "image_generation"
     : node.type === "video" || node.type === "video-clip" ? "video_generation"
@@ -292,6 +294,10 @@ export default function NodeChatPanel({
                 // v2.26.27：路径一并写入 config，节点卡片可直接显示产物缩略图
                 onConfig(node.id, { outputAssetId: outId, outputAssetPath: hit?.path ?? "", status: "ready" });
                 setResultPath(hit?.path ?? null);
+                // v2.26.102（LibTV 式）：产物自动落为新的独立内容节点（图/视频）
+                if (hit?.path && /\.(png|jpe?g|webp|gif|mp4|mov|webm|m4v)$/i.test(hit.path)) {
+                  nodeActions.spawnOutputNode(node.id, outId, hit.path);
+                }
               }
             }
             setPrompt("");

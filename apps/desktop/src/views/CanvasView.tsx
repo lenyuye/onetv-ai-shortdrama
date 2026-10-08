@@ -383,21 +383,37 @@ function CanvasWorkbench({
     [setNodes, scheduleSave]
   );
 
-  /** 节点卡内「＋上传」：agentAttach 入资产库并写入 files/referenceAssetIds */
+  /** 节点卡内/检查器「上传素材」（v2.26.102，LibTV/即梦式）：
+   * 每次上传的文件自动成为一个**新的独立素材节点**（不再追加进已有节点的文件列表），
+   * 新节点自动选中并平移视口到可见位置。sourceId 仅作为摆放锚点（可无）。 */
   const uploadNodeFileById = useCallback(
     async (nodeId: string) => {
-      const src = nodesRef.current.find((n) => n.id === nodeId);
-      if (!src) return;
+      const ep = episodeIdRef.current;
+      if (!ep) return;
       try {
         const att = await api.agentAttach();
-        const cfg = (src.data.cn.config ?? {}) as Record<string, unknown>;
-        const files = (Array.isArray(cfg.files) ? cfg.files : []) as { id: string; name: string; path: string; kind: string }[];
-        // v2.26.101 语义：素材节点上传 = 节点内容（files），不写 referenceAssetIds（那是"参考"）
-        patchNodeConfig(nodeId, {
-          files: [...files, { id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
+        const anchor = nodesRef.current.find((n) => n.id === nodeId);
+        const pos = anchor
+          ? { x: anchor.position.x + 40, y: anchor.position.y + 210 }
+          : rf.screenToFlowPosition(centerScreen());
+        const cn = createCanvasNode("asset", ep, pos);
+        cn.title = att.name.length > 24 ? `${att.name.slice(0, 24)}…` : att.name;
+        cn.config = {
+          ...cn.config,
+          files: [{ id: att.assetId, name: att.name, path: att.path, kind: att.kind }],
           status: "ready",
-        });
-        toast(t("已上传 {name}（节点内容，连线给生成节点即作参考）", { name: att.name }), "ok");
+        };
+        pushUndo();
+        setNodes((ns) => [
+          ...ns.map((n) => ({ ...n, selected: false })),
+          { id: cn.id, type: "onetv", position: pos, data: { cn }, selected: true },
+        ]);
+        scheduleSave();
+        // 视口跟随：确保新节点在可见区（LibTV 式上传即见）
+        window.setTimeout(() => {
+          void rf.setCenter(pos.x + 95, pos.y + 80, { zoom: Math.max(rf.getZoom(), 0.8), duration: 300 });
+        }, 60);
+        toast(t("已上传 {name} 并创建素材节点——点「🖼 生图 / 🎬 生视频」即可继续生成", { name: att.name }), "ok");
       } catch (e) {
         const msg = api.errMsg(e);
         if (!msg.includes("已取消") && !msg.includes("取消")) {
@@ -405,7 +421,7 @@ function CanvasWorkbench({
         }
       }
     },
-    [nodesRef, patchNodeConfig, toast, t]
+    [nodesRef, episodeIdRef, rf, pushUndo, setNodes, scheduleSave, toast, t]
   );
 
   /** 素材/文本节点一键转生成（LibTV 式）：旁建生成节点 + 自动连线（上游即参考） */
@@ -437,14 +453,49 @@ function CanvasWorkbench({
         )
       );
       scheduleSave();
+      // v2.26.102：视口跟随，确保新建节点在可见区
+      window.setTimeout(() => {
+        void rf.setCenter(pos.x + 95, pos.y + 80, { zoom: Math.max(rf.getZoom(), 0.8), duration: 300 });
+      }, 60);
       toast(t("已创建{type}节点并连线，输入提示词即可生成", { type: type === "image" ? "生图" : "生视频" }), "ok");
     },
-    [nodesRef, episodeIdRef, pushUndo, setNodes, setEdges, scheduleSave, toast, t]
+    [nodesRef, episodeIdRef, pushUndo, setNodes, setEdges, scheduleSave, rf, toast, t]
+  );
+
+  /** v2.26.102（LibTV 式）：生成完成后产物自动落为新的独立内容节点（图/视频占满显示）。
+   * 产物节点仍保留生成条，可在产物基础上继续写提示词再生成。 */
+  const spawnOutputNode = useCallback(
+    (sourceId: string, assetId: string, path: string) => {
+      const src = nodesRef.current.find((n) => n.id === sourceId);
+      const ep = episodeIdRef.current;
+      if (!src || !ep || !assetId || !path) return;
+      const isVideo = /\.(mp4|mov|webm|m4v)$/i.test(path);
+      const type: NodeType = isVideo ? "video" : "image";
+      const name = path.split("/").pop() || assetId;
+      // 落点：源节点右侧；若那里已有节点则向下错开，避免堆叠
+      const baseX = src.position.x + 280;
+      let pos = { x: baseX, y: src.position.y };
+      const occupied = (p: { x: number; y: number }) =>
+        nodesRef.current.some((n) => Math.abs(n.position.x - p.x) < 60 && Math.abs(n.position.y - p.y) < 60);
+      let guard = 0;
+      while (occupied(pos) && guard++ < 8) pos = { x: baseX, y: pos.y + 230 };
+      const cn = createCanvasNode(type, ep, pos);
+      cn.title = name.length > 20 ? `${name.slice(0, 20)}…` : name;
+      cn.config = { ...cn.config, outputAssetId: assetId, outputAssetPath: path, status: "ready" };
+      pushUndo();
+      setNodes((ns) => [...ns.map((n) => ({ ...n, selected: false })), { id: cn.id, type: "onetv", position: pos, data: { cn }, selected: true }]);
+      scheduleSave();
+      window.setTimeout(() => {
+        void rf.setCenter(pos.x + 95, pos.y + 80, { zoom: Math.max(rf.getZoom(), 0.8), duration: 300 });
+      }, 60);
+      toast(t("生成完成——产物已落为独立节点"), "ok");
+    },
+    [nodesRef, episodeIdRef, pushUndo, setNodes, scheduleSave, rf, toast, t]
   );
 
   const nodeActions: NodeActions = useMemo(
-    () => ({ patchConfig: patchNodeConfig, uploadNodeFile: uploadNodeFileById, spawnGenerateNode }),
-    [patchNodeConfig, uploadNodeFileById, spawnGenerateNode]
+    () => ({ patchConfig: patchNodeConfig, uploadNodeFile: uploadNodeFileById, spawnGenerateNode, spawnOutputNode }),
+    [patchNodeConfig, uploadNodeFileById, spawnGenerateNode, spawnOutputNode]
   );
 
   /** 双击画布空白 → 就地弹出新建节点菜单（LibTV 式，复用右键 pane 菜单） */

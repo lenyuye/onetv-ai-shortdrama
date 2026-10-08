@@ -12,6 +12,8 @@ export interface NodeActions {
   patchConfig: (nodeId: string, patch: Record<string, unknown>) => void;
   uploadNodeFile: (nodeId: string) => Promise<void>;
   spawnGenerateNode: (sourceId: string, type: "image" | "video") => void;
+  /** v2.26.102：生成完成后产物自动落为新的独立内容节点（占满显示，视口跟随） */
+  spawnOutputNode: (sourceId: string, assetId: string, path: string) => void;
 }
 
 const noop = () => {};
@@ -20,6 +22,7 @@ export const NodeActionsContext = createContext<NodeActions>({
   patchConfig: noop,
   uploadNodeFile: async () => {},
   spawnGenerateNode: noop,
+  spawnOutputNode: noop,
 });
 
 export const useNodeActions = () => useContext(NodeActionsContext);

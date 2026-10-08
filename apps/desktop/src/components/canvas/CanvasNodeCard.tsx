@@ -172,6 +172,8 @@ export default function CanvasNodeCard(props: NodeProps) {
               batchStatus: "done",
               batchNote: t("卡内生成完成"),
             });
+            // v2.26.102（LibTV 式）：产物自动落为新的独立内容节点（占满显示）
+            if (hit?.path) actions.spawnOutputNode(cn.id, outId2, hit.path);
           } else {
             actions.patchConfig(cn.id, { generateJobId: null, batchStatus: null });
           }
@@ -271,10 +273,22 @@ export default function CanvasNodeCard(props: NodeProps) {
 
   const hasOutThumb = isMedia && !!resolvedPath;
 
-  // v2.26.101 产物大预览（LibTV 式）：生成节点有产物后，卡片主体直接显示生成结果——
-  // 图片全宽大图 / 视频内嵌播放器 / 配音音频条，这才是"生成的产物在画布上显示"。
+  // 媒体类型判断（产物/素材预览共用）
   const isVideoPath = (p: string) => /\.(mp4|mov|webm|m4v)$/i.test(p);
   const isAudioPath = (p: string) => /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(p);
+
+  // v2.26.102 素材内容占满显示（LibTV 式）：素材节点的图片/视频内容直接大图/播放器占满卡主体
+  const firstImg = files.find((f) => f.kind === "images" || isImagePath(f.path));
+  const firstVideo = files.find((f) => f.kind === "videos" || isVideoPath(f.path));
+  const assetPreview: { path: string; h: number; video: boolean } | null =
+    isAsset && (firstImg || firstVideo)
+      ? firstImg
+        ? { path: firstImg.path, h: 230, video: false }
+        : { path: firstVideo!.path, h: 170, video: true }
+      : null;
+
+  // v2.26.101 产物大预览（LibTV 式）：生成节点有产物后，卡片主体直接显示生成结果——
+  // 图片全宽大图 / 视频内嵌播放器 / 配音音频条，这才是"生成的产物在画布上显示"。
   const outPreviewH =
     resolvedPath && isMedia
       ? isAudioPath(resolvedPath)
@@ -312,7 +326,7 @@ export default function CanvasNodeCard(props: NodeProps) {
       style={{
         height:
           HEAD_H + rows * ROW_H + SUMMARY_H
-          + (isAsset && files.length > 0 ? THUMB_H : 0)
+          + (assetPreview ? assetPreview.h : isAsset && files.length > 0 ? THUMB_H : 0)
           + (hasOutPreview ? outPreviewH : hasOutThumb ? THUMB_H : 0)
           + extraH,
       }}
@@ -377,7 +391,25 @@ export default function CanvasNodeCard(props: NodeProps) {
           <span className="cv-node-thumb-count">{t("产物")}</span>
         </div>
       )}
-      {isAsset && files.length > 0 && (
+      {assetPreview ? (
+        /* v2.26.102 素材内容占满显示（LibTV 式）：上传的图片/视频就是本节点的全部内容 */
+        <div
+          className="cv-node-out-preview"
+          style={{ top: HEAD_H + rows * ROW_H, height: assetPreview.h }}
+          title={files.map((f) => f.name).join("\n")}
+        >
+          {assetPreview.video ? (
+            <video src={assetUrl(assetPreview.path)} controls preload="metadata" />
+          ) : (
+            <img src={assetUrl(assetPreview.path)} alt={files[0]?.name ?? t("素材")} />
+          )}
+          {files.length > 1 && (
+            <span className="cv-node-thumb-count" style={{ position: "absolute", right: 6, bottom: 4 }}>
+              {files.length} 个素材
+            </span>
+          )}
+        </div>
+      ) : isAsset && files.length > 0 && (
         <div className="cv-node-thumbs" title={files.map((f) => f.name).join("\n")}>
           {imgFiles.slice(0, 3).map((f) => (
             <img key={f.id} src={assetUrl(f.path)} alt={f.name} />
@@ -388,7 +420,11 @@ export default function CanvasNodeCard(props: NodeProps) {
           <span className="cv-node-thumb-count">{files.length} 个素材</span>
         </div>
       )}
-      <div className="cv-node-summary" title={JSON.stringify(cn.config ?? {})}>
+      <div
+        className="cv-node-summary"
+        style={{ bottom: 7 + extraH }}
+        title={JSON.stringify(cn.config ?? {})}
+      >
         {isAsset
           ? files.length > 0
             ? t("{n} 个素材文件（连线给生成节点作参考）", { n: files.length })
