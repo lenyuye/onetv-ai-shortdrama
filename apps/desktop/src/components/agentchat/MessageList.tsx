@@ -114,6 +114,18 @@ interface MessageListProps {
  * 改为「🤔 思考中… → 正在回复…」+ 已等待秒数，用户能感知任务活着、不是卡死。 */
 const JobRunCards = memo(function JobRunCards({ runs }: { runs: JobRun[] }) {
   const t = useT();
+  // v2.26.113：chat 任务运行中每秒刷新，显示已等待秒数（用户可感知任务活着）
+  // ⚠️ hooks 必须在 early return 之前——v2.26.113 首版放在 return null 之后，
+  // 过程卡从无到有时 hooks 数量变化触发 React error #310 崩溃（v2.26.114 修复）
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const hasWaiting = runs.some(
+      (r) => r.kind === "chat" && !r.finishedAt && ["running", "queued"].includes(r.state.toLowerCase())
+    );
+    if (!hasWaiting) return;
+    const iv = window.setInterval(() => forceTick((x) => x + 1), 1000);
+    return () => window.clearInterval(iv);
+  }, [runs]);
   if (runs.length === 0) return null;
   // v2.26.103：后端 state 大写（SUCCEEDED/RUNNING…），统一小写比较
   const stateOf = (r: JobRun): { icon: string; label: string } => {
@@ -125,16 +137,6 @@ const JobRunCards = memo(function JobRunCards({ runs }: { runs: JobRun[] }) {
     if (r.kind === "chat") return { icon: "🤔", label: r.note || t("思考中…") };
     return { icon: "⏳", label: r.note || t("执行中…") };
   };
-  // v2.26.113：chat 任务运行中每秒刷新，显示已等待秒数（用户可感知任务活着）
-  const [, forceTick] = useState(0);
-  useEffect(() => {
-    const hasWaiting = runs.some(
-      (r) => r.kind === "chat" && !r.finishedAt && ["running", "queued"].includes(r.state.toLowerCase())
-    );
-    if (!hasWaiting) return;
-    const iv = window.setInterval(() => forceTick((x) => x + 1), 1000);
-    return () => window.clearInterval(iv);
-  }, [runs]);
   return (
     <div className="agent-job-runs" style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
       {runs.map((r) => {

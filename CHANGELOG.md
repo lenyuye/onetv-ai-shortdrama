@@ -2,6 +2,11 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.26.114] — v2.26.114：修复 v2.26.113 过程卡 hooks 违规崩溃（React error #310）
+
+### 修复
+- **🔥 Agent 对话页崩溃「渲染出错了 #310」（用户截图反馈）**：v2.26.113 在过程卡组件新增的每秒刷新 useState/useEffect 被放在了 `if (runs.length === 0) return null` **之后**——过程卡第一次出现（hooks 数量从 0 变 2）即触发 "Rendered more hooks than during the previous render" 崩溃。修复 = hooks 移到 early return 之前。教训：**hooks 一律放在组件最顶部，任何条件 return 之前**。
+
 ## [2.26.113] — v2.26.113：Agent 对话回复过程反馈 + 自定义指令可见性
 
 ### 修复
