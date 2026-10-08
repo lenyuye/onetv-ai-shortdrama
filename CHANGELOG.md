@@ -2,6 +2,16 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.26.155] — v2.26.155：全面体检发布（GitHub 接入收尾后首个正式版）
+
+### 体检结论（无功能性 bug，全量绿）
+- workspace typecheck ✅（tsc --noEmit 无错误）
+- 前端测试 30/30 ✅（vitest：timeline/normalizers/agentChatStore/BatchRunPanel/i18n）
+- cargo check --workspace ✅（0 warning）
+- Rust 测试全绿 ✅（comfyui 78、timeline 7、webhook 4、core 9+9、golden 1，0 失败）
+- 18 点后唯一代码改动复查：`RunEvent::Reopen` 加 `#[cfg(target_os = "macos")]` 门控（Windows 编译修复），正确无误
+- 随 18:00–21:32 的 CI/文档修复（ffmpeg for golden E2E、Windows icon.ico、Node 22/pnpm 11、README 数字勘误）一并收口为正式发布版
+
 ## [2.26.114] — v2.26.114：修复 v2.26.113 过程卡 hooks 违规崩溃（React error #310）
 
 ### 修复
