@@ -152,6 +152,19 @@ export function docCoreJson(doc: CanvasDocument): string {
   return JSON.stringify({ nodes: doc.nodes, edges: doc.edges });
 }
 
+/** 路径 → 是否视频媒体（v2.26.156）：先剥离 ?/# 查询串再按扩展名判断。
+ * 兼容历史脏数据（custom provider 曾把 "xxx.mp4?e=签名" 整段落盘为文件扩展名）。 */
+export function isVideoMediaPath(p: string | undefined | null): boolean {
+  const clean = (p ?? "").split(/[?#]/, 1)[0] ?? "";
+  return /\.(mp4|mov|webm|m4v)$/i.test(clean);
+}
+
+/** 路径 → 是否可预览的图/视频媒体（同样剥离查询串）。 */
+export function isPreviewMediaPath(p: string | undefined | null): boolean {
+  const clean = (p ?? "").split(/[?#]/, 1)[0] ?? "";
+  return /\.(png|jpe?g|webp|gif|mp4|mov|webm|m4v)$/i.test(clean);
+}
+
 /** 节点卡片参数摘要：config 前 max 个键值对。 */
 /** 端口名中文映射（节点卡片显示用；技术标识保留在 Handle tooltip 中） */
 export const PORT_CN: Record<string, string> = {

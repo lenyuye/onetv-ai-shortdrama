@@ -185,6 +185,25 @@ pub struct CustomHttpOutput {
     pub remote_job_id: Option<String>,
 }
 
+/// 从结果 URL 推导安全的落盘扩展名（v2.26.156）：
+/// 剥离查询串/锚点，仅接受 ≤5 位纯字母数字扩展名；不可信时回退 "bin"。
+/// 此前 "https://x/a.mp4?e=签名" 会被推导出 "mp4?e"，产物文件名污染全链路。
+pub fn result_ext_from_url(u: &str) -> String {
+    let path_part = u.split(['?', '#']).next().unwrap_or(u);
+    let last_seg = path_part.rsplit('/').next().unwrap_or(path_part);
+    last_seg
+        .rsplit('.')
+        .next()
+        .filter(|e| {
+            !e.is_empty()
+                && e.len() <= 5
+                && *e != last_seg // 最后一段没有 '.'（rsplit 返回整段）→ 无扩展名
+                && e.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_else(|| "bin".into())
+}
+
 /// 同步执行：POST → 解析响应 → （可选轮询）→ 返回结果。
 #[allow(clippy::too_many_arguments)]
 pub async fn execute(
@@ -353,7 +372,11 @@ pub async fn execute(
         if cancel() {
             return Err(GatewayError::Network("任务已取消".into()));
         }
-        let ext = u.rsplit('.').next().map(|e| e.chars().take(5).collect::<String>()).unwrap_or("bin".into());
+        // v2.26.156 修复：结果 URL 常带查询串/锚点（如 "xxx.mp4?e=签名"），此前 rsplit('.')
+        // 会把 "mp4?e" 整段当扩展名 → 落盘文件名为 *.mp4?e，Finder/播放器无法识别，
+        // 且下游按扩展名的媒体类型判断（画布产物节点/预览）全部失灵。
+        // 修复 = 先剥离 ?/# 与非法字符，只保留字母数字扩展名（≤5 位），否则回退 bin。
+        let ext = crate::providers::custom_http::result_ext_from_url(u);
         let dest = out_dir.join(format!("custom_{}_{}.{}", chrono::Utc::now().timestamp_millis(), i, ext));
         gw.download(profile, u, &dest).await?;
         downloaded.push(dest.to_string_lossy().into_owned());
@@ -369,6 +392,19 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn result_ext_strips_query_and_fragments() {
+        // v2.26.156 回归：带查询串的结果 URL 不得把 "mp4?e" 当扩展名
+        assert_eq!(result_ext_from_url("https://x.com/a/custom_1.mp4?e=abc123"), "mp4");
+        assert_eq!(result_ext_from_url("https://x.com/a/v.MOV?t=1#frag"), "mov");
+        assert_eq!(result_ext_from_url("https://x.com/a/img.PNG"), "png");
+        // 无扩展名 / 主机名点号 / 非法字符 → bin
+        assert_eq!(result_ext_from_url("https://x.com/download"), "bin");
+        assert_eq!(result_ext_from_url("https://x.com/a.mp4?e=abc/odd"), "mp4");
+        assert_eq!(result_ext_from_url("https://x.com/a.超长扩展名"), "bin");
+        assert_eq!(result_ext_from_url("not-a-url"), "bin");
+    }
 
     /// Mock 自定义平台：submit → poll（2 轮 queued）→ 返回结果 URL → /file 下载。
     /// 实测 execute 全链路（规格 API-03 Mock Server E2E，v2.13）。

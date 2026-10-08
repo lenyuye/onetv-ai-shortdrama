@@ -18,7 +18,7 @@ import { assetList, assetUrl } from "../../api-assets";
 import * as api from "../../api";
 import { jobList } from "../../api-providers";
 import { useApp } from "../../store";
-import { NODE_ICONS, configSummary } from "./canvas-model";
+import { NODE_ICONS, configSummary, isVideoMediaPath } from "./canvas-model";
 import { useNodeActions } from "./NodeActionsContext";
 
 /** 与 canvas.css 中 .cv-node-head 高度保持一致。 */
@@ -292,9 +292,9 @@ export default function CanvasNodeCard(props: NodeProps) {
 
   const hasOutThumb = isMedia && !!resolvedPath;
 
-  // 媒体类型判断（产物/素材预览共用）
-  const isVideoPath = (p: string) => /\.(mp4|mov|webm|m4v)$/i.test(p);
-  const isAudioPath = (p: string) => /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(p);
+  // 媒体类型判断（产物/素材预览共用；v2.26.156 剥离 ?/# 查询串，兼容历史脏数据 *.mp4?e）
+  const isVideoPath = (p: string) => isVideoMediaPath(p);
+  const isAudioPath = (p: string) => /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test((p || "").split(/[?#]/, 1)[0] ?? "");
 
   // v2.26.102 素材内容占满显示（LibTV 式）：素材节点的图片/视频内容直接大图/播放器占满卡主体
   const firstImg = files.find((f) => f.kind === "images" || isImagePath(f.path));

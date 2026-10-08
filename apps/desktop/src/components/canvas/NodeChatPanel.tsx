@@ -16,6 +16,7 @@ import { canvasGet } from "../../api-canvas";
 import type { CanvasNode, NodeType } from "@onetv/shared-types";
 import { useT } from "../../i18n";
 import { useNodeActions } from "./NodeActionsContext";
+import { isPreviewMediaPath, isVideoMediaPath } from "./canvas-model";
 
 const TYPE_CN: Record<string, string> = {
   asset: "素材", text: "文本", script: "剧本", image: "生图", video: "生视频", audio: "配音",
@@ -221,7 +222,7 @@ export default function NodeChatPanel({
       const from = `${cn?.title || n.id}`;
       const out = typeof cfg.outputAssetId === "string" ? cfg.outputAssetId : "";
       const outPath = typeof cfg.outputAssetPath === "string" ? cfg.outputAssetPath : "";
-      if (out) wanted.set(out, { path: outPath, kind: /\.(mp4|mov|webm|m4v)$/i.test(outPath) ? "videos" : "images", from });
+      if (out) wanted.set(out, { path: outPath, kind: isVideoMediaPath(outPath) ? "videos" : "images", from });
       for (const rid of (Array.isArray(cfg.referenceAssetIds) ? cfg.referenceAssetIds : []) as string[]) {
         if (rid) wanted.set(rid, { from });
       }
@@ -309,7 +310,7 @@ export default function NodeChatPanel({
                 onConfig(node.id, { outputAssetId: outId, outputAssetPath: hit?.path ?? "", status: "ready" });
                 setResultPath(hit?.path ?? null);
                 // v2.26.102（LibTV 式）：产物自动落为新的独立内容节点（图/视频）
-                if (hit?.path && /\.(png|jpe?g|webp|gif|mp4|mov|webm|m4v)$/i.test(hit.path)) {
+                if (hit?.path && isPreviewMediaPath(hit.path)) {
                   nodeActions.spawnOutputNode(node.id, outId, hit.path);
                 }
               }
@@ -354,9 +355,9 @@ export default function NodeChatPanel({
   };
 
   const actions = quickActions(node.type);
-  const showImage = resultPath && /\.(png|jpe?g|webp|gif)$/i.test(resultPath);
-  const showVideo = resultPath && /\.(mp4|mov|webm|m4v)$/i.test(resultPath);
-  const showAudio = resultPath && /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(resultPath);
+  const showImage = resultPath && /\.(png|jpe?g|webp|gif)$/i.test(resultPath.split(/[?#]/, 1)[0] ?? "");
+  const showVideo = resultPath && isVideoMediaPath(resultPath);
+  const showAudio = resultPath && /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(resultPath.split(/[?#]/, 1)[0] ?? "");
 
   return (
     <div

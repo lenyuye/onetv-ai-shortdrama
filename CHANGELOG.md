@@ -2,6 +2,16 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
+## [2.26.156] — v2.26.156：修复产物文件名被 URL 查询串污染（*.mp4?e）+ 参考图不注入诊断
+
+### 修复（核心：产物文件名污染）
+- **🔥 产物文件名变成 `*.mp4?e`，Finder/播放器无法识别、画布产物节点建成 image 类型、预览全失效（用户实测反馈）**：Custom HTTP Provider 下载结果时按 URL 推导扩展名，`rsplit('.')` 把 `xxx.mp4?e=签名` 里的查询串一并带进文件名（`e.chars().take(5)` 取出 "mp4?e"）。污染链路 = 落盘文件 → assets 库 path → canvas.json outputAssetPath → 前端全部按扩展名的媒体判断。修复 = `result_ext_from_url`：剥离 `?/#`、取最后一段路径、仅接受 ≤5 位纯字母数字扩展名，否则回退 `bin`（含单元测试回归）。
+- **前端媒体类型判断全部剥离查询串（防御历史脏数据）**：`canvas-model` 新增 `isVideoMediaPath`/`isPreviewMediaPath`，替换 CanvasView `spawnOutputNode`（此前 `.mp4?e` 检测失败 → 视频产物节点被建成 image 节点、播放器渲染不出）、CanvasNodeCard 产物大预览/素材预览、NodeChatPanel 产物 kind/预览共 5 处判断。
+- **用户项目数据修复（一次性）**：重命名 assets/videos 等 8 个 `*.mp4?e`/`*.jpeg?` 文件为干净扩展名，database.sqlite 资产 path 5 条更新，episodes 文档中 outputAssetPath 2 个文件清理。
+
+### 诊断增强（参考图不生效归因）
+- **生成视频"跟参考图无关"时明确归因**：Custom HTTP 生视频存在图片参考、但 Provider 模板不含 `${input.firstFrameBase64}` 占位时，任务过程明确提示「参考图未注入：模板缺少占位（图生视频不生效）」——此前参考图被静默忽略，用户无从判断是模板问题还是链路问题。
+
 ## [2.26.155] — v2.26.155：全面体检发布（GitHub 接入收尾后首个正式版）
 
 ### 体检结论（无功能性 bug，全量绿）

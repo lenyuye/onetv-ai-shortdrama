@@ -30,6 +30,7 @@ import ModelSelectorPanel, { modelCapsOf } from "../components/canvas/ModelSelec
 import {
   createCanvasNode,
   inputAcceptOf,
+  isVideoMediaPath,
   pickInputPort,
   pickOutputPort,
   outputAcceptOf,
@@ -557,7 +558,8 @@ function CanvasWorkbench({
       const src = nodesRef.current.find((n) => n.id === sourceId);
       const ep = episodeIdRef.current;
       if (!src || !ep || !assetId || !path) return;
-      const isVideo = /\.(mp4|mov|webm|m4v)$/i.test(path);
+      // v2.26.156：类型判断剥离查询串（历史脏数据 *.mp4?e 曾把视频产物建成 image 节点）
+      const isVideo = isVideoMediaPath(path);
       const type: NodeType = isVideo ? "video" : "image";
       const name = path.split("/").pop() || assetId;
       // 落点：源节点右侧；若那里已有节点则向下错开，避免堆叠

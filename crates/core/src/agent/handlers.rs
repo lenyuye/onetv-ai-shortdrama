@@ -683,6 +683,9 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
                         .http_template
                         .clone()
                         .ok_or_else(|| fatal("Custom HTTP Provider 缺少请求模板（httpTemplate 字段）"))?;
+                    // v2.26.156 诊断：有图片参考但模板不含 ${input.firstFrameBase64} 占位时，
+                    // 参考图根本不会被注入请求——用户会看到"生成的内容跟参考无关"却无从归因。
+                    let tmpl_str = tmpl_val.to_string();
                     let tmpl: crate::providers::custom_http::HttpTemplate =
                         serde_json::from_value(tmpl_val).map_err(|e| fatal(format!("模板解析失败: {e}")))?;
                     let secret = if decision.provider.auth.auth_type != "none" {
@@ -719,6 +722,13 @@ pub fn video_generate_handler(env: Arc<AgentEnv>) -> JobHandler {
                         "references": refs_json(&references),
                         "firstFrameBase64": first_frame_b64,
                     });
+                    // v2.26.156 诊断提示（tmpl_str 已在上方捕获）：参考图不被模板使用时明确归因
+                    if first_image_ref(&references).is_some() && !tmpl_str.contains("firstFrameBase64") {
+                        ctx.report(
+                            0.2,
+                            "⚠️ 参考图未注入：Provider 模板缺少 ${input.firstFrameBase64} 占位（图生视频不生效，请编辑模板加入该占位）",
+                        );
+                    }
                     let out = crate::providers::custom_http::execute(
                         env.gateway(),
                         &decision.provider,
