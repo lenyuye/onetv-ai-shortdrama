@@ -7,6 +7,7 @@
  * 2. ⚓ 节点参考：直接绑定同画布其他节点的产物（outputAssetId）与节点已挂参考（referenceAssetIds）。
  */
 import { useEffect, useRef, useState } from "react";
+import { useReactFlow } from "@xyflow/react";
 import * as api from "../../api";
 import { jobList, type JobDto } from "../../api-providers";
 import { useApp } from "../../store";
@@ -88,6 +89,7 @@ export default function NodeChatPanel({
 }) {
   const t = useT();
   const nodeActions = useNodeActions();
+  const rf = useReactFlow(); // v2.26.112：连线参考聚合读实时画布状态
   const cap =
     node.type === "image" ? "image_generation"
     : node.type === "video" || node.type === "video-clip" ? "video_generation"
@@ -205,46 +207,58 @@ export default function NodeChatPanel({
   // v2.26.26 连线即参考（LibTV/即梦式）：打开面板时自动把上游连线节点的
   // 产物（outputAssetId）与已挂参考（referenceAssetIds / 素材节点 files）绑定为参考；
   // 上游文本节点内容作为文字约束在发送时自动并入提示词。
+  // v2.26.112 修复：改读 ReactFlow 内存实时状态——此前读 canvasGet（服务器文档），
+  // 刚连的线还在 800ms 自动保存 debounce 内，打开面板时参考绑定不上。
   useEffect(() => {
+    const incoming = rf.getEdges().filter((e) => e.target === node.id).map((e) => e.source);
+    if (incoming.length === 0) return;
+    const wanted = new Map<string, { name?: string; path?: string; kind?: string; from: string }>(); // assetId → 来源/元数据
+    const texts: { from: string; text: string }[] = [];
+    for (const n of rf.getNodes()) {
+      if (!incoming.includes(n.id)) continue;
+      const cn = (n.data as { cn?: CanvasNode }).cn;
+      const cfg = (cn?.config ?? {}) as Record<string, unknown>;
+      const from = `${cn?.title || n.id}`;
+      const out = typeof cfg.outputAssetId === "string" ? cfg.outputAssetId : "";
+      const outPath = typeof cfg.outputAssetPath === "string" ? cfg.outputAssetPath : "";
+      if (out) wanted.set(out, { path: outPath, kind: /\.(mp4|mov|webm|m4v)$/i.test(outPath) ? "videos" : "images", from });
+      for (const rid of (Array.isArray(cfg.referenceAssetIds) ? cfg.referenceAssetIds : []) as string[]) {
+        if (rid) wanted.set(rid, { from });
+      }
+      // 素材节点内容（files）自带完整元数据（v2.26.101 语义：下游连线引用时作为参考）
+      for (const f of (Array.isArray(cfg.files) ? cfg.files : []) as { id: string; name: string; path: string; kind: string }[]) {
+        if (f?.id) wanted.set(f.id, { name: f.name, path: f.path, kind: f.kind, from });
+      }
+      if (cn?.type === "text") {
+        const ut = typeof cfg.text === "string" ? cfg.text.trim() : "";
+        if (ut) texts.push({ from, text: ut });
+      }
+    }
+    if (wanted.size === 0) return;
     let alive = true;
     (async () => {
-      try {
-        const doc = await canvasGet(episodeId);
-        if (!alive) return;
-        const edges = (doc.edges ?? []) as { source: string; target: string }[];
-        const incoming = edges.filter((e) => e.target === node.id).map((e) => e.source);
-        if (incoming.length === 0) return;
-        const wanted = new Map<string, string>(); // assetId → 来源节点标题
-        const texts: { from: string; text: string }[] = [];
-        for (const n of doc.nodes ?? []) {
-          if (!incoming.includes(n.id)) continue;
-          const cfg = (n.config ?? {}) as Record<string, unknown>;
-          const from = `${n.title || n.id}`;
-          const out = typeof cfg.outputAssetId === "string" ? cfg.outputAssetId : "";
-          if (out) wanted.set(out, from);
-          for (const rid of (Array.isArray(cfg.referenceAssetIds) ? cfg.referenceAssetIds : []) as string[]) {
-            if (rid) wanted.set(rid, from);
-          }
-          if (n.type === "text") {
-            const ut = typeof cfg.text === "string" ? cfg.text.trim() : "";
-            if (ut) texts.push({ from, text: ut });
-          }
-        }
-        if (wanted.size > 0) {
-          const list = await assetList().catch(() => []);
-          if (!alive) return;
-          for (const a of list) {
-            const from = wanted.get(a.id);
-            if (!from) continue;
-            bindRef({ id: a.id, name: baseName(a.path), path: a.path, kind: a.kind, from: `@${from}` });
-          }
-        }
-        if (alive && texts.length > 0) setEdgeTexts(texts);
-      } catch { /* 画布读取失败不阻塞面板 */ }
+      // 缺元数据（仅 id，如 referenceAssetIds / 无 outputAssetPath 的产物）的项补查资产库
+      const missing = [...wanted.entries()].filter(([, v]) => !v.path).map(([id]) => id);
+      const list = missing.length > 0 ? await assetList().catch(() => []) : [];
+      if (!alive) return;
+      for (const [id, meta] of wanted.entries()) {
+        const hit: { path: string; kind: string; name?: string } | undefined = meta.path
+          ? { path: meta.path, kind: meta.kind ?? "images", name: meta.name }
+          : list.find((a) => a.id === id);
+        if (!hit) continue;
+        bindRef({
+          id,
+          name: meta.name || hit.name || baseName(hit.path),
+          path: hit.path,
+          kind: hit.kind,
+          from: `@${meta.from}`,
+        });
+      }
+      if (alive && texts.length > 0) setEdgeTexts(texts);
     })();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [node.id, episodeId]);
+  }, [node.id, rf]);
 
   // 卸载时停止轮询
   useEffect(() => {

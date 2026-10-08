@@ -338,6 +338,101 @@ pub async fn generate_image(
     Ok(outs)
 }
 
+/// 生图编辑（图生图，v2.26.112）：兼容 /images/edits（multipart，gpt-image-1 / dall-e-2 edits 风格）。
+/// 首张参考图作为 image 字段上传；返回解析与 generations 一致（b64_json 或 url）。
+pub async fn generate_image_edit(
+    gw: &Gateway,
+    profile: &ProviderProfile,
+    model: &str,
+    prompt: &str,
+    image_path: &std::path::Path,
+    size: Option<&str>,
+    n: u32,
+    out_dir: &std::path::Path,
+) -> GatewayResult<Vec<std::path::PathBuf>> {
+    let url = join_url(&profile.base_url, "images/edits");
+    let bytes = std::fs::read(image_path).map_err(|e| GatewayError::Network(e.to_string()))?;
+    let file_name = image_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("reference.png")
+        .to_string();
+    let mime = match image_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png")
+        .to_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "image/png",
+    };
+    let egress = json!({
+        "endpoint": url,
+        "data": "prompt 文本 + 参考图 1 张",
+        "model": model,
+        "sensitive": "生图 prompt 与参考图将发送给该服务商"
+    });
+    gw.check(&url)?;
+    gw.audit_record_manual(&profile.id, &egress);
+    let mut form = reqwest::multipart::Form::new()
+        .text("model", model.to_string())
+        .text("prompt", prompt.to_string())
+        .text("n", n.to_string())
+        .text("response_format", "b64_json")
+        .part(
+            "image",
+            reqwest::multipart::Part::bytes(bytes)
+                .file_name(file_name)
+                .mime_str(mime)
+                .map_err(|e| GatewayError::Parse(e.to_string()))?,
+        );
+    if let Some(s) = size {
+        form = form.text("size", s.to_string());
+    }
+    let req = gw
+        .client()
+        .post(&url)
+        .timeout(std::time::Duration::from_millis(profile.timeout_ms.max(300_000)))
+        .multipart(form);
+    let resp = gw
+        .apply_auth(req, profile)?
+        .send()
+        .await
+        .map_err(|e| GatewayError::Network(e.to_string()))?;
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        let t = resp.text().await.unwrap_or_default();
+        return Err(GatewayError::Http { status, body: onetv_security::redact::redact_text(&t) });
+    }
+    let v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| GatewayError::Parse(e.to_string()))?;
+    let mut outs = Vec::new();
+    if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
+        for (i, item) in arr.iter().enumerate() {
+            let dest = out_dir.join(format!("img_{}_{}.png", chrono::Utc::now().timestamp_millis(), i));
+            if let Some(b64) = item.get("b64_json").and_then(|v| v.as_str()) {
+                use base64::Engine;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .map_err(|e| GatewayError::Parse(e.to_string()))?;
+                std::fs::create_dir_all(out_dir).map_err(|e| GatewayError::Network(e.to_string()))?;
+                std::fs::write(&dest, bytes).map_err(|e| GatewayError::Network(e.to_string()))?;
+                outs.push(dest);
+            } else if let Some(u) = item.get("url").and_then(|v| v.as_str()) {
+                outs.push(gw.download(profile, u, &dest).await?);
+            }
+        }
+    }
+    if outs.is_empty() {
+        return Err(GatewayError::Parse("响应中没有图片数据".into()));
+    }
+    Ok(outs)
+}
+
 /// TTS：兼容 /audio/speech（二进制音频返回）。
 pub async fn tts(
     gw: &Gateway,

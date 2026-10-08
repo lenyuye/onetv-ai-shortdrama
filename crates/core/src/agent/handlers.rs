@@ -374,13 +374,18 @@ async fn generate_one_image(
         false,
     )
     .map_err(route_err)?;
-    // 参考图（图生图）目前只有 Mock（离线合成）与 CustomHttp（模板自取路径）两个驱动可用；
+    // 参考图（图生图）驱动支持情况：Mock（离线合成）/ CustomHttp（模板自取路径）/ ComfyUI（首帧图
+    // 进工作流）/ OpenaiCompatible（v2.26.112 起走 /images/edits multipart）均可带参考；
     // 其余驱动带参考时明确报错，避免静默丢弃参考造成"已生效"的错觉
-    if !references.is_empty()
-        && !matches!(decision.provider.driver, ProviderDriverKind::Mock | ProviderDriverKind::CustomHttp)
-    {
+    if !references.is_empty() && !matches!(
+        decision.provider.driver,
+        ProviderDriverKind::Mock
+            | ProviderDriverKind::CustomHttp
+            | ProviderDriverKind::OpenaiCompatible
+            | ProviderDriverKind::Comfyui
+    ) {
         return Err(fatal(format!(
-            "驱动 {:?} 暂不支持参考图（图生图）；请移除参考，或改用 Mock / Custom HTTP Provider",
+            "驱动 {:?} 暂不支持参考图（图生图）；请移除参考，或改用 Mock / Custom HTTP / OpenAI 兼容 / ComfyUI Provider",
             decision.provider.driver
         )));
     }
@@ -429,9 +434,32 @@ async fn generate_one_image(
                 "1:1" => Some("1024x1024"),
                 _ => Some("1024x1792"),
             };
-            openai::generate_image(env.gateway(), &decision.provider, &decision.model_id, prompt, size, 1, out_dir)
-                .await
-                .map_err(crate::jobs::JobError::from)?
+            // v2.26.112：带参考图 → /images/edits multipart（图生图）；无参考 → /images/generations
+            match references.iter().find(|a| a.kind == "images") {
+                Some(img) => {
+                    openai::generate_image_edit(
+                        env.gateway(),
+                        &decision.provider,
+                        &decision.model_id,
+                        prompt,
+                        std::path::Path::new(&img.path),
+                        size,
+                        1,
+                        out_dir,
+                    )
+                    .await
+                    .map_err(|e| {
+                        fatal(format!(
+                            "图生图请求失败（{e}）：该 OpenAI 兼容服务商可能不支持 /images/edits 端点；可改用支持图生图的服务商，或移除参考后重试"
+                        ))
+                    })?
+                }
+                None => {
+                    openai::generate_image(env.gateway(), &decision.provider, &decision.model_id, prompt, size, 1, out_dir)
+                        .await
+                        .map_err(crate::jobs::JobError::from)?
+                }
+            }
         }
         ProviderDriverKind::StableDiffusion => {
             crate::providers::sd::txt2img(

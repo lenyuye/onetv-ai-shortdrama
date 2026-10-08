@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.26.111"
+version = "2.26.112"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/onetv-labs/onetv"

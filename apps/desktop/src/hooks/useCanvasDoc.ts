@@ -146,6 +146,8 @@ export function useCanvasDoc(episodeId: string) {
   useEffect(() => {
     if (!episodeId) return;
     const ep = episodeId;
+    // v2.26.112：记录画布当前浏览分集——Agent 对话产物自动落画布时优先落这里
+    try { localStorage.setItem("onetv-canvas-current-episode", ep); } catch { /* ignore */ }
     let cancelled = false;
     undoStack.current = [];
     redoStack.current = [];

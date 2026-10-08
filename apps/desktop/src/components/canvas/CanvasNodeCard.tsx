@@ -9,13 +9,12 @@
  * - 生成任务 jobId 写入 config.generateJobId——卡片轮询到终态回填产物，滚出视口/重开应用后断线续查。
  */
 import { useEffect, useRef, useState } from "react";
-import { Handle, Position } from "@xyflow/react";
+import { Handle, Position, useReactFlow } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { NODE_TYPE_DEFS } from "@onetv/node-sdk";
 import type { CanvasNode } from "@onetv/shared-types";
 import { useT } from "../../i18n";
 import { assetList, assetUrl } from "../../api-assets";
-import { canvasGet } from "../../api-canvas";
 import * as api from "../../api";
 import { jobList } from "../../api-providers";
 import { useApp } from "../../store";
@@ -67,43 +66,41 @@ const INLINE_GEN_TYPES = ["image", "video", "video-clip", "audio"];
 /**
  * 聚合上游连线节点的参考（产物/参考资产/素材内容）与文字约束（v2.26.26/31/101 语义）：
  * v2.26.101 起素材节点上传的 files 是"节点内容"（非参考），但下游连线引用时仍作为参考参与生成。
+ * v2.26.112 修复：改用 ReactFlow 内存实时状态——此前读 canvasGet（服务器文档），刚连的线还在
+ * 800ms 自动保存 debounce 内，点生成时参考丢失（"连线了却不按参考生成"的主因）。
  */
-async function collectUpstream(
-  episodeId: string,
+function collectUpstreamLive(
+  flowNodes: { id: string; data?: { cn?: CanvasNode } }[],
+  flowEdges: { source: string; target: string }[],
   nodeId: string
-): Promise<{ refIds: string[]; texts: string[] }> {
-  try {
-    const doc = await canvasGet(episodeId);
-    const edges = (doc.edges ?? []) as { source: string; target: string }[];
-    const incoming = edges.filter((e) => e.target === nodeId).map((e) => e.source);
-    const wanted = new Set<string>();
-    const texts: string[] = [];
-    for (const n of doc.nodes ?? []) {
-      if (!incoming.includes(n.id)) continue;
-      const cfg = (n.config ?? {}) as Record<string, unknown>;
-      if (typeof cfg.outputAssetId === "string" && cfg.outputAssetId) wanted.add(cfg.outputAssetId);
-      for (const rid of (Array.isArray(cfg.referenceAssetIds) ? cfg.referenceAssetIds : []) as string[]) {
-        if (rid) wanted.add(rid);
-      }
-      // v2.26.101：素材节点内容（files）被下游连线引用时作为参考
-      for (const f of (Array.isArray(cfg.files) ? cfg.files : []) as { id?: string }[]) {
-        if (f?.id) wanted.add(f.id);
-      }
-      if (n.type === "text") {
-        const ut = typeof cfg.text === "string" ? cfg.text.trim() : "";
-        if (ut) texts.push(ut);
-      }
+): { refIds: string[]; texts: string[] } {
+  const incoming = flowEdges.filter((e) => e.target === nodeId).map((e) => e.source);
+  const wanted = new Set<string>();
+  const texts: string[] = [];
+  for (const n of flowNodes) {
+    if (!incoming.includes(n.id)) continue;
+    const cfg = (n.data?.cn?.config ?? {}) as Record<string, unknown>;
+    if (typeof cfg.outputAssetId === "string" && cfg.outputAssetId) wanted.add(cfg.outputAssetId);
+    for (const rid of (Array.isArray(cfg.referenceAssetIds) ? cfg.referenceAssetIds : []) as string[]) {
+      if (rid) wanted.add(rid);
     }
-    return { refIds: [...wanted], texts };
-  } catch {
-    return { refIds: [], texts: [] };
+    // v2.26.101：素材节点内容（files）被下游连线引用时作为参考
+    for (const f of (Array.isArray(cfg.files) ? cfg.files : []) as { id?: string }[]) {
+      if (f?.id) wanted.add(f.id);
+    }
+    if (n.data?.cn?.type === "text") {
+      const ut = typeof cfg.text === "string" ? cfg.text.trim() : "";
+      if (ut) texts.push(ut);
+    }
   }
+  return { refIds: [...wanted], texts };
 }
 
 export default function CanvasNodeCard(props: NodeProps) {
   const t = useT();
   const { toast } = useApp();
   const actions = useNodeActions();
+  const rf = useReactFlow();
   const cn = (props.data as { cn?: CanvasNode }).cn;
   // v2.26.27 产物缩略图（即梦式）：image/video 节点有 outputAssetId 时显示小图
   const outId = typeof cn?.config?.outputAssetId === "string" ? (cn.config.outputAssetId as string) : "";
@@ -238,7 +235,8 @@ export default function CanvasNodeCard(props: NodeProps) {
     setGenBusy(true);
     setGenNote(t("任务入队…"));
     try {
-      const { refIds, texts } = await collectUpstream(episodeId, cn.id);
+      // v2.26.112：参考聚合走 ReactFlow 实时状态（连线即时生效，不等落盘）
+      const { refIds, texts } = collectUpstreamLive(rf.getNodes(), rf.getEdges(), cn.id);
       const ownRefs = (Array.isArray(cn.config?.referenceAssetIds) ? cn.config.referenceAssetIds : []) as string[];
       const allRefs = [...new Set([...ownRefs, ...refIds])];
       const fullPrompt = texts.length > 0 ? [prompt, ...texts].join("\n") : prompt;

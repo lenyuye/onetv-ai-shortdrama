@@ -26,9 +26,14 @@ function titleForAsset(a: ChatMsgAsset): string {
   return base.length > 24 ? `${base.slice(0, 24)}…` : base;
 }
 
+/** 当前画布正在浏览的分集 id（CanvasView/useCanvasDoc 切换分集时写入） */
+export const CANVAS_CURRENT_EPISODE_KEY = "onetv-canvas-current-episode";
+
 /**
  * 把产物资产追加为画布节点（返回成功加入的数量）。
- * episodeId 不传时取当前项目第一个分集；已存在同 outputAssetId 的节点则跳过（防重复落卡）。
+ * episodeId 不传时优先取画布当前正在浏览的分集（v2.26.112，否则产物落到第一个分集的
+ * 画布上、用户在当前画布"看不到"）；无记录时回退当前项目第一个分集；
+ * 已存在同 outputAssetId 的节点则跳过（防重复落卡）。
  */
 export async function sendAssetsToCanvas(
   assets: ChatMsgAsset[],
@@ -36,6 +41,11 @@ export async function sendAssetsToCanvas(
 ): Promise<number> {
   if (!Array.isArray(assets) || assets.length === 0) return 0;
   let episodeId = opts?.episodeId;
+  if (!episodeId) {
+    try {
+      episodeId = localStorage.getItem(CANVAS_CURRENT_EPISODE_KEY) || undefined;
+    } catch { /* localStorage 不可用时忽略 */ }
+  }
   if (!episodeId) {
     try {
       const eps = await api.episodeList();
