@@ -16,7 +16,8 @@ jobs:
           version: 11
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # pnpm 11 要求 Node ≥ 22.13（node:sqlite 内置模块）
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Typecheck
@@ -25,18 +26,13 @@ jobs:
         run: pnpm test
 
   backend:
-    name: Rust 测试
+    name: Rust 测试（核心 crates）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # onetv-desktop（Tauri）在 Linux 编译需要 webkit/gtk 系统库
-      - name: 安装 Tauri Linux 依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libayatana-appindicator3-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: cargo clippy（警告不阻塞，仅报告）
-        run: cargo clippy --workspace --all-targets 2>&1 | tail -40
-      - name: cargo test（全 workspace，含 golden pipeline E2E）
-        run: cargo test --workspace
+      # 核心 crates 纯 Rust 测试无需 GTK/WebKit 系统库；
+      # onetv-desktop（Tauri 桌面壳）的构建验证由 release.yml 三平台构建覆盖
+      - name: cargo test（核心 crates，含 golden pipeline E2E）
+        run: cargo test -p onetv-core -p onetv-project -p onetv-media -p onetv-security
