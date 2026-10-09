@@ -2,11 +2,11 @@
 
 本文件记录 OneTV 的阶段性交付。每个 Phase 完成：设计文档 → 实现 → 单元测试 → 构建 → 冒烟测试 → 更新本文件。
 
-## [2.26.161] — v2.26.161：开源许可变更为 AGPL-3.0
+## [2.26.161] — v2.26.161：开源许可统一为 AGPL-3.0（适用于全部版本）
 
 ### 变更
-- **开源许可由 Apache-2.0 变更为 AGPL-3.0**：`LICENSE` 替换为 GNU Affero General Public License v3 官方全文（662 行）；`Cargo.toml`（workspace）许可标识改为 SPDX `AGPL-3.0-only`（全部子 crate 经 `license.workspace = true` 继承）；根目录与 `apps/desktop` 的 `package.json` 补充 `"license": "AGPL-3.0-only"` 字段。
-- 自本版本起，OneTV 以 AGPL-3.0 发布：任何修改版/网络服务形态的分发都须以同许可开放源代码。
+- **开源许可统一为 AGPL-3.0，适用于项目的全部版本（历史版本一并追溯）**：`LICENSE` 为 GNU Affero General Public License v3 官方全文（662 行）；`Cargo.toml`（workspace）许可标识改为 SPDX `AGPL-3.0-only`（全部子 crate 经 `license.workspace = true` 继承）；根目录与 `apps/desktop` 的 `package.json` 补充 `"license": "AGPL-3.0-only"` 字段。
+- OneTV 全部版本（过去、现在、未来）均以 AGPL-3.0 发布：任何修改版/网络服务形态的分发都须以同许可开放源代码。
 
 ## [2.26.160] — v2.26.160：下载自选目录（目录选择器）
 
